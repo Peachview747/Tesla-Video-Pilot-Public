@@ -1,0 +1,8 @@
+.build/
+Generated/
+GeneratedWeb/
+build/
+*.xcodeproj/
+*.xcworkspace/
+*.ipa
+Assets.xcassets/**/*.jpg

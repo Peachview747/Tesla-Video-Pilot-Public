@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Video Pilot · iPhone host</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/jsmpeg.min.js" defer></script>
+  <script src="/app.js" type="module"></script>
+</head>
+<body>
+  <header><strong>Video Pilot</strong><span>iPhone host</span><p id="connection">Connecting…</p></header>
+  <main>
+    <p id="notice" role="status" aria-live="polite"></p>
+    <div id="host-ui" hidden>
+      <nav class="tabs" aria-label="Video Pilot sections">
+        <button id="menu-toggle" class="menu-toggle" aria-expanded="false" aria-controls="tab-menu">☰ <span>Menu</span></button>
+        <div id="tab-menu" class="tab-menu" hidden>
+          <button class="tab" data-tab="dashboard-tab" aria-controls="dashboard-tab">Dashboard</button>
+          <button class="tab active" data-tab="youtube-tab" aria-controls="youtube-tab">YouTube</button>
+          <button class="tab" data-tab="library-tab" aria-controls="library-tab">Library</button>
+          <button class="tab" data-tab="player-section" aria-controls="player-section">Now playing</button>
+          <button class="tab" data-tab="settings-tab" aria-controls="settings-tab">Settings</button>
+        </div>
+      </nav>
+      <section id="dashboard-tab" class="tab-panel dashboard-panel" hidden>
+        <div class="hero-heading"><div><p class="eyebrow">VIDEO PILOT</p><h1>Dashboard</h1><p class="hero-copy">Your phone is the host. Your Tesla is the screen.</p></div><span id="dashboard-state" class="status-badge">Checking…</span></div>
+        <div class="auth-note"><strong>Face ID protected host</strong><span>Video Pilot authorizes hosting once per iPhone app session. Keep this address private while the host is active.</span></div>
+        <div class="metric-grid">
+          <article class="metric-card"><span>Connection</span><strong id="dashboard-connection">—</strong><small>Cloudflare tunnel</small></article>
+          <article class="metric-card"><span>Download</span><strong id="dashboard-download">—</strong><small>Actual host traffic</small></article>
+          <article class="metric-card"><span>Upload</span><strong id="dashboard-upload">—</strong><small>Actual host traffic</small></article>
+          <article class="metric-card"><span>Queue</span><strong id="dashboard-queue">—</strong><small>Videos preparing</small></article>
+        </div>
+        <section class="dashboard-actions"><h2>Quick actions</h2><div class="action-grid"><button class="secondary-action" data-go="youtube-tab">Find a video <span>→</span></button><button class="secondary-action" data-go="library-tab">Open library <span>→</span></button><button class="secondary-action" data-go="settings-tab">Connection help <span>→</span></button></div></section>
+      </section>
+      <section id="preparation-panel" class="preparation" hidden aria-live="polite">
+        <div class="preparation-heading"><h2 id="preparation-title">Preparing video</h2><span id="preparation-percent"></span></div>
+        <p id="preparation-video"></p>
+        <progress id="preparation-progress" max="1" aria-label="Video preparation progress"></progress>
+        <p id="preparation-detail"><span id="queue-count"></span></p>
+      </section>
+      <section id="youtube-tab" class="tab-panel">
+        <div class="hero-heading"><div><p class="eyebrow">VIDEO PILOT</p><h1>Explore YouTube</h1><p class="hero-copy">Find a video, add it to your queue, and play it on the Tesla screen.</p></div><span id="queue-badge" class="queue-badge">0 queued</span></div>
+        <form id="url-form"><input id="url" placeholder="Paste a YouTube URL or video ID" aria-label="YouTube URL" required><button>Prepare video</button></form>
+        <form id="search-form"><input id="query" placeholder="Search YouTube" aria-label="Search YouTube" maxlength="200" required><button>Search</button></form>
+        <div class="search-chips" aria-label="Popular searches"><button type="button" data-query="trending music">Music</button><button type="button" data-query="latest news">News</button><button type="button" data-query="gaming highlights">Gaming</button><button type="button" data-query="podcasts">Podcasts</button><button type="button" data-query="Tesla">Tesla</button></div>
+        <div id="search-summary" class="search-summary" hidden></div>
+        <p id="search-hint"></p>
+        <div id="results" class="grid"></div>
+        <section id="explore-panel" class="explore-panel" hidden><div class="library-heading"><h2>Trending now</h2><button id="explore-refresh" type="button">Refresh</button></div><div id="explore-results" class="grid"></div></section>
+        <section id="queue-panel" class="queue-panel" hidden><div class="library-heading"><h2>Up next</h2><p id="queue-summary"></p></div><div id="queue-list" class="grid"></div></section>
+      </section>
+      <section id="player-section" class="tab-panel" hidden>
+        <h2 id="playing-title"></h2>
+        <div id="player-shell" class="player-shell">
+          <canvas id="screen" width="1280" height="720" aria-label="Video player"></canvas>
+          <div class="controls" role="group" aria-label="Video controls">
+            <button id="back10">−10 sec</button><button id="pause">Pause</button><button id="forward10">+10 sec</button>
+            <button id="mute">Mute</button><button id="fullscreen">Full screen</button><button id="exit-fullscreen" hidden>Exit full screen</button><button id="close">Close</button>
+          </div>
+          <div class="timeline"><span id="elapsed">0:00</span><input id="timeline" type="range" min="0" max="1" value="0" step="0.1" aria-label="Video timeline"><span id="duration">0:00</span></div>
+        </div>
+        <p id="playback-status" role="status"></p>
+      </section>
+      <section id="library-tab" class="tab-panel" hidden><div class="library-heading"><h2>Your library</h2><p id="traffic-status"></p></div><div id="library" class="grid"></div></section>
+      <section id="settings-tab" class="tab-panel" hidden>
+        <div class="hero-heading"><div><p class="eyebrow">VIDEO PILOT</p><h1>Settings</h1><p class="hero-copy">Connection details and setup guidance.</p></div></div>
+        <article class="settings-card"><h2>iPhone host</h2><p>Keep Video Pilot open on the iPhone while the Tesla browser is connected. The tunnel status is shown in the Dashboard.</p><div class="setting-row"><span>Host authorization</span><strong id="settings-auth">Face ID per app session</strong></div><div class="setting-row"><span>Search</span><strong id="settings-search">Unavailable</strong></div><div class="setting-row"><span>Version</span><strong id="settings-version">—</strong></div></article>
+        <article class="settings-card public-access-card"><h2>Address access</h2><p>Face ID protects host activation on the iPhone. Once hosting is active, anyone who obtains this address can view the library, queue downloads, and stream videos, so keep it private.</p><button class="secondary-action" data-go="dashboard-tab">Back to dashboard <span>→</span></button></article>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

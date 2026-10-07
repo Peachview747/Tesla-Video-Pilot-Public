@@ -1,0 +1,30 @@
+# Tesla Video Player -- web server (Express + tRPC, serves the built React app)
+# Bulletproof: includes ffmpeg for on-the-fly MPEG-TS (JSMpeg) streaming
+FROM node:22-slim
+
+# ffmpeg is required for the bulletproof Drive-mode stream (MPEG1-TS for JSMpeg).
+# Without it the /api/stream endpoint cannot produce a <video>-free feed.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install deps first so this layer caches across source edits
+COPY app/package.json app/package-lock.json ./
+COPY app/patches ./patches
+RUN npm ci
+
+# Now the source
+COPY app/ ./
+
+# Build the frontend. Vite writes to client/dist; the server expects ./dist.
+# Also ensure public assets (jsmpeg) land in dist so they are served statically.
+RUN npm run build && ln -sfn client/dist dist \
+    && mkdir -p dist \
+    && if [ -d client/public ]; then cp -a client/public/. dist/; fi
+
+ENV NODE_ENV=production
+ENV PORT=5000
+EXPOSE 5000
+
+CMD ["npm", "start"]

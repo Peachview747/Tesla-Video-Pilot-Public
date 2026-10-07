@@ -1,0 +1,62 @@
+name: MK8iPhone
+options:
+  deploymentTarget:
+    iOS: '17.0'
+packages:
+  MK8Core:
+    path: .
+  YouTubeKit:
+    url: https://github.com/alexeichhorn/YouTubeKit
+    revision: e5b7d0396ce12bf3444f0d209e8436c83373b7af
+  FFmpegKit:
+    url: https://github.com/tylerjonesio/ffmpeg-kit-spm
+    revision: b3a2c365e89c5ec8fdc0debd7b7030152b572620
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    TARGETED_DEVICE_FAMILY: '1'
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+targets:
+  MK8iPhone:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - Assets.xcassets
+      - path: GeneratedWeb
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: MK8Core
+      - package: YouTubeKit
+      - package: FFmpegKit
+        product: FFmpeg-Kit
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mk8.iphone.host
+        MARKETING_VERSION: '0.1.19'
+        CURRENT_PROJECT_VERSION: '20'
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+    info:
+      path: Generated/Info.plist
+      properties:
+        CFBundleDisplayName: Video Pilot
+        CFBundleName: Video Pilot
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UIBackgroundModes: [processing]
+        BGTaskSchedulerPermittedIdentifiers: ['com.mk8.iphone.host.prepare.*']
+        NSFaceIDUsageDescription: Video Pilot uses Face ID once per app session to authorize the Tesla host.
+        NSLocalNetworkUsageDescription: Video Pilot serves the Tesla browser while this app stays open.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+schemes:
+  MK8iPhone:
+    build:
+      targets:
+        MK8iPhone: all

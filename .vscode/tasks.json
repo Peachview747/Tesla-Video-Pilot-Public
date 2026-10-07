@@ -1,0 +1,305 @@
+{
+    "version":  "2.0.0",
+    "tasks":  [
+                  {
+                      "label": "MK8: Open ChatGPT phone setup",
+                      "type": "process",
+                      "command": "powershell.exe",
+                      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/dev-task.ps1", "-Task", "PhoneSetup"],
+                      "problemMatcher": [],
+                      "presentation": { "panel": "dedicated" }
+                  },
+                  {
+                      "label": "MK8: Pair phone with Codex",
+                      "type": "process",
+                      "command": "powershell.exe",
+                      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/dev-task.ps1", "-Task", "PhonePair"],
+                      "problemMatcher": [],
+                      "presentation": { "panel": "dedicated" }
+                  },
+                  {
+                      "label":  "MK8: Install dependencies",
+                      "options":  {
+                                      "cwd":  "${workspaceFolder}/app"
+                                  },
+                      "problemMatcher":  [
+
+                                         ],
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-ExecutionPolicy",
+                                   "Bypass",
+                                   "-File",
+                                   "${workspaceFolder}/scripts/dev-task.ps1",
+                                   "-Task",
+                                   "Install"
+                               ]
+                  },
+                  {
+                      "label":  "MK8: Frontend",
+                      "options":  {
+                                      "cwd":  "${workspaceFolder}/app"
+                                  },
+                      "problemMatcher":  [
+
+                                         ],
+                      "presentation":  {
+                                           "panel":  "dedicated"
+                                       },
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-ExecutionPolicy",
+                                   "Bypass",
+                                   "-File",
+                                   "${workspaceFolder}/scripts/dev-task.ps1",
+                                   "-Task",
+                                   "Frontend"
+                               ]
+                  },
+                  {
+                      "label":  "MK8: Backend",
+                      "options":  {
+                                      "cwd":  "${workspaceFolder}/app"
+                                  },
+                      "problemMatcher":  [
+
+                                         ],
+                      "presentation":  {
+                                           "panel":  "dedicated"
+                                       },
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-ExecutionPolicy",
+                                   "Bypass",
+                                   "-File",
+                                   "${workspaceFolder}/scripts/dev-task.ps1",
+                                   "-Task",
+                                   "Backend"
+                               ]
+                  },
+                  {
+                      "label":  "MK8: Start development",
+                      "problemMatcher":  [
+
+                                         ],
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-ExecutionPolicy",
+                                   "Bypass",
+                                   "-File",
+                                   "${workspaceFolder}/scripts/dev-task.ps1",
+                                   "-Task",
+                                   "DevLocal"
+                               ]
+                  },
+                  {
+                      "label":  "MK8: Build frontend",
+                      "options":  {
+                                      "cwd":  "${workspaceFolder}/app"
+                                  },
+                      "group":  {
+                                    "kind":  "build",
+                                    "isDefault":  true
+                                },
+                      "problemMatcher":  [
+
+                                         ],
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-ExecutionPolicy",
+                                   "Bypass",
+                                   "-File",
+                                   "${workspaceFolder}/scripts/dev-task.ps1",
+                                   "-Task",
+                                   "Build"
+                               ]
+                  },
+                  {
+                      "label":  "MK8: Stop background development",
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-ExecutionPolicy",
+                                   "Bypass",
+                                   "-File",
+                                   "${workspaceFolder}/scripts/dev-task.ps1",
+                                   "-Task",
+                                   "Stop"
+                               ],
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "MK8: Push to main URL",
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-ExecutionPolicy",
+                                   "Bypass",
+                                   "-File",
+                                   "${workspaceFolder}/scripts/dev-task.ps1",
+                                   "-Task",
+                                   "Publish"
+                               ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "presentation":  {
+                                           "panel":  "dedicated"
+                                       }
+                  },
+                  {
+                      "label":  "MK8: Cloudflare login",
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-ExecutionPolicy",
+                                   "Bypass",
+                                   "-File",
+                                   "${workspaceFolder}/scripts/dev-task.ps1",
+                                   "-Task",
+                                   "CloudflareLogin"
+                               ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "presentation":  {
+                                           "panel":  "dedicated"
+                                       }
+                  },
+                  {
+                      "label":  "MK8: Set up Cloudflare Worker",
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-ExecutionPolicy",
+                                   "Bypass",
+                                   "-File",
+                                   "${workspaceFolder}/scripts/dev-task.ps1",
+                                   "-Task",
+                                   "CloudflareSetup"
+                               ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "presentation":  {
+                                           "panel":  "dedicated"
+                                       }
+                  },
+                  {
+                      "label":  "MK8: Install Telegram bot dependencies",
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-ExecutionPolicy",
+                                   "Bypass",
+                                   "-File",
+                                   "${workspaceFolder}/scripts/dev-task.ps1",
+                                   "-Task",
+                                   "BotInstall"
+                               ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "presentation":  {
+                                           "panel":  "dedicated"
+                                       }
+                  },
+                  {
+                      "label":  "MK8: Start Telegram bot",
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-ExecutionPolicy",
+                                   "Bypass",
+                                   "-File",
+                                   "${workspaceFolder}/scripts/dev-task.ps1",
+                                   "-Task",
+                                   "BotStart"
+                               ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "presentation":  {
+                                           "panel":  "dedicated"
+                                       }
+                  },
+                  {
+                      "label":  "MK8: Stop Telegram bot",
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-ExecutionPolicy",
+                                   "Bypass",
+                                   "-File",
+                                   "${workspaceFolder}/scripts/dev-task.ps1",
+                                   "-Task",
+                                   "BotStop"
+                               ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "presentation":  {
+                                           "panel":  "dedicated"
+                                       }
+                  },
+                  {
+                      "label":  "MK8: Check tools and services",
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-ExecutionPolicy",
+                                   "Bypass",
+                                   "-File",
+                                   "${workspaceFolder}/scripts/dev-task.ps1",
+                                   "-Task",
+                                   "Doctor"
+                               ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "presentation":  {
+                                           "panel":  "dedicated"
+                                       }
+                  },
+                  {
+                      "label":  "MK8: TypeScript check",
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-ExecutionPolicy",
+                                   "Bypass",
+                                   "-File",
+                                   "${workspaceFolder}/scripts/dev-task.ps1",
+                                   "-Task",
+                                   "Check"
+                               ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "presentation":  {
+                                           "panel":  "dedicated"
+                                       }
+                  }
+              ]
+}

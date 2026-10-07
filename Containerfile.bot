@@ -1,0 +1,27 @@
+# Tesla Video Player -- Telegram bot (yt-dlp downloader)
+#
+# Python 3.12, deliberately: 3.14 broke psycopg2 and asyncio.get_event_loop()
+# during the original deployment. No reason to walk back into that.
+FROM python:3.12-slim
+
+# ffmpeg for thumbnails and stream merging.
+# Deno satisfies yt-dlp's JS runtime requirement for YouTube's nsig challenge.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ffmpeg curl unzip ca-certificates \
+    && curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh \
+    && apt-get purge -y unzip && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY app/telegram-bot/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app/telegram-bot/ ./
+
+# bot.py reads these at import time; compose overrides as needed.
+ENV UPLOADS_DIR=/data/videos
+ENV COOKIES_FILE=/app/cookies.txt
+ENV BASE_URL=
+
+CMD ["python", "bot.py"]

@@ -1,0 +1,15 @@
+{
+	"name": "tv",
+	"account_id": "d80544ba3f43e04303e3e4108186137f",
+	"main": "worker.js",
+	"compatibility_date": "2026-10-03",
+	"workers_dev": true,
+	"durable_objects": { "bindings": [{ "name": "PHONE_TUNNEL", "class_name": "PhoneTunnel" }] },
+	"migrations": [{ "tag": "iphone-relay-v1", "new_sqlite_classes": ["PhoneTunnel"] }],
+	"kv_namespaces": [
+		{
+			"binding": "KV",
+			"id": "8e6729fe057d4ef1aa5654a554dcc6ae"
+		}
+	]
+}

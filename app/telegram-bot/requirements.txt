@@ -1,0 +1,6 @@
+python-telegram-bot==21.6
+psycopg[binary]==3.2.3
+# [default] pulls in yt-dlp-ejs, the bundled solver scripts for YouTube's JS
+# challenges (run with Deno). Without it yt-dlp skips the solver and fails.
+yt-dlp[default]>=2025.11.12
+python-dotenv==1.0.1

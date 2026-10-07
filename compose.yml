@@ -1,0 +1,57 @@
+# Tesla Video Player — Docker Compose (Ubuntu / Linux / any Docker host)
+# Start with: ./tesla.sh
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tesla
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: tesla_video
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tesla"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build:
+      context: .
+      dockerfile: Containerfile.web
+    image: tesla-web:latest
+    environment:
+      DATABASE_URL: postgresql://tesla:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/tesla_video
+      UPLOADS_DIR: /data
+      PORT: "5000"
+    volumes:
+      - videos:/data/videos
+    ports:
+      - "${WEB_PORT:-8080}:5000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  bot:
+    build:
+      context: .
+      dockerfile: Containerfile.bot
+    image: tesla-bot:latest
+    environment:
+      DATABASE_URL: postgresql://tesla:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/tesla_video
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      UPLOADS_DIR: /data/videos
+      COOKIES_FILE: /app/cookies.txt
+      BASE_URL: ""
+    volumes:
+      - videos:/data/videos
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  videos:

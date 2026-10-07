@@ -1,0 +1,43 @@
+{
+  "name": "Video Pilot",
+  "version": "0.1.19",
+  "iconVersion": "0.1.19",
+  "artifactPrefix": "VideoPilot",
+  "releaseNotes": "Adds one Face ID/device-authentication check when hosting first starts in each app session, then keeps the same Tesla URL available without browser PINs. Refreshes the Tesla-style web navigation and hamburger menu, while retaining repeated-seek recovery, queueing, fullscreen controls, resume checkpoints, and background recovery.",
+  "packaging": "arm64-only-adhoc-signature-template",
+  "stage": "native-prototype",
+  "branch": "iphone-native",
+  "minimumIOS": "17.0",
+  "install": "personal-signing-or-sideload",
+  "hosting": "local-http-and-native-cloudflare-websocket-relay-with-limited-background-time",
+  "backgroundDownloads": "urlsession-with-persistent-jobs",
+  "publicURL": "https://tv.jcruzhoovertesla.workers.dev",
+  "progress": "download-bytes-and-measured-processing-rate-with-eta",
+  "trafficMetrics": "observed-app-bytes-per-second",
+  "playback": "mpeg1video-mp2-mpegts-jsmpeg",
+  "conversion": "prepare-before-playback",
+  "cloudflareTunnel": "native-urlsession-websocket-relay-v1",
+  "cloudflareDeployment": "worker-update-and-TV_SECRET-required",
+  "hostAuthorization": "face-id-or-device-authentication-once-per-app-session",
+  "browserAuthentication": "none-while-authorized-host-is-running",
+  "nativeDeviceValidation": "pending",
+  "previousDeviceValidation": {
+    "version": "0.1.10",
+    "guiLaunch": "user-confirmed",
+    "downloadSpeed": "user-confirmed-great",
+    "playback": "user-confirmed-working",
+    "preparationSpeed": "user-reported-slow",
+    "downloadImprovement": "user-confirmed-better"
+  },
+  "backgroundProcessing": "ios26-user-initiated-continued-processing-cpu",
+  "sourceDownloads": "validated-googlevideo-query-range-with-header-fallback",
+  "downloadDiagnostics": "bounded-local-timing-and-byte-details-without-signed-urls",
+  "latestDownloadObservation": {
+    "version": "0.1.10",
+    "connection": "cellular-5G-UC",
+    "mediaMbps": 2.36,
+    "speedtestMbps": 232,
+    "validation": "user-confirmed-download-improved",
+    "cause": "not-yet-established"
+  }
+}
