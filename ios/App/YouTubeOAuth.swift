@@ -99,7 +99,11 @@ final class YouTubeOAuth: NSObject, ObservableObject, ASWebAuthenticationPresent
             auth.presentationContextProvider = self
             auth.prefersEphemeralWebBrowserSession = false
             session = auth
-            guard auth.start() else { session = nil; continuation.resume(throwing: Failure.couldNotStart) }
+            guard auth.start() else {
+                session = nil
+                continuation.resume(throwing: Failure.couldNotStart)
+                return
+            }
         }
     }
 
