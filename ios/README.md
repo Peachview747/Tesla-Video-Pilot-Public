@@ -6,7 +6,7 @@ This distribution lives in `ios/` on the `iphone-native` branch of the same Tesl
 
 The user confirmed that v0.1.2 opens its GUI and began local media/YouTube testing. Version 0.1.3 adds a new dashboard, progress reporting, traffic measurements, a custom icon, and supported background transfers; those additions still need physical-device validation.
 
-Version 0.1.28 build 31 uses a bright, minimal Video Pilot identity: a full-bleed graphite background, a clean silver Model 3 silhouette, and a brushed-white **VP** mark. It intentionally has no red accent, rocket, or extra version text. The marketing version remains 1.28; the build number is the incrementing source/IPA revision.
+Version 0.1.28 build 32 uses the approved bright Video Pilot media-cockpit identity: a clean center-screen play surface framed by a silver Tesla-inspired cabin and a graphite **Video Pilot** wordmark. It intentionally has no red accent, rocket, or extra version text. The marketing version remains 1.28; the build number is the incrementing source/IPA revision.
 
 ## Implemented
 
