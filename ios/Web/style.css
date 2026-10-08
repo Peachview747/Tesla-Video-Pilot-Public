@@ -85,3 +85,22 @@ canvas { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; border
   .tabs { top: 56px; } .hero-heading { display: block; padding: 16px; } .status-badge, .queue-badge { display: inline-block; margin-top: 12px; }
   form { grid-template-columns: 1fr; } form button { width: 100%; } .controls button { min-width: calc(50% - 4px); }
 }
+
+/* Tesla browser layout: one compact home screen, with secondary views in the menu. */
+.dashboard-panel { display: none !important; }
+.tabs { max-width: 1080px; margin-left: auto; margin-right: auto; }
+.watch-tools { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 10px; margin-top: 12px; }
+.watch-tools form { margin: 0; }
+.search-chips { margin-top: 10px; }
+.search-chips button { border-radius: 999px; }
+.explore-panel, .queue-panel { margin-top: 16px; }
+.library-heading { min-height: 34px; }
+.library-heading h2 { margin-bottom: 0; }
+.card { background: #121a23; }
+.player-overlay:not([hidden]) { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; margin: 0; padding: 14px; background: #020407d9; backdrop-filter: blur(8px); overflow: auto; }
+.player-dialog { width: min(900px, 100%); max-height: calc(100vh - 28px); overflow: auto; padding: 14px; border: 1px solid #526476; border-radius: 16px; background: #101820; box-shadow: 0 24px 70px #000c; }
+.player-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.player-heading h2 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.close-player { min-height: 36px; padding: 7px 12px; background: #242e38; border-color: #526476; box-shadow: none; }
+.player-dialog #playback-status { min-height: 1.3em; margin-bottom: 0; }
+@media (max-width: 700px) { .watch-tools { grid-template-columns: 1fr; } }

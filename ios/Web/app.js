@@ -29,7 +29,14 @@ function clearResume(video = current) {
 async function api(path, body) {
   const response = await fetch(path, {method:body ? 'POST' : 'GET', credentials:'same-origin', cache:'no-store',
     headers:body ? {'Content-Type':'application/json'} : {}, body:body ? JSON.stringify(body) : undefined});
-  const result = await response.json();
+  const raw = await response.text();
+  let result;
+  try { result = raw ? JSON.parse(raw) : {}; }
+  catch {
+    throw new Error(response.ok
+      ? 'The host returned an unexpected page. Refresh the Tesla browser and keep Video Pilot open.'
+      : `Connection to Video Pilot failed (${response.status}). Refresh to retry.`);
+  }
   if (!response.ok) throw new Error(result.error || `Request failed (${response.status}).`);
   return result;
 }
@@ -312,7 +319,10 @@ $('pause').onclick = () => {
 };
 $('back10').onclick = () => { if (current) requestSeek(Math.max(0, currentOffset - 10)); };
 $('forward10').onclick = () => { if (current) requestSeek(Math.min(current.duration || Infinity, currentOffset + 10)); };
-$('close').onclick = () => { invalidateSeeks(); void closePlayer(); };
+$('close').onclick = () => {
+  invalidateSeeks();
+  void closePlayer().then(() => showTab('youtube-tab'));
+};
 $('mute').onclick = () => {
   if (player) {
     player.volume = player.volume > 0 ? 0 : 1;
