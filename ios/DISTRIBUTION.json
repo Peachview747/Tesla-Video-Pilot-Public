@@ -1,10 +1,10 @@
 {
   "name": "Video Pilot",
-  "version": "0.1.21",
-  "build": "23",
+  "version": "0.1.22",
+  "build": "24",
   "iconVersion": "0.1.19",
   "artifactPrefix": "VideoPilot",
-  "releaseNotes": "Build 21 repairs timeline duration and seek accuracy with an MPEG-TS timestamp index, serializes decoder teardown for repeated seeks, and keeps the Tesla relay from overlapping stale playback buffers. OAuth requirements are documented separately; API-key YouTube search remains public-data-only.",
+  "releaseNotes": "Build 24 adds the compact Home/Library/Settings Tesla layout, account-aware YouTube activity feed, focused player overlay, and readable reconnect errors. OAuth requirements are documented separately; YouTube recommendations remain Google-controlled and are not exposed by the public Data API.",
   "packaging": "arm64-only-adhoc-signature-template",
   "stage": "native-prototype",
   "branch": "iphone-native",

@@ -106,7 +106,10 @@ async function refresh() {
     $('traffic-status').textContent = `Receiving ${down.toFixed(2)} Mb/s · Sending ${up.toFixed(2)} Mb/s`;
     $('search-form').hidden = !status.youtubeSearch;
     $('explore-panel').hidden = !status.youtubeExplore;
-    $('search-hint').textContent = status.youtubeSearch ? '' : 'Paste a video URL above. To enable search, add a YouTube Data API key in the iPhone app.';
+    $('explore-title').textContent = status.youtubeSignedIn ? 'From your subscriptions' : 'Trending now';
+    $('search-hint').textContent = status.youtubeSearch
+      ? (status.youtubeSignedIn ? 'Searching all of YouTube · your account feed is shown below.' : 'Searching all of YouTube with the host API key.')
+      : 'Paste a video URL above. To enable search, add a YouTube Data API key in the iPhone app.';
     $('url-form').querySelector('button').disabled = false;
     $('preparation-detail').dataset.queue = status.queuedCount ? `${status.queuedCount} more queued` : '';
     if (status.youtubeExplore && !$('explore-results').children.length) void loadExplore();

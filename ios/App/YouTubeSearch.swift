@@ -78,27 +78,33 @@ enum YouTubeSearch {
         }
     }
 
+    /// The Data API does not expose YouTube's private recommendation model.
+    /// Activities are the closest account-aware home feed: they contain the
+    /// latest uploads from channels the signed-in account follows.
     static func subscriptions(accessToken: String) async throws -> [SearchVideo] {
-        let data = try await request("subscriptions", query: [
-            URLQueryItem(name: "part", value: "snippet"), URLQueryItem(name: "mine", value: "true"),
-            URLQueryItem(name: "maxResults", value: "20")
+        let data = try await request("activities", query: [
+            URLQueryItem(name: "part", value: "snippet,contentDetails"), URLQueryItem(name: "mine", value: "true"),
+            URLQueryItem(name: "maxResults", value: "25")
         ], accessToken: accessToken)
         struct Result: Decodable {
             struct Item: Decodable {
                 struct Snippet: Decodable {
-                    struct Resource: Decodable { let videoId: String? }
                     struct Thumbnail: Decodable { let url: String }
                     let title: String
                     let channelTitle: String
-                    let resourceId: Resource
                     let thumbnails: [String: Thumbnail]
                 }
+                struct ContentDetails: Decodable {
+                    struct Upload: Decodable { let videoId: String? }
+                    let upload: Upload?
+                }
                 let snippet: Snippet
+                let contentDetails: ContentDetails?
             }
             let items: [Item]
         }
         return try JSONDecoder().decode(Result.self, from: data).items.compactMap {
-            guard let id = $0.snippet.resourceId.videoId else { return nil }
+            guard let id = $0.contentDetails?.upload?.videoId else { return nil }
             return SearchVideo(id: id, title: $0.snippet.title, channel: $0.snippet.channelTitle,
                                thumbnail: $0.snippet.thumbnails["medium"]?.url)
         }
