@@ -51,8 +51,8 @@ import Network
     @Published var backgroundPreparation = (UserDefaults.standard.object(forKey: "backgroundPreparation") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(backgroundPreparation, forKey: "backgroundPreparation") }
     }
-    let version = "0.1.22"
-    let build = "24"
+    let version = "0.1.23"
+    let build = "25"
     var preparingTitle: String { videos.first { $0.id == preparingID }?.title ?? "Your video" }
     var queuedCount: Int { videos.filter { $0.state == "preparing" && $0.id != preparingID }.count }
     private var library: Library?
@@ -508,7 +508,9 @@ import Network
                     results = try await YouTubeSearch.search(query, apiKey: searchKey)
                 }
                 return HTTPResponse(status: 200, contentType: "application/json", body: try JSONEncoder().encode(results))
-            } catch { return .json(["error": "YouTube search failed. Check the key, quota, and connection on the iPhone."], status: 503) }
+            } catch {
+                return .json(["error": "YouTube search failed: \(error.localizedDescription)"], status: 503)
+            }
         }
         if request.path == "/api/explore", request.method == "GET" {
             do {
@@ -521,7 +523,9 @@ import Network
                 }
                 return .json(results.map { ["id": $0.id, "title": $0.title, "channel": $0.channel, "thumbnail": $0.thumbnail ?? ""] })
             }
-            catch { return .json(["error": "YouTube Explore failed. Check the key, quota, and connection on the iPhone."], status: 503) }
+            catch {
+                return .json(["error": "YouTube Explore failed: \(error.localizedDescription)"], status: 503)
+            }
         }
         if request.method == "GET", request.path.hasPrefix("/api/stream/"), request.path.hasSuffix(".ts") {
             let raw = String(request.path.dropFirst("/api/stream/".count).dropLast(3))

@@ -14,8 +14,9 @@ enum YouTubeSearch {
         var request = URLRequest(url: components.url!)
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw NSError(domain: "MK8", code: 3, userInfo: [NSLocalizedDescriptionKey: "YouTube account request failed."])
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            throw apiError(data: data, status: status, fallback: "YouTube account request failed")
         }
         return data
     }
@@ -36,8 +37,9 @@ enum YouTubeSearch {
             URLQueryItem(name: "key", value: apiKey)
         ]
         let (data, response) = try await URLSession.shared.data(from: components.url!)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw NSError(domain: "MK8", code: 1, userInfo: [NSLocalizedDescriptionKey: "YouTube search failed. Check the API key and quota on the iPhone."])
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            throw apiError(data: data, status: status, fallback: "YouTube search failed")
         }
         struct Result: Decodable {
             struct Item: Decodable {
@@ -118,8 +120,18 @@ enum YouTubeSearch {
             URLQueryItem(name: "key", value: apiKey)
         ]
         let (data, response) = try await URLSession.shared.data(from: components.url!)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw NSError(domain: "MK8", code: 2, userInfo: [NSLocalizedDescriptionKey: "YouTube Explore failed. Check the API key and quota on the iPhone."]) }
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            throw apiError(data: data, status: status, fallback: "YouTube Explore failed")
+        }
         struct Result: Decodable { struct Item: Decodable { let id: String; let snippet: Snippet }; struct Snippet: Decodable { let title: String; let channelTitle: String; let thumbnails: [String: Thumbnail] }; struct Thumbnail: Decodable { let url: String }; let items: [Item] }
         return try JSONDecoder().decode(Result.self, from: data).items.map { SearchVideo(id: $0.id, title: $0.snippet.title, channel: $0.snippet.channelTitle, thumbnail: $0.snippet.thumbnails["medium"]?.url) }
+    }
+
+    private static func apiError(data: Data, status: Int, fallback: String) -> NSError {
+        struct Envelope: Decodable { struct Detail: Decodable { let message: String? }; let error: Detail? }
+        let detail: String? = (try? JSONDecoder().decode(Envelope.self, from: data))?.error?.message
+        let suffix = detail.map { ": \($0)" } ?? ""
+        return NSError(domain: "MK8.YouTube", code: status, userInfo: [NSLocalizedDescriptionKey: "\(fallback) (HTTP \(status))\(suffix)"])
     }
 }
