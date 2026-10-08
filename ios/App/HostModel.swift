@@ -16,6 +16,8 @@ import Network
     @Published private(set) var localURLs: [String] = []
     @Published var message = "Face ID authorization is required once before hosting starts."
     @Published var searchKey = Keychain.read("youtube-search")
+    @Published private(set) var youtubeSignedIn = false
+    let youtubeOAuth = YouTubeOAuth()
     @Published var tunnelKey = Keychain.read("tunnel-key")
     @Published private(set) var phoneConnection = PhoneConnection()
     @Published private(set) var tunnelState = TunnelConnectionState.notConfigured
@@ -77,6 +79,7 @@ import Network
         var meter = TransferMeter(startedAt: now)
         traffic = meter.sample(at: now)
         self.meter = meter
+        youtubeSignedIn = youtubeOAuth.signedIn
         do { library = try Library(); refresh() }
         catch { message = "Could not open the local library: \(error.localizedDescription)" }
         networkMonitor.pathUpdateHandler = { [weak self] path in
@@ -226,6 +229,21 @@ import Network
             message = "YouTube search key saved."
         }
         catch { message = "Could not save the search key: \(error.localizedDescription)" }
+    }
+    func signInYouTube() {
+        message = "Complete Google sign-in in the secure browser window."
+        Task { @MainActor in
+            do {
+                try await youtubeOAuth.signIn()
+                youtubeSignedIn = youtubeOAuth.signedIn
+                message = "YouTube account connected."
+            } catch { message = error.localizedDescription }
+        }
+    }
+    func signOutYouTube() {
+        youtubeOAuth.signOut()
+        youtubeSignedIn = false
+        message = "YouTube account disconnected."
     }
     func saveTunnelKey() {
         let key = tunnelKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -459,7 +477,8 @@ import Network
             let progressValue: Any
             if let progress = preparation?.fraction { progressValue = progress } else { progressValue = NSNull() }
             return .json(["hosting": running, "busy": busy, "publicAccess": true, "authentication": "faceID-on-start",
-                          "youtubeSearch": !searchKey.isEmpty, "youtubeExplore": !searchKey.isEmpty,
+                          "youtubeSearch": !searchKey.isEmpty || youtubeSignedIn, "youtubeExplore": !searchKey.isEmpty || youtubeSignedIn,
+                          "youtubeSignedIn": youtubeSignedIn,
                           "tunnel": tunnelState.rawValue, "version": version, "build": build,
                           "activeStreams": activeStreams, "queuedCount": queuedCount, "downloadMbps": traffic.downloadMbps,
                           "uploadMbps": traffic.uploadMbps,
@@ -478,17 +497,30 @@ import Network
             return .json(["id": video.id.uuidString], status: 202)
         }
         if request.path == "/api/search", request.method == "GET" {
-            guard !searchKey.isEmpty else { return .json(["error": "Set a YouTube Data API key in the iPhone app to enable search. URL import works without it."], status: 503) }
             let query = request.query.first(where: { $0.name == "q" })?.value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !query.isEmpty, query.count <= 200 else { return .json(["error": "Enter a search of up to 200 characters."], status: 400) }
             do {
-                let results = try await YouTubeSearch.search(query, apiKey: searchKey)
+                let results: [SearchVideo]
+                if youtubeSignedIn {
+                    results = try await YouTubeSearch.search(query, accessToken: try await youtubeOAuth.accessToken())
+                } else {
+                    guard !searchKey.isEmpty else { return .json(["error": "Sign in with Google on the iPhone or add a YouTube Data API key in Settings."], status: 503) }
+                    results = try await YouTubeSearch.search(query, apiKey: searchKey)
+                }
                 return HTTPResponse(status: 200, contentType: "application/json", body: try JSONEncoder().encode(results))
             } catch { return .json(["error": "YouTube search failed. Check the key, quota, and connection on the iPhone."], status: 503) }
         }
         if request.path == "/api/explore", request.method == "GET" {
-            guard !searchKey.isEmpty else { return .json(["error": "Set a YouTube Data API key in the iPhone app to enable Explore."], status: 503) }
-            do { return .json(try await YouTubeSearch.trending(apiKey: searchKey).map { ["id": $0.id, "title": $0.title, "channel": $0.channel, "thumbnail": $0.thumbnail ?? ""] }) }
+            do {
+                let results: [SearchVideo]
+                if youtubeSignedIn {
+                    results = try await YouTubeSearch.subscriptions(accessToken: try await youtubeOAuth.accessToken())
+                } else {
+                    guard !searchKey.isEmpty else { return .json(["error": "Sign in with Google on the iPhone or add a YouTube Data API key in Settings."], status: 503) }
+                    results = try await YouTubeSearch.trending(apiKey: searchKey)
+                }
+                return .json(results.map { ["id": $0.id, "title": $0.title, "channel": $0.channel, "thumbnail": $0.thumbnail ?? ""] })
+            }
             catch { return .json(["error": "YouTube Explore failed. Check the key, quota, and connection on the iPhone."], status: 503) }
         }
         if request.method == "GET", request.path.hasPrefix("/api/stream/"), request.path.hasSuffix(".ts") {

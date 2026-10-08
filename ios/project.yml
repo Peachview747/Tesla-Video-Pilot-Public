@@ -53,6 +53,10 @@ targets:
         BGTaskSchedulerPermittedIdentifiers: ['com.mk8.iphone.host.prepare.*']
         NSFaceIDUsageDescription: Video Pilot uses Face ID once per app session to authorize the Tesla host.
         NSLocalNetworkUsageDescription: Video Pilot serves the Tesla browser while this app stays open.
+        CFBundleURLTypes:
+          - CFBundleURLName: Video Pilot Google sign-in
+            CFBundleURLSchemes:
+              - com.googleusercontent.apps.916235441326-50bg31an4jfc9ocnjci4ns0vj1b7m3bf
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
 schemes:

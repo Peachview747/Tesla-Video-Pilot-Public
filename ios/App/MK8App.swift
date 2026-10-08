@@ -650,6 +650,22 @@ private struct HostSettingsView: View {
                     .font(.footnote).foregroundStyle(MK8Theme.secondary)
             }
             HostCard {
+                Label("YouTube account", systemImage: "person.crop.circle.badge.checkmark").font(.headline)
+                if host.youtubeSignedIn {
+                    Label("Google account connected", systemImage: "checkmark.circle.fill")
+                        .font(.subheadline).foregroundStyle(.green)
+                    Text("The Tesla interface can now search with your account and show your subscriptions.")
+                        .font(.footnote).foregroundStyle(MK8Theme.secondary)
+                    Button("Disconnect Google", systemImage: "rectangle.portrait.and.arrow.right") { host.signOutYouTube() }
+                        .buttonStyle(.bordered)
+                } else {
+                    Text("Sign in once on this iPhone to unlock account-aware YouTube search and subscriptions. Google tokens stay in the Keychain.")
+                        .font(.subheadline).foregroundStyle(MK8Theme.secondary)
+                    Button("Sign in with Google", systemImage: "person.crop.circle") { host.signInYouTube() }
+                        .buttonStyle(.borderedProminent).controlSize(.large)
+                }
+            }
+            HostCard {
                 Label("Cloudflare tunnel", systemImage: "icloud").font(.headline)
                 Toggle("Connect when hosting", isOn: $host.tunnelEnabled)
                 SecureField("TV_SECRET from your MK8 .env", text: $host.tunnelKey)

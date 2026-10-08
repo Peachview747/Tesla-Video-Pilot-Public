@@ -84,6 +84,7 @@ async function refresh() {
     $('dashboard-upload').textContent = `${(Number(status.uploadMbps) || 0).toFixed(2)} Mb/s`;
     $('dashboard-queue').textContent = String(Number(status.queuedCount) || 0);
     $('settings-auth').textContent = status.authentication === 'faceID-on-start' ? 'Face ID per app session' : 'App authorization';
+    $('settings-youtube').textContent = status.youtubeSignedIn ? 'Google connected' : 'Sign in on iPhone';
     $('settings-search').textContent = status.youtubeSearch ? 'Enabled' : 'Add API key on iPhone';
     $('settings-version').textContent = status.version
       ? `v${status.version}${status.build ? ` · build ${status.build}` : ''}` : '—';
