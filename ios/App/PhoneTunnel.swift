@@ -14,6 +14,7 @@ import MK8Core
     private var generation = UUID()
     private var peers: [UUID: RelayPeer] = [:]
     private var lastPong = ProcessInfo.processInfo.systemUptime
+    private var pingStartedAt: [String: TimeInterval] = [:]
     private var sawHello = false
     var stateChanged: ((TunnelConnectionState, String) -> Void)?
     var received: ((Int64) -> Void)?
@@ -33,15 +34,17 @@ import MK8Core
 
     func start(secret: String) {
         stop()
-        guard !secret.isEmpty else { stateChanged?(.notConfigured, "Save your tunnel key in Settings."); return }
+        guard !secret.isEmpty else { changeState(.notConfigured, "Save your tunnel key in Settings."); return }
         let current = UUID()
         generation = current
         runner = Task { [weak self] in
             var attempts = 0
             while !Task.isCancelled {
                 guard let self, self.generation == current else { return }
-                self.stateChanged?(attempts == 0 ? .connecting : .reconnecting,
+                self.changeState(attempts == 0 ? .connecting : .reconnecting,
                     attempts == 0 ? "Connecting your iPhone to Cloudflare…" : "Reconnecting your iPhone…")
+                SessionDiagnostics.shared.record(component: "tunnel", event: "attempt",
+                    fields: ["attempt": String(attempts)])
                 do {
                     try await self.checkWorker(secret: secret)
                     try Task.checkCancellation()
@@ -56,6 +59,8 @@ import MK8Core
                     self.socket = socket
                     self.sawHello = false
                     self.lastPong = ProcessInfo.processInfo.systemUptime
+                    self.pingStartedAt.removeAll()
+                    SessionDiagnostics.shared.record(component: "tunnel", event: "socketOpened")
                     socket.resume()
                     self.startHeartbeat(socket: socket, generation: current)
                     while !Task.isCancelled, self.socket === socket, self.generation == current {
@@ -75,12 +80,14 @@ import MK8Core
                     guard !Task.isCancelled, self.generation == current else { return }
                     self.closeSocket()
                     if let failure = error as? RelayError, failure.requiresSetup {
-                        self.stateChanged?(.failed, failure.localizedDescription)
+                        self.changeState(.failed, failure.localizedDescription)
                         self.runner = nil
                         return
                     }
                     attempts += 1
-                    self.stateChanged?(.reconnecting, "Connection interrupted. Retrying automatically…")
+                    SessionDiagnostics.shared.record(component: "tunnel", event: "error",
+                        fields: ["attempt": String(attempts), "error": error.localizedDescription])
+                    self.changeState(.reconnecting, "Connection interrupted. Retrying automatically…")
                     let delay = min(30, 1 << min(attempts, 5))
                     try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
                 }
@@ -93,7 +100,7 @@ import MK8Core
         runner?.cancel()
         runner = nil
         closeSocket()
-        stateChanged?(.disconnected, "Tunnel stopped.")
+        changeState(.disconnected, "Tunnel stopped.")
     }
 
     private func closeSocket() {
@@ -101,6 +108,7 @@ import MK8Core
         heartbeat = nil
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
+        pingStartedAt.removeAll()
         for peer in peers.values { peer.close() }
         peers.removeAll()
         streamsChanged?(0)
@@ -109,8 +117,13 @@ import MK8Core
     private func checkWorker(secret: String) async throws {
         var request = URLRequest(url: publicURL.appendingPathComponent("__iphone/status"))
         request.setValue(secret, forHTTPHeaderField: "x-secret")
+        let started = ProcessInfo.processInfo.systemUptime
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw RelayError.workerSetup }
+        let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1000
+        SessionDiagnostics.shared.record(component: "network", event: "workerCheck",
+            fields: ["status": String(http.statusCode), "elapsedMs": String(format: "%.1f", elapsed),
+                     "probe": "phone-to-cloudflare-https"])
         if http.statusCode == 401 { throw RelayError.keyRejected }
         guard http.statusCode == 200,
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -129,7 +142,9 @@ import MK8Core
                     socket.cancel(with: .goingAway, reason: nil)
                     return
                 }
-                do { try await self.send(["type": "ping", "id": UUID().uuidString.lowercased()], socket: socket) }
+                let id = UUID().uuidString.lowercased()
+                self.pingStartedAt[id] = ProcessInfo.processInfo.systemUptime
+                do { try await self.send(["type": "ping", "id": id], socket: socket) }
                 catch { socket.cancel(with: .goingAway, reason: nil); return }
             }
         }
@@ -139,15 +154,27 @@ import MK8Core
         guard text.utf8.count <= 32768, let data = text.data(using: .utf8),
               let value = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = value["type"] as? String else { throw RelayError.protocolMismatch }
+        SessionDiagnostics.shared.record(component: "tunnel", event: "controlReceived",
+            fields: ["type": type, "bytes": String(text.utf8.count)],
+            throttleKey: type == "pull" ? "tunnel-pull" : nil, minimumInterval: type == "pull" ? 1 : 0)
         if type == "hello" {
             guard !sawHello, value["protocol"] as? String == RelayProtocol.name else { throw RelayError.protocolMismatch }
             sawHello = true
             lastPong = ProcessInfo.processInfo.systemUptime
-            stateChanged?(.connected, "Connected. Open the public address in the Tesla browser.")
+            changeState(.connected, "Connected. Open the public address in the Tesla browser.")
             return
         }
         guard sawHello else { throw RelayError.protocolMismatch }
-        if type == "pong" { lastPong = ProcessInfo.processInfo.systemUptime; return }
+        if type == "pong" {
+            let now = ProcessInfo.processInfo.systemUptime
+            lastPong = now
+            if let id = value["id"] as? String, let started = pingStartedAt.removeValue(forKey: id) {
+                SessionDiagnostics.shared.record(component: "network", event: "tunnelRTT",
+                    fields: ["elapsedMs": String(format: "%.1f", (now - started) * 1000),
+                             "probe": "phone-cloudflare-websocket-phone"])
+            }
+            return
+        }
         guard let rawID = value["id"] as? String, let id = UUID(uuidString: rawID) else { throw RelayError.protocolMismatch }
         if type == "cancel" { remove(id); return }
         if type == "pull" {
@@ -248,6 +275,12 @@ import MK8Core
         try Task.checkCancellation()
         guard self.socket === socket else { throw CancellationError() }
         sent?(Int64(data.count))
+        if let type = object["type"] as? String {
+            SessionDiagnostics.shared.record(component: "tunnel", event: "controlSent",
+                fields: ["type": type, "bytes": String(data.count)],
+                throttleKey: type == "pull" ? "tunnel-pull-sent" : nil,
+                minimumInterval: type == "pull" ? 1 : 0)
+        }
     }
     private func sendEmptyResponse(status: Int, id: String, socket: URLSessionWebSocketTask) {
         Task { [weak self] in
@@ -263,6 +296,13 @@ import MK8Core
         try Task.checkCancellation()
         guard self.socket === socket else { throw CancellationError() }
         sent?(Int64(data.count))
+        SessionDiagnostics.shared.record(component: "tunnel", event: "mediaFrameSent",
+            fields: ["bytes": String(data.count)], throttleKey: "tunnel-media-frame", minimumInterval: 1)
+    }
+    private func changeState(_ state: TunnelConnectionState, _ message: String) {
+        stateChanged?(state, message)
+        SessionDiagnostics.shared.record(component: "tunnel", event: "state",
+            fields: ["state": state.rawValue])
     }
     private func fail(_ id: UUID, peer: RelayPeer, socket: URLSessionWebSocketTask) async {
         // Check request identity as well as connection identity on both sides of

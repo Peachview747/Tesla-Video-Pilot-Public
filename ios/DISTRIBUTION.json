@@ -1,10 +1,10 @@
 {
   "name": "Video Pilot",
   "version": "0.1.28",
-  "build": "35",
+  "build": "36",
   "iconVersion": "0.1.28",
   "artifactPrefix": "Tesla-Video-Pilot",
-  "releaseNotes": "Build 35 carries the bright media-cockpit icon and light/dark appearance toggles forward, adds a compact fullscreen playback rail with smaller controls and a thin seek bar, and reduces cellular buffering with 128 KiB relay frames plus 12/6-second read-ahead while retaining decoder-safe seek recovery.",
+  "releaseNotes": "Build 36 carries the compact fullscreen rail and cellular buffering improvements forward, and adds bounded redacted diagnostics: worker HTTPS probes, tunnel WebSocket RTT, browser round-trip timing, buffer/read progress, seeks, reconnects, and player errors with an in-app export.",
   "packaging": "arm64-only-adhoc-signature-template",
   "stage": "native-prototype",
   "branch": "iphone-native",

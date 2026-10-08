@@ -52,7 +52,7 @@ import Network
         didSet { UserDefaults.standard.set(backgroundPreparation, forKey: "backgroundPreparation") }
     }
     let version = "0.1.28"
-    let build = "35"
+    let build = "36"
     var preparingTitle: String { videos.first { $0.id == preparingID }?.title ?? "Your video" }
     var queuedCount: Int { videos.filter { $0.state == "preparing" && $0.id != preparingID }.count }
     private var library: Library?
@@ -72,7 +72,9 @@ import Network
     private var backgroundGeneration: UUID?
     private var addressRefreshTicks = 0
     private var preparationTask: Task<Void, Never>?
+    private var diagnosticsProbeTask: Task<Void, Never>?
     private var authenticationContext: LAContext?
+    private let diagnosticsLogger = SessionDiagnostics.shared
 
     init() {
         let now = ProcessInfo.processInfo.systemUptime
@@ -80,6 +82,7 @@ import Network
         traffic = meter.sample(at: now)
         self.meter = meter
         youtubeSignedIn = youtubeOAuth.signedIn
+        diagnosticsLogger.record(component: "app", event: "launch")
         do { library = try Library(); refresh() }
         catch { message = "Could not open the local library: \(error.localizedDescription)" }
         networkMonitor.pathUpdateHandler = { [weak self] path in
@@ -87,6 +90,12 @@ import Network
             Task { @MainActor in
                 let changed = self?.phoneConnection.name != state.name || self?.phoneConnection.state != state.state
                 self?.phoneConnection = state
+                if let self {
+                    self.diagnosticsLogger.record(component: "network", event: "path",
+                        fields: ["state": state.stateLabel, "interface": state.interfaceName,
+                                 "constrained": String(state.lowDataMode), "expensive": String(state.expensive)],
+                        throttleKey: "network-path", minimumInterval: changed ? 0 : 5)
+                }
                 if self?.running == true { self?.refreshAddresses() }
                 if changed, state.state == .online, self?.running == true, self?.tunnelEnabled == true,
                    self?.tunnelState != .notConfigured { self?.connectTunnel() }
@@ -105,10 +114,11 @@ import Network
         }
         Task { [weak self] in await self?.restorePreparations() }
     }
-    deinit { metricsTask?.cancel(); networkMonitor.cancel() }
+    deinit { metricsTask?.cancel(); diagnosticsProbeTask?.cancel(); networkMonitor.cancel() }
     func start() {
         guard server == nil, library != nil, !authorizingHost else { return }
         guard hostAuthorized else { requestHostAuthorization(); return }
+        diagnosticsLogger.record(component: "host", event: "startRequested")
         startServer()
     }
     private func requestHostAuthorization() {
@@ -154,15 +164,21 @@ import Network
             self.refreshAddresses()
             self.updateIdleTimer()
             self.message = "Host ready. Face ID authorized this app session; keep the public address private."
+            self.diagnosticsLogger.record(component: "host", event: "ready", fields: ["port": "5000"])
             self.connectTunnel()
+            self.startDiagnosticsProbes()
         }
         server.failed = { [weak self, weak server] error in
             guard let self, let server, self.server === server else { return }
+            self.diagnosticsLogger.record(component: "host", event: "failed", fields: ["error": error])
             self.stop(); self.message = error
         }
         do { try server.start() } catch { stop(); message = error.localizedDescription }
     }
     func stop() {
+        diagnosticsLogger.record(component: "host", event: "stopped")
+        diagnosticsProbeTask?.cancel()
+        diagnosticsProbeTask = nil
         resumeHostingOnReturn = false
         tunnel?.stop()
         server?.stop()
@@ -175,6 +191,7 @@ import Network
         updateIdleTimer()
     }
     func backgrounded() {
+        diagnosticsLogger.record(component: "app", event: "backgrounded")
         resumeHostingOnReturn = server != nil
         if allowBackgroundTime, (server != nil || busy), backgroundTask == .invalid {
             let generation = UUID()
@@ -192,6 +209,7 @@ import Network
         }
     }
     func foregrounded() {
+        diagnosticsLogger.record(component: "app", event: "foregrounded")
         finishBackgroundTime()
         _ = meter.sample(at: ProcessInfo.processInfo.systemUptime)
         trafficHistory.removeAll()
@@ -213,6 +231,45 @@ import Network
             backgroundTask = .invalid
         }
         backgroundTimeActive = false
+    }
+    func setDiagnosticsEnabled(_ value: Bool) {
+        diagnosticsLogger.setEnabled(value)
+        if value, running { startDiagnosticsProbes() }
+        if !value { diagnosticsProbeTask?.cancel(); diagnosticsProbeTask = nil }
+    }
+    func diagnosticsExportURL() -> URL? { diagnosticsLogger.exportURL() }
+    func clearDiagnostics() { diagnosticsLogger.clear() }
+    private func startDiagnosticsProbes() {
+        diagnosticsProbeTask?.cancel()
+        guard diagnosticsLogger.enabled else { return }
+        diagnosticsProbeTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.runDiagnosticsProbe()
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+            }
+        }
+    }
+    private func runDiagnosticsProbe() async {
+        guard diagnosticsLogger.enabled, running else { return }
+        let key = Keychain.read("tunnel-key")
+        guard !key.isEmpty else { return }
+        var request = URLRequest(url: publicURL.appendingPathComponent("__iphone/status"))
+        request.setValue(key, forHTTPHeaderField: "x-secret")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let started = ProcessInfo.processInfo.systemUptime
+        do {
+            let (_, response) = try await URLSession(configuration: .ephemeral).data(for: request)
+            let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1000
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            diagnosticsLogger.record(component: "network", event: "workerProbe",
+                fields: ["status": String(status), "elapsedMs": String(format: "%.1f", elapsed),
+                         "probe": "phone-to-cloudflare-https"])
+        } catch {
+            let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1000
+            diagnosticsLogger.record(component: "network", event: "workerProbe",
+                fields: ["status": "error", "elapsedMs": String(format: "%.1f", elapsed),
+                         "error": error.localizedDescription])
+        }
     }
     private func updateIdleTimer() { UIApplication.shared.isIdleTimerDisabled = keepScreenAwake && (busy || running) }
     private func refreshAddresses() { localURLs = Self.addresses().map { "http://\($0):5000" } }
@@ -279,7 +336,12 @@ import Network
                 guard let self, self.running else { return .json(["error": "Host stopped."], status: 503) }
                 return await self.respond(to: request)
             }
-            relay.stateChanged = { [weak self] state, text in self?.tunnelState = state; self?.tunnelMessage = text }
+            relay.stateChanged = { [weak self] state, text in
+                self?.tunnelState = state
+                self?.tunnelMessage = text
+                self?.diagnosticsLogger.record(component: "tunnel", event: "state",
+                    fields: ["state": state.rawValue])
+            }
             relay.received = { [weak self] in self?.meter.record(received: $0) }
             relay.sent = { [weak self] in self?.meter.record(sent: $0) }
             relay.streamsChanged = { [weak self] in self?.tunnelStreams = $0; self?.updateStreams() }
@@ -500,7 +562,24 @@ import Network
                           "preparationProgress": progressValue,
                           "processingSpeed": preparation?.processingSpeed.map { $0 as Any } ?? NSNull(),
                           "preparationSecondsRemaining": preparation?.secondsRemaining.map { $0 as Any } ?? NSNull(),
-                          "preparingID": preparingID?.uuidString ?? ""])
+                          "preparingID": preparingID?.uuidString ?? "",
+                          "diagnosticsEnabled": diagnosticsLogger.enabled])
+        }
+        if request.path == "/api/diagnostics", request.method == "POST" {
+            guard diagnosticsLogger.enabled,
+                  let object = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+                  let events = object["events"] as? [[String: Any]] else {
+                return .json(["accepted": false])
+            }
+            for entry in events.prefix(64) {
+                guard let event = entry["event"] as? String, event.count <= 64 else { continue }
+                var fields: [String: String] = [:]
+                if let raw = entry["fields"] as? [String: Any] {
+                    for (key, value) in raw.prefix(24) { fields[key] = String(describing: value) }
+                }
+                diagnosticsLogger.recordWeb(event: event, fields: fields)
+            }
+            return .json(["accepted": true])
         }
         if request.path == "/api/youtube", request.method == "POST" {
             guard let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: String],

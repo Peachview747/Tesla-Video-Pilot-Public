@@ -54,6 +54,8 @@ struct HTTPResponse {
     }
     private func accept(_ connection: NWConnection) {
         guard peers.count < maxConnections else { connection.cancel(); return }
+        SessionDiagnostics.shared.record(component: "http", event: "connectionAccepted",
+            fields: ["active": String(peers.count + 1)])
         let peer = Peer(connection: connection, route: route)
         peer.received = { [weak self] in self?.received?($0) }
         peer.sent = { [weak self] in self?.sent?($0) }
@@ -80,6 +82,8 @@ struct HTTPResponse {
     private var body: RelayBody?
     private var requestTask: Task<Void, Never>?
     private var timeout: Task<Void, Never>?
+    private var currentRoute = "unknown"
+    private var requestStartedAt = ProcessInfo.processInfo.systemUptime
     private var done = false
 
     init(connection: NWConnection, route: @escaping HTTPServer.Router) {
@@ -119,6 +123,10 @@ struct HTTPResponse {
                 do {
                     if let request = try HTTPRequest.parse(self.input) {
                         self.input.removeAll()
+                        self.currentRoute = SessionDiagnostics.routeName(request.path)
+                        self.requestStartedAt = ProcessInfo.processInfo.systemUptime
+                        SessionDiagnostics.shared.record(component: "http", event: "request",
+                            fields: ["method": request.method, "route": self.currentRoute])
                         self.requestTask = Task { [weak self] in
                             guard let self else { return }
                             let response = await self.route(request)
@@ -141,6 +149,10 @@ struct HTTPResponse {
         let length = body.length
         isStreaming = body.isFile
         if isStreaming { streamingChanged?() }
+        SessionDiagnostics.shared.record(component: "http", event: "response",
+            fields: ["route": currentRoute, "status": String(response.status), "bytes": String(length),
+                     "stream": String(isStreaming),
+                     "elapsedMs": String(format: "%.1f", (ProcessInfo.processInfo.systemUptime - requestStartedAt) * 1000)])
         let reason = [200: "OK", 202: "Accepted", 400: "Bad Request", 401: "Unauthorized",
                       403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed", 409: "Conflict",
                       429: "Too Many Requests", 503: "Service Unavailable"][response.status] ?? "Error"

@@ -1,4 +1,7 @@
 // Same recorded-stream transport as MK8's JSMpegHttpSource, with pause backpressure.
+const reportDiagnostic = (event, fields = {}) => {
+  try { globalThis.videoPilotDiagnostics?.(event, fields); } catch {}
+};
 export class JSMpegHttpSource {
   streaming = false;
   established = false;
@@ -17,6 +20,8 @@ export class JSMpegHttpSource {
   stopped = false;
   stoppedResolve;
   stoppedPromise;
+  lastProgressReport = 0;
+  lastBufferState = null;
   // Cellular links benefit from more media queued before the next relay pull.
   // The low-water mark remains finite so Pause and cancellation still release
   // the reader promptly instead of buffering the whole file.
@@ -40,6 +45,11 @@ export class JSMpegHttpSource {
   updateBuffering(headroom) {
     if (headroom >= JSMpegHttpSource.highWaterHeadroom) this.buffered = true;
     else if (headroom <= JSMpegHttpSource.lowWaterHeadroom) this.buffered = false;
+    if (this.lastBufferState !== this.buffered) {
+      this.lastBufferState = this.buffered;
+      reportDiagnostic('sourceBuffer', {bufferSeconds:headroom, buffered:this.buffered,
+        headroomSeconds:headroom});
+    }
     this.wakeReading();
   }
   // Several network chunks can arrive before the next animation frame. Account
@@ -80,10 +90,15 @@ export class JSMpegHttpSource {
     if (this.started) return this.stoppedPromise;
     this.started = true;
     let reader;
+    let received = 0;
+    const startedAt = globalThis.performance?.now?.() ?? Date.now();
     try {
       const response = await fetch(this.url, {credentials:'same-origin',cache:'no-store',signal:this.controller.signal,
         headers:this.options.headers || undefined});
       if (this.destroyed) return;
+      reportDiagnostic('sourceResponse', {responseStatus:response.status,
+        expectedBytes:Number(response.headers.get('content-length')) || 0,
+        elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - startedAt)});
       if (!response.ok) throw new Error(response.status === 401 ? 'Pair this browser again.' : `Video stream failed (HTTP ${response.status}).`);
       if (!response.body) throw new Error('This browser cannot read the video stream.');
       const seekTime = Number(response.headers.get('x-video-seek-time'));
@@ -91,7 +106,6 @@ export class JSMpegHttpSource {
       const duration = Number(response.headers.get('x-video-duration'));
       if (Number.isFinite(duration) && duration > 0) this.options.onSourceDuration?.(duration);
       const expected = Number(response.headers.get('content-length'));
-      let received = 0;
       reader = response.body.getReader();
       this.reader = reader;
       while (!this.controller.signal.aborted) {
@@ -105,6 +119,12 @@ export class JSMpegHttpSource {
         if (value?.byteLength) {
           if (!this.established) { this.established = true; this.options.onSourceEstablished?.(this); }
           received += value.byteLength; this.destination?.write(value.slice().buffer);
+          const now = globalThis.performance?.now?.() ?? Date.now();
+          if (now - this.lastProgressReport >= 1000) {
+            this.lastProgressReport = now;
+            reportDiagnostic('sourceProgress', {receivedBytes:received, expectedBytes:expected,
+              elapsedMs:Math.round(now - startedAt), headroomSeconds:this.headroom});
+          }
           this.updateReadAhead();
         }
       }
@@ -113,10 +133,17 @@ export class JSMpegHttpSource {
         if (Number.isSafeInteger(expected) && expected > 0 && received !== expected)
           throw new Error('Video stream interrupted. Reconnect the iPhone and restart playback.');
         this.completed = true; this.progress = 1;
+        reportDiagnostic('sourceCompleted', {receivedBytes:received, expectedBytes:expected,
+          elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - startedAt)});
         this.options.onSourceCompleted?.(this);
       }
     } catch (error) {
-      if (!this.controller.signal.aborted) this.options.onSourceError?.(error.message || 'Unable to read video stream.');
+      if (!this.controller.signal.aborted) {
+        reportDiagnostic('playerError', {error:error.message || 'Unable to read video stream.',
+          receivedBytes:received,
+          elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - startedAt)});
+        this.options.onSourceError?.(error.message || 'Unable to read video stream.');
+      }
     } finally {
       if (this.reader === reader) this.reader = null;
       await reader?.cancel().catch(() => {});

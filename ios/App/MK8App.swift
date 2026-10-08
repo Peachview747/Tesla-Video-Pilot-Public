@@ -707,6 +707,7 @@ private struct VideoCard: View {
 private struct HostSettingsView: View {
     @ObservedObject var host: HostModel
     @ObservedObject private var background = BackgroundPreparation.shared
+    @ObservedObject private var diagnostics = SessionDiagnostics.shared
     @AppStorage("appearanceMode") private var appearanceMode = "light"
     var body: some View {
         HostScreen(title: "Settings") {
@@ -756,6 +757,29 @@ private struct HostSettingsView: View {
                 Text("Run the iPhone tunnel setup on your PC once, then save the same TV_SECRET here. The key stays in this phone's Keychain.")
                     .font(.footnote).foregroundStyle(MK8Theme.secondary)
                 Text(host.tunnelMessage).font(.footnote).foregroundStyle(MK8Theme.secondary).textSelection(.enabled)
+            }
+            HostCard {
+                Label("Diagnostics", systemImage: "stethoscope").font(.headline)
+                Toggle("Capture diagnostic events", isOn: Binding(
+                    get: { diagnostics.enabled },
+                    set: { host.setDiagnosticsEnabled($0) }
+                ))
+                Text("Records redacted app-level timing, tunnel round trips, browser response times, buffer/read progress, byte counts, seeks, and errors. It never records video data, keys, cookies, tokens, or full URLs. iOS does not expose raw packets or every router hop.")
+                    .font(.footnote).foregroundStyle(MK8Theme.secondary)
+                HStack {
+                    if let file = host.diagnosticsExportURL() {
+                        ShareLink(item: file) { Label("Export log", systemImage: "square.and.arrow.up") }
+                            .buttonStyle(.borderedProminent)
+                    } else {
+                        Label("No events recorded yet", systemImage: "doc.text.magnifyingglass")
+                            .font(.footnote).foregroundStyle(MK8Theme.secondary)
+                    }
+                    Spacer()
+                    Button("Clear", systemImage: "trash", role: .destructive) { host.clearDiagnostics() }
+                        .buttonStyle(.bordered).disabled(diagnostics.eventCount == 0)
+                }
+                Text("\(diagnostics.eventCount) events · \(diagnostics.enabled ? "capture on" : "capture off")")
+                    .font(.caption.monospacedDigit()).foregroundStyle(MK8Theme.secondary)
             }
             HostCard {
                 Text("Background & charging").font(.headline)

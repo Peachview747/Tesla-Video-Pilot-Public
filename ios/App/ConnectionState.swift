@@ -7,17 +7,29 @@ struct PhoneConnection: Sendable {
     var name = "Checking connection"
     var symbol = "network"
     var lowDataMode = false
+    var expensive = false
+    var interfaceName = "unknown"
+
+    var stateLabel: String {
+        switch state {
+        case .checking: return "checking"
+        case .online: return "online"
+        case .connecting: return "connecting"
+        case .offline: return "offline"
+        }
+    }
 
     init() {}
     init(path: NWPath) {
         lowDataMode = path.isConstrained
+        expensive = path.isExpensive
         switch path.status {
         case .satisfied:
             state = .online
-            if path.usesInterfaceType(.wifi) { name = "Wi-Fi"; symbol = "wifi" }
-            else if path.usesInterfaceType(.cellular) { name = "Cellular"; symbol = "antenna.radiowaves.left.and.right" }
-            else if path.usesInterfaceType(.wiredEthernet) { name = "Ethernet"; symbol = "cable.connector" }
-            else { name = "Connected"; symbol = "network" }
+            if path.usesInterfaceType(.wifi) { name = "Wi-Fi"; symbol = "wifi"; interfaceName = "wifi" }
+            else if path.usesInterfaceType(.cellular) { name = "Cellular"; symbol = "antenna.radiowaves.left.and.right"; interfaceName = "cellular" }
+            else if path.usesInterfaceType(.wiredEthernet) { name = "Ethernet"; symbol = "cable.connector"; interfaceName = "wired" }
+            else { name = "Connected"; symbol = "network"; interfaceName = "other" }
         case .requiresConnection: state = .connecting; name = "Connecting"; symbol = "network"
         case .unsatisfied: state = .offline; name = "No internet connection"; symbol = "wifi.slash"
         @unknown default: state = .offline; name = "Connection unavailable"; symbol = "network"

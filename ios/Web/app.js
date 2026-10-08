@@ -54,6 +54,27 @@ async function api(path, body) {
   if (!response.ok) throw new Error(result.error || `Request failed (${response.status}).`);
   return result;
 }
+// Browser-side telemetry is batched before it crosses the relay. It contains
+// timing, counters, and player state only; URLs, IDs, headers, and media bytes
+// are intentionally excluded. The iPhone decides whether to retain it.
+const diagnosticsQueue = [];
+let diagnosticsFlushTimer = null;
+function reportDiagnostic(event, fields = {}) {
+  if (diagnosticsQueue.length >= 64) diagnosticsQueue.shift();
+  diagnosticsQueue.push({event, fields});
+  if (!diagnosticsFlushTimer) diagnosticsFlushTimer = setTimeout(() => {
+    diagnosticsFlushTimer = null; void flushDiagnostics();
+  }, 250);
+}
+async function flushDiagnostics(keepalive = false) {
+  if (!diagnosticsQueue.length) return;
+  const events = diagnosticsQueue.splice(0, diagnosticsQueue.length);
+  try {
+    await fetch('/api/diagnostics', {method:'POST', credentials:'same-origin', cache:'no-store', keepalive,
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({events})});
+  } catch { /* Diagnostics must never interrupt playback. */ }
+}
+globalThis.videoPilotDiagnostics = reportDiagnostic;
 function showTab(id) {
   document.querySelectorAll?.('.tab-panel').forEach(panel => { panel.hidden = panel.id !== id; });
   document.querySelectorAll?.('.tab').forEach(tab => {
@@ -105,7 +126,9 @@ async function refresh() {
     $('host-ui').hidden = false;
     $('connection').textContent = 'Connected to iPhone';
     $('connection').dataset.state = 'online';
+    const statusStarted = globalThis.performance?.now?.() ?? Date.now();
     const status = await api('/api/status');
+    reportDiagnostic('browserRTT', {elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - statusStarted)});
     $('dashboard-state').textContent = statusLabel(status);
     $('dashboard-state').dataset.state = status.tunnel === 'connected' ? 'online' : 'waiting';
     $('dashboard-connection').textContent = status.tunnel === 'connected' ? 'Connected' : (status.tunnel || 'Waiting');
@@ -283,6 +306,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
   const duration = finiteDuration(video.duration);
   currentOffset = Math.max(0, Number(seek ?? savedResume(video)) || 0);
   if (duration) currentOffset = Math.min(currentOffset, duration);
+  reportDiagnostic('playerStart', {seekTargetSeconds:currentOffset, recoveryAttempt});
   const session = {paused:false, failed:false, ended:false, baseOffset:currentOffset,
     position:currentOffset, duration, decoded:false, startupTimer:null, recoveryAttempt}; playback = session;
   const active = () => playback === session && !session.paused && !session.failed && !session.ended;
@@ -343,9 +367,11 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
         session.position = actual;
         currentOffset = actual;
         updateTimeline(actual, session.duration);
+        reportDiagnostic('sourceResponse', {seekTargetSeconds:actual, durationSeconds:session.duration || 0});
       },
       onSourceEstablished:() => {
         if (playback === session) armRecovery(true);
+        reportDiagnostic('sourceEstablished', {seekTargetSeconds:session.baseOffset || 0});
       },
       onSourceDuration:value => {
         if (playback !== session) return;
@@ -357,11 +383,13 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
       onStalled:() => {
         if (active()) {
           $('playback-status').textContent = 'Buffering…';
+          reportDiagnostic('playerStalled', {positionSeconds:session.position || 0});
           if (!session.decoded) armRecovery();
         }
       },
       onVideoDecode:() => {
         session.decoded = true; clearRecoveryTimer(session);
+        reportDiagnostic('playerDecode', {positionSeconds:session.position || 0});
         if (active()) $('playback-status').textContent = 'Playing from your iPhone';
       },
       onSourceError:message => {
@@ -369,6 +397,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
         clearRecoveryTimer(session);
         saveResume();
         session.failed = true; $('playback-status').textContent = message;
+        reportDiagnostic('playerError', {error:String(message || 'unknown'), positionSeconds:session.position || 0});
       },
       onEnded:() => {
         if (playback !== session || session.failed) return;
@@ -379,6 +408,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
         updateTimeline(session.position, session.duration);
         $('playback-status').textContent = 'Finished'; $('pause').textContent = 'Play';
         clearResume(video);
+        reportDiagnostic('playerEnded', {positionSeconds:session.position || 0, durationSeconds:session.duration || 0});
       }
     });
     // Arm a bounded watchdog even if the source never emits an established
@@ -453,6 +483,7 @@ function requestSeek(offset) {
   const video = current;
   const generation = ++seekGeneration;
   $('playback-status').textContent = 'Seeking…';
+  reportDiagnostic('playerSeek', {seekTargetSeconds:target, positionSeconds:currentOffset});
   seekTimer = setTimeout(() => {
     seekTimer = null;
     seekChain = seekChain.then(async () => {
@@ -499,6 +530,6 @@ setInterval(() => {
   updateTimeline(currentOffset, duration);
   saveResume();
 }, 500);
-window.addEventListener('pagehide', () => { saveResume(); invalidateSeeks(); void closePlayer(); });
+window.addEventListener('pagehide', () => { saveResume(); invalidateSeeks(); reportDiagnostic('playerClosed'); void flushDiagnostics(true); void closePlayer(); });
 void refresh();
 setInterval(() => { void refresh(); }, 2000);
