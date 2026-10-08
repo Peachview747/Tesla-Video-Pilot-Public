@@ -1,4 +1,4 @@
-# Video Pilot iPhone distribution — native prototype 0.1.19
+# Video Pilot iPhone distribution — native prototype 0.1.28
 
 This distribution lives in `ios/` on the `iphone-native` branch of the same Tesla Video Player repository. The iPhone is the origin server; the Tesla opens the served browser interface. It does not need Express, PostgreSQL, Python, Telegram, or a laptop at runtime.
 
@@ -6,7 +6,7 @@ This distribution lives in `ios/` on the `iphone-native` branch of the same Tesl
 
 The user confirmed that v0.1.2 opens its GUI and began local media/YouTube testing. Version 0.1.3 adds a new dashboard, progress reporting, traffic measurements, a custom icon, and supported background transfers; those additions still need physical-device validation.
 
-Version 0.1.19 build 21 uses the Video Pilot identity: a Tesla-inspired car outline containing **VP** and **VER 1.19**. The marketing version and icon remain 1.19; the build number is the incrementing source/IPA revision.
+Version 0.1.28 build 31 uses a bright, minimal Video Pilot identity: a full-bleed graphite background, a clean silver Model 3 silhouette, and a brushed-white **VP** mark. It intentionally has no red accent, rocket, or extra version text. The marketing version remains 1.28; the build number is the incrementing source/IPA revision.
 
 ## Implemented
 
