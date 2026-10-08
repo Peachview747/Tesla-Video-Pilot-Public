@@ -1,7 +1,7 @@
 {
   "name": "Video Pilot",
-  "version": "0.1.19",
-  "build": "21",
+  "version": "0.1.20",
+  "build": "22",
   "iconVersion": "0.1.19",
   "artifactPrefix": "VideoPilot",
   "releaseNotes": "Build 21 repairs timeline duration and seek accuracy with an MPEG-TS timestamp index, serializes decoder teardown for repeated seeks, and keeps the Tesla relay from overlapping stale playback buffers. OAuth requirements are documented separately; API-key YouTube search remains public-data-only.",
