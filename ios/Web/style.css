@@ -171,3 +171,90 @@ canvas { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; border
   .controls button { min-width: calc(50% - 4px); }
   .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* Full-screen playback has its own compact control rail. The regular page
+   cards stay touch-friendly; the Tesla display needs the video to remain the
+   dominant surface when the player owns the screen. */
+#player-shell:fullscreen,
+#player-shell:-webkit-full-screen {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  border-radius: 0;
+  background: #000;
+}
+#player-shell:fullscreen canvas,
+#player-shell:-webkit-full-screen canvas {
+  width: auto;
+  max-width: 100vw;
+  height: auto;
+  max-height: 100vh;
+  aspect-ratio: 16 / 9;
+  border-radius: 0;
+}
+#player-shell:fullscreen .controls,
+#player-shell:-webkit-full-screen .controls {
+  position: absolute;
+  right: 16px;
+  bottom: 38px;
+  left: 16px;
+  display: flex;
+  justify-content: center;
+  gap: 5px;
+  margin: 0;
+  padding: 5px 7px;
+  border: 1px solid #ffffff2e;
+  border-radius: 11px;
+  background: #14232dcc;
+  box-shadow: 0 5px 20px #0008;
+  backdrop-filter: blur(10px);
+}
+#player-shell:fullscreen .controls button,
+#player-shell:-webkit-full-screen .controls button {
+  flex: 0 1 auto;
+  min-width: 0;
+  min-height: 29px;
+  padding: 4px 9px;
+  border: 1px solid #8fa8b855;
+  border-radius: 7px;
+  background: #314956cc;
+  box-shadow: none;
+  font-size: 11px;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+#player-shell:fullscreen .controls button:hover,
+#player-shell:-webkit-full-screen .controls button:hover { background: #476474ee; }
+#player-shell:fullscreen .timeline,
+#player-shell:-webkit-full-screen .timeline {
+  position: absolute;
+  right: 20px;
+  bottom: 12px;
+  left: 20px;
+  display: flex;
+  gap: 7px;
+  height: 13px;
+  padding: 0;
+  color: #dbe5eb;
+  font-size: 10px;
+}
+#player-shell:fullscreen .timeline input,
+#player-shell:-webkit-full-screen .timeline input {
+  min-height: 4px;
+  height: 4px;
+  padding: 0;
+}
+@media (max-width: 560px) {
+  #player-shell:fullscreen .controls,
+  #player-shell:-webkit-full-screen .controls { right: 8px; bottom: 31px; left: 8px; gap: 3px; padding: 4px; }
+  #player-shell:fullscreen .controls button,
+  #player-shell:-webkit-full-screen .controls button { padding: 4px 6px; font-size: 10px; }
+  #player-shell:fullscreen .timeline,
+  #player-shell:-webkit-full-screen .timeline { right: 10px; bottom: 8px; left: 10px; }
+}
