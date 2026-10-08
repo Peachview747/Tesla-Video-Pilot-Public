@@ -81,34 +81,80 @@ enum YouTubeSearch {
     }
 
     /// The Data API does not expose YouTube's private recommendation model.
-    /// Activities are the closest account-aware home feed: they contain the
-    /// latest uploads from channels the signed-in account follows.
+    /// Build a useful account feed from the signed-in user's subscriptions and
+    /// each channel's uploads playlist instead of pretending activities are a
+    /// recommendation feed for that user.
     static func subscriptions(accessToken: String) async throws -> [SearchVideo] {
-        let data = try await request("activities", query: [
-            URLQueryItem(name: "part", value: "snippet,contentDetails"), URLQueryItem(name: "mine", value: "true"),
-            URLQueryItem(name: "maxResults", value: "25")
-        ], accessToken: accessToken)
-        struct Result: Decodable {
+        struct Subscriptions: Decodable {
             struct Item: Decodable {
                 struct Snippet: Decodable {
-                    struct Thumbnail: Decodable { let url: String }
-                    let title: String
-                    let channelTitle: String
-                    let thumbnails: [String: Thumbnail]
-                }
-                struct ContentDetails: Decodable {
-                    struct Upload: Decodable { let videoId: String? }
-                    let upload: Upload?
+                    struct Resource: Decodable { let channelId: String? }
+                    let resourceId: Resource
                 }
                 let snippet: Snippet
-                let contentDetails: ContentDetails?
             }
             let items: [Item]
         }
-        return try JSONDecoder().decode(Result.self, from: data).items.compactMap {
-            guard let id = $0.contentDetails?.upload?.videoId else { return nil }
-            return SearchVideo(id: id, title: $0.snippet.title, channel: $0.snippet.channelTitle,
-                               thumbnail: $0.snippet.thumbnails["medium"]?.url)
+        let subscriptions = try JSONDecoder().decode(Subscriptions.self, from: try await request("subscriptions", query: [
+            URLQueryItem(name: "part", value: "snippet"), URLQueryItem(name: "mine", value: "true"),
+            URLQueryItem(name: "maxResults", value: "20")
+        ], accessToken: accessToken)).items.compactMap { $0.snippet.resourceId.channelId }
+        guard !subscriptions.isEmpty else { return [] }
+
+        struct Channels: Decodable {
+            struct Item: Decodable {
+                struct ContentDetails: Decodable {
+                    struct Playlists: Decodable { let uploads: String? }
+                    let relatedPlaylists: Playlists
+                }
+                let contentDetails: ContentDetails
+            }
+            let items: [Item]
+        }
+        let channelIDs = subscriptions.joined(separator: ",")
+        let channels = try JSONDecoder().decode(Channels.self, from: try await request("channels", query: [
+            URLQueryItem(name: "part", value: "contentDetails"), URLQueryItem(name: "id", value: channelIDs)
+        ], accessToken: accessToken)).items.compactMap { $0.contentDetails.relatedPlaylists.uploads }
+
+        struct FeedItem { let video: SearchVideo; let publishedAt: String }
+        let feed = await withTaskGroup(of: [FeedItem].self, returning: [FeedItem].self) { group in
+            for playlistID in channels {
+                group.addTask {
+                    struct Playlist: Decodable {
+                        struct Item: Decodable {
+                            struct Snippet: Decodable {
+                                struct Thumbnail: Decodable { let url: String }
+                                let title: String
+                                let channelTitle: String
+                                let publishedAt: String?
+                                let thumbnails: [String: Thumbnail]
+                            }
+                            struct ContentDetails: Decodable { let videoId: String? }
+                            let snippet: Snippet
+                            let contentDetails: ContentDetails
+                        }
+                        let items: [Item]
+                    }
+                    guard let data = try? await request("playlistItems", query: [
+                        URLQueryItem(name: "part", value: "snippet,contentDetails"),
+                        URLQueryItem(name: "playlistId", value: playlistID), URLQueryItem(name: "maxResults", value: "5")
+                    ], accessToken: accessToken),
+                    let items = try? JSONDecoder().decode(Playlist.self, from: data).items else { return [] }
+                    return items.compactMap { item in
+                        guard let id = item.contentDetails.videoId else { return nil }
+                        return FeedItem(video: SearchVideo(id: id, title: item.snippet.title, channel: item.snippet.channelTitle,
+                                                           thumbnail: item.snippet.thumbnails["medium"]?.url),
+                                        publishedAt: item.snippet.publishedAt ?? "")
+                    }
+                }
+            }
+            var result: [FeedItem] = []
+            for await items in group { result.append(contentsOf: items) }
+            return result
+        }
+        var seen = Set<String>()
+        return feed.sorted { $0.publishedAt > $1.publishedAt }.compactMap {
+            seen.insert($0.video.id).inserted ? $0.video : nil
         }
     }
 

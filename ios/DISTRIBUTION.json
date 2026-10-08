@@ -1,10 +1,10 @@
 {
   "name": "Video Pilot",
-  "version": "0.1.23",
-  "build": "25",
+  "version": "0.1.24",
+  "build": "26",
   "iconVersion": "0.1.19",
   "artifactPrefix": "VideoPilot",
-  "releaseNotes": "Build 25 keeps the compact Home/Library/Settings Tesla layout, adds the account-aware YouTube activity feed, and reports the real Google API error instead of a misleading API-key message.",
+  "releaseNotes": "Build 26 fixes the signed-in YouTube feed by reading subscribed channels and their uploads playlists, and keeps the real Google API error visible when a request fails.",
   "packaging": "arm64-only-adhoc-signature-template",
   "stage": "native-prototype",
   "branch": "iphone-native",
