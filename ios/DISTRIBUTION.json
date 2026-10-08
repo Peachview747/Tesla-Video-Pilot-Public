@@ -3,7 +3,7 @@
   "version": "0.1.28",
   "build": "30",
   "iconVersion": "0.1.19",
-  "artifactPrefix": "VideoPilot",
+  "artifactPrefix": "Tesla-Video-Pilot",
   "releaseNotes": "Build 30 starts seeks at decoder-safe MPEG-TS anchors, rebuilds older seek indexes, and retries a stalled seek once instead of leaving a black buffering screen.",
   "packaging": "arm64-only-adhoc-signature-template",
   "stage": "native-prototype",

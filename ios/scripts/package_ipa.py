@@ -7,6 +7,7 @@ replace the personal Apple signing performed by Sideloadly/AltStore.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import plistlib
 import shutil
@@ -25,6 +26,25 @@ STRONG_DYLIB_COMMANDS = {0xC, 0x8000001F, 0x20, 0x80000023}
 # This deployment supports the system Swift runtime. Do not treat arbitrary
 # libswift* names as system libraries: package libraries still need embedding.
 SYSTEM_SWIFT_LIBRARIES = {"libswiftCore.dylib"}
+IPA_PREFIX = "Tesla-Video-Pilot"
+
+
+def distribution_ipa_name(version: str, build: str) -> str:
+    """Return the stable, user-facing IPA filename for a release."""
+    return f"{IPA_PREFIX}-Ver-{version}-Build-{build}.ipa"
+
+
+def default_output_path() -> Path:
+    """Derive the output name from the committed distribution metadata."""
+    configuration_path = Path(__file__).resolve().parents[1] / "DISTRIBUTION.json"
+    try:
+        configuration = json.loads(configuration_path.read_text())
+        version = str(configuration["version"])
+        build = str(configuration["build"])
+        return Path("build") / distribution_ipa_name(version, build)
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        # Keep local packaging usable while a new checkout is being prepared.
+        return Path("build") / f"{IPA_PREFIX}.ipa"
 
 
 class MachOImports(NamedTuple):
@@ -209,7 +229,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", type=Path, help="Validate a packaged IPA without Apple tooling")
     parser.add_argument("--archive", type=Path, default=Path("build/MK8iPhone.xcarchive"))
-    parser.add_argument("--output", type=Path, default=Path("build/MK8iPhone-unsigned.ipa"))
+    parser.add_argument("--output", type=Path, default=default_output_path())
     args = parser.parse_args()
     if args.check:
         check_ipa(args.check)

@@ -59,22 +59,28 @@ jobs:
       - name: Build and validate the unsigned IPA
         run: bash ios/scripts/build_unsigned.sh
       - name: Verify IPA package
-        run: python3 ios/scripts/package_ipa.py --check ios/build/MK8iPhone-unsigned.ipa
+        run: |
+          ipa="$(find ios/build -maxdepth 1 -type f -name 'Tesla-Video-Pilot-Ver-*-Build-*.ipa' -print -quit)"
+          test -n "$ipa"
+          echo "IPA_PATH=$ipa" >> "$GITHUB_ENV"
+          python3 ios/scripts/package_ipa.py --check "$ipa"
       - name: Upload short-lived build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: VideoPilot-unsigned-ipa
-          path: ios/build/MK8iPhone-unsigned.ipa
+          name: Tesla-Video-Pilot-IPA
+          path: ios/build/Tesla-Video-Pilot-Ver-*-Build-*.ipa
           if-no-files-found: error
           retention-days: 7
       - name: Publish GitHub Release asset
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="v0.1.28-build30-${GITHUB_RUN_NUMBER}"
-          gh release create "$tag" ios/build/MK8iPhone-unsigned.ipa \
+          version="$(python3 -c 'import json; print(json.load(open("ios/DISTRIBUTION.json"))["version"])')"
+          build="$(python3 -c 'import json; print(json.load(open("ios/DISTRIBUTION.json"))["build"])')"
+          tag="tesla-video-pilot-ver-${version}-build-${build}-${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" "$IPA_PATH" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "Video Pilot 0.1.28 (build 30)" \
+            --title "Tesla Video Pilot Ver ${version} Build ${build}" \
             --notes "Unsigned IPA for Sideloadly. Built from commit $GITHUB_SHA." \
             --latest

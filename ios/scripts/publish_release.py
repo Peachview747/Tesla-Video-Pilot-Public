@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 import zipfile
 
-from package_ipa import check_ipa
+from package_ipa import check_ipa, distribution_ipa_name
 
 
 def command(*arguments: str) -> str:
@@ -35,14 +35,18 @@ def release(repository: str, tag: str) -> dict | None:
     raise RuntimeError(result.stderr.strip() or "Could not read GitHub releases")
 
 
-def package_setup(repository_root: Path, version: str, destination: Path) -> None:
+def package_setup(repository_root: Path, version: str, destination: Path, build: str | None = None) -> None:
     # Explicit allowlist: never package the user's .env, tokens, node_modules,
     # Wrangler login state, or generated deployment data.
     files = ["worker.js", "phone-relay.js", "wrangler.json", "package.json", "package-lock.json",
              "setup-iphone.mjs", "Setup-iPhone-Tunnel.cmd", "README-iPhone.md"]
+    folder = f"Tesla-Video-Pilot-Ver-{version}"
+    if build:
+        folder += f"-Build-{build}"
+    folder += "-Cloudflare-Setup"
     with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
         for name in files:
-            archive.write(repository_root / "cloudflare" / name, f"MK8iPhone-v{version}-Cloudflare-Setup/{name}")
+            archive.write(repository_root / "cloudflare" / name, f"{folder}/{name}")
 
 
 def main() -> None:
@@ -55,17 +59,21 @@ def main() -> None:
     ios = Path(__file__).resolve().parents[1]
     configuration = json.loads((ios / "DISTRIBUTION.json").read_text())
     version = configuration["version"]
+    build = str(configuration["build"])
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
         raise ValueError("Distribution version must use major.minor.patch")
-    ipa = ios / "build/MK8iPhone-unsigned.ipa"
+    if not re.fullmatch(r"[0-9]+", build):
+        raise ValueError("Distribution build must be numeric")
+    ipa = ios / "build" / distribution_ipa_name(version, build)
     check_ipa(ipa)
     with zipfile.ZipFile(ipa) as archive:
         info = plistlib.loads(archive.read("Payload/MK8iPhone.app/Info.plist"))
         if info["CFBundleShortVersionString"] != version:
             raise ValueError("IPA version does not match the committed distribution version")
+        if str(info["CFBundleVersion"]) != build:
+            raise ValueError("IPA build does not match the committed distribution build")
     tag = f"ios-v{version}"
-    artifact_prefix = configuration.get("artifactPrefix", "MK8iPhone")
-    name = f"{artifact_prefix}-v{version}-unsigned.ipa"
+    name = distribution_ipa_name(version, build)
     existing = release(repository, tag)
     with ipa.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
@@ -73,20 +81,22 @@ def main() -> None:
         directory = Path(temporary)
         asset = directory / name
         shutil.copyfile(ipa, asset)
-        setup = directory / f"MK8iPhone-v{version}-Cloudflare-Setup.zip"
-        package_setup(ios.parent, version, setup)
+        setup = directory / f"Tesla-Video-Pilot-Ver-{version}-Build-{build}-Cloudflare-Setup.zip"
+        package_setup(ios.parent, version, setup, build)
         setup_digest = hashlib.sha256(setup.read_bytes()).hexdigest()
         if existing:
             # GitHub release assets are immutable by filename. Remove the
             # previous same-version files before uploading the corrected build.
-            for old_name in (name, setup.name):
+            legacy_names = [asset["name"] for asset in existing["assets"]
+                            if asset["name"].lower().endswith((".ipa", "-cloudflare-setup.zip"))]
+            for old_name in set([name, setup.name, *legacy_names]):
                 if any(asset["name"] == old_name for asset in existing["assets"]):
                     command("gh", "release", "delete-asset", tag, old_name, "--yes", "--repo", repository)
             command("gh", "release", "upload", tag, str(asset), str(setup), "--repo", repository)
         else:
             notes = directory / "notes.md"
             notes.write_text(
-                f"# Video Pilot v{version} — prototype\n\n"
+                f"# Tesla Video Pilot Ver {version} Build {build} — prototype\n\n"
                 + (configuration.get("releaseNotes", "") + "\n\n" if configuration.get("releaseNotes") else "") +
                 f"Download **{name}** under **Assets**. This is the compiled iPhone app. "
                 "Install it with Sideloadly or AltStore using personal Apple signing. Minimum iOS: 17.0.\n\n"
@@ -109,7 +119,7 @@ def main() -> None:
                 f"Cloudflare setup SHA-256: `{setup_digest}`.\n"
             )
             command("gh", "release", "create", tag, str(asset), str(setup), "--repo", repository,
-                    "--target", commit, "--prerelease", "--title", f"Video Pilot v{version} (prototype)",
+                    "--target", commit, "--prerelease", "--title", f"Tesla Video Pilot Ver {version} Build {build}",
                     "--notes-file", str(notes))
     published = release(repository, tag)
     if not published:

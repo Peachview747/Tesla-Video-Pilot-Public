@@ -21,7 +21,7 @@ The current official SideStore release checked for this guide is **0.7.0-alpha**
 ## Move your current MK8 installation into SideStore
 
 1. **Keep the existing MK8 app installed.** SideStore's official FAQ supports transferring Sideloadly apps by importing the same or a newer IPA while the original remains installed.
-2. On the iPhone, download `MK8iPhone-v0.1.4-unsigned.ipa` from the chat download or the private GitHub release and save it in **Files → Downloads**. Private GitHub downloads require signing into GitHub in Safari.
+2. On the iPhone, download `Tesla-Video-Pilot-Ver-0.1.4-Build-<build>.ipa` from the chat download or the private GitHub release and save it in **Files → Downloads**. Private GitHub downloads require signing into GitHub in Safari.
 3. Stop hosting in MK8 before replacing the running app.
 4. With Wi-Fi and LocalDevVPN connected, open **SideStore → My Apps → +** and select that IPA in Files.
 5. Let SideStore sign/install it, then open MK8 and verify that your videos, settings, and tunnel key are present. Keeping the original installed and using the same Apple Account/app identity is the route documented to preserve data. If a second MK8 appears, retain the original while resolving the app identity mismatch.
@@ -30,7 +30,7 @@ No separate MK8 updater app is required for this manual-import workflow. SideSto
 
 ## Every future MK8 version
 
-1. Download the new `MK8iPhone-v<version>-unsigned.ipa` on your iPhone and save it in Files.
+1. Download the new `Tesla-Video-Pilot-Ver-<version>-Build-<build>.ipa` on your iPhone and save it in Files.
 2. Stop MK8 hosting, connect to Wi-Fi, and enable LocalDevVPN.
 3. In **SideStore → My Apps → +**, select the new IPA. Keep the same Apple Account and replace the existing MK8 installation.
 4. Open MK8, check its version, and start hosting again.
