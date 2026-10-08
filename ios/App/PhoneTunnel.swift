@@ -52,7 +52,7 @@ import MK8Core
                     request.url = components.url
                     request.setValue(secret, forHTTPHeaderField: "x-secret")
                     let socket = self.session.webSocketTask(with: request)
-                    socket.maximumMessageSize = UInt64(RelayProtocol.maximumChunk + 16)
+                    socket.maximumMessageSize = RelayProtocol.maximumChunk + 16
                     self.socket = socket
                     self.sawHello = false
                     self.lastPong = ProcessInfo.processInfo.systemUptime
