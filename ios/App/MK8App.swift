@@ -74,7 +74,11 @@ private struct AppRootView: View {
                         }
                     } label: {
                         Image(systemName: "line.3.horizontal")
-                            .font(.headline)
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(MK8Theme.accent)
+                            .padding(8)
+                            .background(MK8Theme.card, in: Circle())
+                            .overlay(Circle().stroke(.white.opacity(0.09), lineWidth: 1))
                             .accessibilityLabel("Open Video Pilot menu")
                     }
                 }
@@ -84,10 +88,13 @@ private struct AppRootView: View {
 }
 
 private enum MK8Theme {
-    static let background = Color(red: 0.035, green: 0.055, blue: 0.115)
-    static let card = Color(red: 0.075, green: 0.105, blue: 0.18)
-    static let accent = Color(red: 1, green: 0.30, blue: 0.36)
-    static let secondary = Color(red: 0.61, green: 0.68, blue: 0.79)
+    static let background = Color(red: 0.025, green: 0.035, blue: 0.06)
+    static let card = Color(red: 0.075, green: 0.095, blue: 0.13)
+    static let cardRaised = Color(red: 0.105, green: 0.135, blue: 0.18)
+    static let accent = Color(red: 1, green: 0.22, blue: 0.30)
+    static let accentDeep = Color(red: 0.60, green: 0.04, blue: 0.10)
+    static let secondary = Color(red: 0.62, green: 0.68, blue: 0.74)
+    static let steel = Color(red: 0.20, green: 0.27, blue: 0.34)
 }
 
 private struct HostScreen<Content: View>: View {
@@ -100,7 +107,10 @@ private struct HostScreen<Content: View>: View {
         }
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.interactively)
-        .background(MK8Theme.background.ignoresSafeArea())
+        .background(
+            LinearGradient(colors: [MK8Theme.background, Color.black], startPoint: .topLeading, endPoint: .bottomTrailing)
+                .ignoresSafeArea()
+        )
     }
 }
 
@@ -111,8 +121,16 @@ private struct HostCard<Content: View>: View {
         VStack(alignment: .leading, spacing: 16) { content }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(20)
-            .background(MK8Theme.card, in: RoundedRectangle(cornerRadius: 22))
-            .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.055), lineWidth: 1))
+            .background(
+                LinearGradient(colors: [MK8Theme.cardRaised, MK8Theme.card], startPoint: .topLeading, endPoint: .bottomTrailing),
+                in: RoundedRectangle(cornerRadius: 22)
+            )
+            .overlay(alignment: .topLeading) {
+                Capsule().fill(MK8Theme.accent.opacity(0.8)).frame(width: 34, height: 3)
+                    .padding(.leading, 20)
+            }
+            .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.075), lineWidth: 1))
+            .shadow(color: .black.opacity(0.24), radius: 12, y: 8)
     }
 }
 
@@ -128,18 +146,52 @@ private struct StatusPill: View {
     }
 }
 
+private struct VPMark: View {
+    var size: CGFloat = 56
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(LinearGradient(colors: [MK8Theme.accent, MK8Theme.accentDeep], startPoint: .topLeading, endPoint: .bottomTrailing))
+            Circle().stroke(.white.opacity(0.28), lineWidth: 1)
+            Text("VP")
+                .font(.system(size: size * 0.25, weight: .heavy, design: .rounded))
+                .tracking(-1)
+                .foregroundStyle(.white)
+        }
+        .frame(width: size, height: size)
+        .shadow(color: MK8Theme.accent.opacity(0.28), radius: 12, y: 6)
+    }
+}
+
+private struct DashboardMetric: View {
+    let title: String
+    let value: String
+    let symbol: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Image(systemName: symbol).font(.caption.weight(.bold)).foregroundStyle(MK8Theme.accent)
+            Text(value).font(.headline.monospacedDigit())
+            Text(title.uppercased()).font(.caption2.weight(.semibold)).foregroundStyle(MK8Theme.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(11)
+        .background(MK8Theme.background.opacity(0.58), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.06), lineWidth: 1))
+    }
+}
+
 private struct DashboardView: View {
     @ObservedObject var host: HostModel
     @State private var chargingView = false
     var body: some View {
         HostScreen(title: "Video Pilot") {
             HostCard {
-                HStack(spacing: 12) {
-                    Image("BrandMark").resizable().scaledToFit().frame(width: 60, height: 60)
-                        .clipShape(RoundedRectangle(cornerRadius: 15)).accessibilityHidden(true)
+                HStack(alignment: .top, spacing: 14) {
+                    VPMark(size: 64).accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Video Pilot").font(.title3.bold())
-                        Text("Phone host for your Tesla").font(.subheadline).foregroundStyle(MK8Theme.secondary)
+                        Text("VIDEO PILOT").font(.caption.weight(.black)).tracking(2).foregroundStyle(MK8Theme.accent)
+                        Text("Your Tesla media host").font(.title3.weight(.bold))
+                        Text("iPhone → tunnel → Tesla").font(.subheadline).foregroundStyle(MK8Theme.secondary)
                     }
                 }
                 HStack(spacing: 10) {
@@ -149,6 +201,11 @@ private struct DashboardView: View {
                     Text(host.running ? "Tesla connection is ready" :
                             (host.authorizingHost ? "Waiting for Face ID" : "Start hosting when you are ready"))
                         .font(.subheadline).foregroundStyle(MK8Theme.secondary)
+                }
+                HStack(spacing: 8) {
+                    DashboardMetric(title: "Tunnel", value: host.running ? (host.tunnelState == .connected ? "Live" : "Starting") : "Off", symbol: "antenna.radiowaves.left.and.right")
+                    DashboardMetric(title: "Ready", value: "\(host.videos.filter { $0.state == "ready" }.count)", symbol: "play.rectangle.fill")
+                    DashboardMetric(title: "Queue", value: "\(host.queuedCount)", symbol: "clock.fill")
                 }
                 Button { if host.running { host.stop() } else { host.start() } } label: {
                     Label(host.running ? "Stop hosting" : (host.authorizingHost ? "Waiting for Face ID…" : "Start hosting"),
@@ -216,7 +273,7 @@ private struct ChargingView: View {
     var body: some View {
         VStack(spacing: 24) {
             Spacer()
-            Image("BrandMark").resizable().scaledToFit().frame(width: 100, height: 100).accessibilityHidden(true)
+            VPMark(size: 100).accessibilityHidden(true)
             Text(host.activeStreams > 0 ? "Playing in your Tesla" : (host.running ? "Ready for your Tesla" : "Preparing video"))
                 .font(.title2.weight(.medium))
             StatusPill(title: host.tunnelState.title, color: host.tunnelState == .connected ? .green : .orange)
