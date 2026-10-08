@@ -60,9 +60,11 @@ final class CoreTests: XCTestCase {
 
         func pts(_ seconds: Int) -> [UInt8] {
             let value = UInt64(seconds * 90_000)
-            return [UInt8(0x21 | ((value >> 29) & 0x0e)), UInt8(value >> 22),
-                    UInt8(0x01 | ((value >> 14) & 0xfe)), UInt8(value >> 7),
-                    UInt8(0x01 | ((value << 1) & 0xfe))]
+            return [UInt8(truncatingIfNeeded: 0x21 | ((value >> 29) & 0x0e)),
+                    UInt8(truncatingIfNeeded: value >> 22),
+                    UInt8(truncatingIfNeeded: 0x01 | ((value >> 14) & 0xfe)),
+                    UInt8(truncatingIfNeeded: value >> 7),
+                    UInt8(truncatingIfNeeded: 0x01 | ((value << 1) & 0xfe))]
         }
         func packet(pid: Int, start: Bool, payload: [UInt8]) -> [UInt8] {
             var bytes = [UInt8](repeating: 0xff, count: 188)
