@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: public-iphone-build-${{ github.ref }}
@@ -67,3 +67,14 @@ jobs:
           path: ios/build/MK8iPhone-unsigned.ipa
           if-no-files-found: error
           retention-days: 7
+      - name: Publish GitHub Release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v0.1.19-build21-${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" ios/build/MK8iPhone-unsigned.ipa \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Video Pilot 0.1.19 (build 21)" \
+            --notes "Unsigned IPA for Sideloadly. Built from commit $GITHUB_SHA." \
+            --latest
