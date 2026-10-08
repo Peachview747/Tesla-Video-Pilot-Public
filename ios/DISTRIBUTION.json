@@ -1,10 +1,10 @@
 {
   "name": "Video Pilot",
-  "version": "0.1.24",
-  "build": "26",
+  "version": "0.1.25",
+  "build": "27",
   "iconVersion": "0.1.19",
   "artifactPrefix": "VideoPilot",
-  "releaseNotes": "Build 26 fixes the signed-in YouTube feed by reading subscribed channels and their uploads playlists, and keeps the real Google API error visible when a request fails.",
+  "releaseNotes": "Build 27 gives the Tesla web interface a complete Video Pilot visual redesign with a branded header, graphic hero, command cards, thumbnail-first feed, and cleaner player overlay.",
   "packaging": "arm64-only-adhoc-signature-template",
   "stage": "native-prototype",
   "branch": "iphone-native",

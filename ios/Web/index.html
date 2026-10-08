@@ -9,7 +9,11 @@
   <script src="/app.js" type="module"></script>
 </head>
 <body>
-  <header><strong>Video Pilot</strong><span>iPhone host</span><p id="connection">Connecting…</p></header>
+  <header>
+    <div class="brand-mark" aria-hidden="true"><span>VP</span></div>
+    <div class="brand-lockup"><strong>Video Pilot</strong><span>iPhone host</span></div>
+    <p id="connection" class="connection-pill">Connecting…</p>
+  </header>
   <main>
     <p id="notice" role="status" aria-live="polite"></p>
     <div id="host-ui" hidden>
@@ -41,8 +45,8 @@
       <section id="youtube-tab" class="tab-panel">
         <div class="hero-heading"><div><p class="eyebrow">VIDEO PILOT</p><h1>What do you want to watch?</h1><p class="hero-copy">Paste a link, search YouTube, or pick up where you left off.</p></div><span id="queue-badge" class="queue-badge">0 queued</span></div>
         <div class="watch-tools">
-          <form id="url-form"><input id="url" placeholder="Paste a YouTube link or video ID" aria-label="YouTube URL" required><button>Prepare</button></form>
-          <form id="search-form"><input id="query" placeholder="Search YouTube" aria-label="Search YouTube" maxlength="200" required><button>Search</button></form>
+          <div class="tool-card"><div class="tool-label"><span class="tool-icon">↗</span><span>Play from a link</span></div><form id="url-form"><input id="url" placeholder="Paste a YouTube link or video ID" aria-label="YouTube URL" required><button>Prepare</button></form></div>
+          <div class="tool-card"><div class="tool-label"><span class="tool-icon">⌕</span><span>Find something new</span></div><form id="search-form"><input id="query" placeholder="Search YouTube" aria-label="Search YouTube" maxlength="200" required><button>Search</button></form></div>
         </div>
         <div class="search-chips" aria-label="Popular searches"><button type="button" data-query="trending now">Trending</button><button type="button" data-query="music">Music</button><button type="button" data-query="latest news">News</button><button type="button" data-query="Tesla">Tesla</button></div>
         <div id="search-summary" class="search-summary" hidden></div>

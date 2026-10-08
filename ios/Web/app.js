@@ -56,13 +56,16 @@ function card(title, subtitle, action, thumbnail) {
     try {
       const url = new URL(thumbnail);
       if (url.protocol === 'https:' && url.hostname === 'i.ytimg.com') {
-        const img = document.createElement('img'); img.src = url.href; img.alt = ''; img.loading = 'lazy'; div.append(img);
+        const media = document.createElement('div'); media.className = 'card-media';
+        const img = document.createElement('img'); img.src = url.href; img.alt = ''; img.loading = 'lazy'; media.append(img); div.append(media);
       }
     } catch {}
   }
-  const heading = document.createElement('h3'); heading.textContent = title; div.append(heading);
-  const text = document.createElement('p'); text.textContent = subtitle; div.append(text);
-  if (action) { const button = document.createElement('button'); button.textContent = action.label; button.onclick = action.run; div.append(button); }
+  const body = document.createElement('div'); body.className = 'card-body';
+  const heading = document.createElement('h3'); heading.textContent = title; body.append(heading);
+  const text = document.createElement('p'); text.textContent = subtitle; body.append(text);
+  if (action) { const button = document.createElement('button'); button.textContent = action.label; button.onclick = action.run; body.append(button); }
+  div.append(body);
   return div;
 }
 function renderQueue(videos) {
