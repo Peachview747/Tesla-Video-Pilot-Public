@@ -39,11 +39,11 @@ final class RelayTests: XCTestCase {
         XCTAssertEqual(Array(framed.prefix(16)), [0, 17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 187, 204, 221, 238, 255])
         XCTAssertEqual(framed.dropFirst(16), payload)
         XCTAssertThrowsError(try RelayProtocol.frame(id: id, payload: Data()))
-        XCTAssertThrowsError(try RelayProtocol.frame(id: id, payload: Data(repeating: 0, count: 32_769)))
+        XCTAssertThrowsError(try RelayProtocol.frame(id: id, payload: Data(repeating: 0, count: RelayProtocol.maximumChunk + 1)))
     }
 
     func testFileChunksFillExistingFrameLimitWithoutSplittingTSPackets() throws {
-        XCTAssertEqual(RelayProtocol.fileChunk, 32_712)
+        XCTAssertEqual(RelayProtocol.fileChunk, 131_036)
         XCTAssertEqual(RelayProtocol.fileChunk % 188, 0)
         XCTAssertLessThanOrEqual(RelayProtocol.fileChunk, RelayProtocol.maximumChunk)
         let bytes = Data((0..<(RelayProtocol.fileChunk * 3 + 188 * 7)).map { UInt8($0 % 251) })
@@ -63,7 +63,7 @@ final class RelayTests: XCTestCase {
             XCTAssertLessThanOrEqual(frame.count, RelayProtocol.maximumChunk + 16)
             reconstructed.append(frame.dropFirst(16))
         }
-        XCTAssertEqual(sizes, [32_712, 32_712, 32_712, 188 * 7])
+        XCTAssertEqual(sizes, [RelayProtocol.fileChunk, RelayProtocol.fileChunk, RelayProtocol.fileChunk, 188 * 7])
         XCTAssertEqual(reconstructed, bytes)
         XCTAssertTrue(try body.nextChunk().isEmpty)
     }
@@ -79,7 +79,7 @@ final class RelayTests: XCTestCase {
             sizes.append(chunk.count)
             reconstructed.append(chunk)
         }
-        XCTAssertEqual(sizes, [32_768, 32_768, 17])
+        XCTAssertEqual(sizes, [RelayProtocol.maximumChunk, RelayProtocol.maximumChunk, 17])
         XCTAssertEqual(reconstructed, bytes)
         XCTAssertTrue(try RelayBody(data: Data()).nextChunk().isEmpty)
     }

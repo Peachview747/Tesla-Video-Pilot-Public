@@ -55,7 +55,7 @@ async function until(condition) {
   assert.ok(condition(), 'Expected source state was not reached');
 }
 test('bounds PTS read-ahead between playback reports and resumes at low headroom', async () => {
-  const values = [0, 7, 8, 9].map(value => new Uint8Array([value]));
+  const values = [0, 13, 14, 15].map(value => new Uint8Array([value]));
   const fixture = setup(new Response(new ReadableStream({pull(controller) {
     if (values.length) controller.enqueue(values.shift()); else controller.close();
   }}, {highWaterMark:0})), {currentTime:0, write(buffer) { this.currentTime = new Uint8Array(buffer)[0]; }});
@@ -67,29 +67,29 @@ test('bounds PTS read-ahead between playback reports and resumes at low headroom
     assert.equal(fixture.source.buffered, true);
     assert.equal(fixture.chunks.length, 2);
     assert.equal(fixture.source.completed, false);
-    fixture.source.resume(4);
+    fixture.source.resume(8);
     await tick();
     assert.equal(fixture.chunks.length, 2, 'Intermediate headroom must preserve the buffer wait');
-    fixture.source.resume(3);
+    fixture.source.resume(6);
     await reading;
-    assert.deepEqual(fixture.chunks, [[0], [7], [8], [9]]);
+    assert.deepEqual(fixture.chunks, [[0], [13], [14], [15]]);
     assert.deepEqual(fixture.events, ['established', 'completed']);
   } finally { fixture.source.destroy(); fixture.restore(); }
 });
 test('playback reports and manual resume cannot release the other pause reason', async () => {
   const fixture = setup(new Response(new Uint8Array([1, 2])), {currentTime:0});
   try {
-    fixture.source.resume(7);
+    fixture.source.resume(12);
     fixture.source.pauseReading();
     const reading = fixture.source.read();
-    fixture.source.resume(2);
+    fixture.source.resume(5);
     await tick();
     assert.equal(fixture.chunks.length, 0, 'Playback headroom must not undo manual Pause');
-    fixture.source.resume(7);
+    fixture.source.resume(12);
     fixture.source.resumeReading();
     await tick();
     assert.equal(fixture.chunks.length, 0, 'Manual Resume must not undo the high-water wait');
-    fixture.source.resume(2);
+    fixture.source.resume(5);
     await reading;
     assert.equal(fixture.chunks.length, 1);
     assert.equal(fixture.source.completed, true);
@@ -98,7 +98,7 @@ test('playback reports and manual resume cannot release the other pause reason',
 test('destroy releases both buffer and manual waits without reporting completion', async () => {
   const fixture = setup(new Response(new Uint8Array([1])), {currentTime:0});
   try {
-    fixture.source.resume(7); fixture.source.pauseReading();
+    fixture.source.resume(12); fixture.source.pauseReading();
     const reading = fixture.source.read();
     await tick();
     fixture.source.destroy();
@@ -142,14 +142,14 @@ test('read-ahead uses the shipped MPEG-TS demuxer PTS and recorded playback cont
     bytes.set([0, 0, 1, 0xe0, 0, 12, 0x80, 0x80, 5, ...pts, 0, 0, 1, 0xb7], 170);
     return bytes;
   }
-  const values = [100, 107, 108, 109].map(packet);
+  const values = [100, 113, 114, 115].map(packet);
   const fixture = setup(new Response(new ReadableStream({pull(controller) {
     if (values.length) controller.enqueue(values.shift()); else controller.close();
   }}, {highWaterMark:0})));
   fixture.source.connect(demuxer);
   try {
     const reading = fixture.source.read();
-    await until(() => demuxer.currentTime === 107);
+    await until(() => demuxer.currentTime === 113);
     await tick();
     assert.equal(fixture.source.buffered, true);
     assert.equal(fixture.source.completed, false);
@@ -161,11 +161,11 @@ test('read-ahead uses the shipped MPEG-TS demuxer PTS and recorded playback cont
       video:{startTime:100, currentTime:100, frameRate:30, decode:() => false},
     });
     player.updateForStaticFile();
-    assert.equal(fixture.source.buffered, true, 'Seven seconds of headroom must stay held');
-    clock = 4000; player.video.currentTime = 104;
+    assert.equal(fixture.source.buffered, true, 'Thirteen seconds of headroom must stay held');
+    clock = 7000; player.video.currentTime = 107;
     player.updateForStaticFile();
     await reading;
-    assert.equal(demuxer.currentTime, 109);
+    assert.equal(demuxer.currentTime, 115);
     assert.equal(fixture.source.completed, true);
     assert.equal(decoder.timestamps.length, 4);
   } finally { fixture.source.destroy(); fixture.restore(); }

@@ -1,7 +1,10 @@
 // Authenticated outbound iPhone connection. Video stays on the phone and is
 // forwarded in bounded binary chunks only when the browser asks for more.
 export const PROTOCOL = "mk8-relay-v1";
-const MAX_CHUNK = 32768;
+// Match the native 128 KiB WebSocket frame budget (16 bytes are reserved for
+// the request UUID). Fewer browser-driven round trips keep cellular playback
+// ahead without allowing unbounded buffering.
+const MAX_CHUNK = 131056;
 const MAX_REQUESTS = 8;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PLAYER = /^[A-Za-z0-9_-]{8,128}$/;

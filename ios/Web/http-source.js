@@ -17,6 +17,11 @@ export class JSMpegHttpSource {
   stopped = false;
   stoppedResolve;
   stoppedPromise;
+  // Cellular links benefit from more media queued before the next relay pull.
+  // The low-water mark remains finite so Pause and cancellation still release
+  // the reader promptly instead of buffering the whole file.
+  static highWaterHeadroom = 12;
+  static lowWaterHeadroom = 6;
   constructor(url, options) {
     this.url = url; this.options = options || {};
     this.stoppedPromise = new Promise(resolve => { this.stoppedResolve = resolve; });
@@ -33,8 +38,8 @@ export class JSMpegHttpSource {
     this.updateBuffering(this.headroom);
   }
   updateBuffering(headroom) {
-    if (headroom >= 6) this.buffered = true;
-    else if (headroom <= 3) this.buffered = false;
+    if (headroom >= JSMpegHttpSource.highWaterHeadroom) this.buffered = true;
+    else if (headroom <= JSMpegHttpSource.lowWaterHeadroom) this.buffered = false;
     this.wakeReading();
   }
   // Several network chunks can arrive before the next animation frame. Account

@@ -2,9 +2,12 @@ import Foundation
 
 public enum RelayProtocol {
     public static let name = "mk8-relay-v1"
-    public static let maximumChunk = 32_768
-    // Preserve complete MPEG-TS packets while using almost all of the existing
-    // Worker's payload allowance. The protocol and frame limit stay unchanged.
+    // Keep a complete media frame below URLSession's 128 KiB WebSocket message
+    // limit. Larger frames reduce the per-credit round-trip cost on cellular
+    // while the browser-driven pull protocol still provides backpressure.
+    public static let maximumChunk = 131_056 // 131,072 bytes minus the UUID prefix
+    // Preserve complete MPEG-TS packets while using almost all of the frame
+    // allowance. The last partial frame is still permitted for exact bytes.
     public static let fileChunk = maximumChunk / 188 * 188
     public static let maximumRequests = 8
 
