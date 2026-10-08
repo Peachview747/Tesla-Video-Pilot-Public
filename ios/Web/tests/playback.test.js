@@ -8,7 +8,7 @@ import {JSMpegHttpSource} from '../http-source.js';
 // driven separately from network establishment, just as in recorded JSMpeg.
 const app = readFileSync(new URL('../app.js', import.meta.url), 'utf8')
   .replace(/^import .*?;\n/, '');
-function setup() {
+function setup({recoveryDelay} = {}) {
   const elements = new Map(), players = [], intervals = [];
   const element = id => {
     if (!elements.has(id)) elements.set(id, {textContent:'', hidden:false, dataset:{}, scrollIntoView() {},
@@ -40,6 +40,7 @@ function setup() {
     window:{JSMpeg:{Player}, addEventListener() {}},
     // The library refresh is outside these focused playback tests.
     fetch:() => new Promise(() => {}), setInterval:callback => { intervals.push(callback); }, setTimeout, clearTimeout, URL, Number,
+    __VP_SEEK_RECOVERY_MS: recoveryDelay,
   });
   vm.runInContext(app, context);
   return {
@@ -162,4 +163,17 @@ test('repeated seeks serialize teardown and keep one relay player identity', asy
   assert.equal(second.sourceDestroyed, true);
   assert.equal(f.players.length, 3);
   assert.equal(f.element('playback-status').textContent, 'Buffering…');
+});
+
+test('a seek that never decodes gets one bounded retry and a recoverable state', async () => {
+  const f = setup({recoveryDelay:10});
+  f.play({id:'video', title:'Test video', duration:100});
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(f.players.length, 2, 'the stalled seek is retried once');
+  assert.equal(f.players[0].destroyed, true);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(f.players.length, 2, 'a second stall does not create an infinite player loop');
+  assert.equal(f.players[1].paused, true);
+  assert.match(f.element('playback-status').textContent, /could not resume after seeking/);
+  assert.equal(f.element('pause').textContent, 'Retry');
 });

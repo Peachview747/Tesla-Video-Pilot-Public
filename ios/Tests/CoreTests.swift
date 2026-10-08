@@ -95,6 +95,7 @@ final class CoreTests: XCTestCase {
         try Data(bytes).write(to: file)
 
         let index = try MPEGTSIndex.build(file: file, pointInterval: 0.5)
+        XCTAssertEqual(index.version, MPEGTSIndex.currentVersion)
         XCTAssertEqual(try XCTUnwrap(index.points.first).time, 0, accuracy: 0.001)
         XCTAssertGreaterThan(index.duration ?? 0, 3)
         let point = try XCTUnwrap(index.point(for: 2.6))

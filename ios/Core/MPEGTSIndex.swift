@@ -5,8 +5,15 @@ import Foundation
 /// MPEG-TS because the video bitrate is deliberately variable.  The index
 /// records presentation timestamps from video PES headers and points back to
 /// the most recent PAT packet so a new decoder sees the transport metadata it
-/// needs before the selected video data.
+/// needs before the selected video data.  When the stream exposes MPEG-1
+/// sequence/GOP headers, points are restricted to those decoder-safe anchors;
+/// starting in the middle of a GOP can otherwise leave JSMpeg buffering on a
+/// black canvas forever after a seek.
 public struct MPEGTSIndex: Codable, Sendable, Equatable {
+    /// Bump this when the seek-anchor algorithm changes.  Older sidecars are
+    /// deliberately rebuilt instead of silently reusing unsafe offsets.
+    public static let currentVersion = 2
+
     public struct Point: Codable, Sendable, Equatable {
         public let time: Double
         public let offset: Int64
@@ -21,7 +28,7 @@ public struct MPEGTSIndex: Codable, Sendable, Equatable {
     public let duration: Double?
     public let points: [Point]
 
-    public init(duration: Double?, points: [Point], version: Int = 1) {
+    public init(duration: Double?, points: [Point], version: Int = MPEGTSIndex.currentVersion) {
         self.version = version
         self.duration = duration
         self.points = points
@@ -59,12 +66,14 @@ public struct MPEGTSIndex: Codable, Sendable, Equatable {
         var firstPTS: Int64?
         var previousPTS: Int64?
         var lastVideoTime = 0.0
-        var lastPointTime = -Double.infinity
         var previousVideoTime: Double?
         var frameDelta = 1.0 / 30.0
-        var points = [Point]()
+        // Keep the old PAT/timestamp anchors as a fallback for unusual or
+        // synthetic streams that do not contain MPEG-1 sequence/GOP markers.
+        var fallbackPoints = [Point]()
+        var safePoints = [Point]()
 
-        func addVideoPTS(_ raw: UInt64, packetOffset: Int64) {
+        func addVideoPTS(_ raw: UInt64, packetOffset: Int64, decoderSafe: Bool) {
             let unwrapped: Int64
             if let previousPTS {
                 let wrap = Int64(1) << 33
@@ -91,9 +100,14 @@ public struct MPEGTSIndex: Codable, Sendable, Equatable {
             // decoder pre-roll packets we intentionally include.
             if contextFirstVideoTime == nil { contextFirstVideoTime = time }
             if let contextFirstVideoTime,
-               points.isEmpty || contextFirstVideoTime - lastPointTime >= pointInterval {
-                points.append(Point(time: contextFirstVideoTime, offset: lastPATOffset))
-                lastPointTime = contextFirstVideoTime
+               fallbackPoints.isEmpty || contextFirstVideoTime - fallbackPoints.last!.time >= pointInterval {
+                fallbackPoints.append(Point(time: contextFirstVideoTime, offset: lastPATOffset))
+            }
+            if decoderSafe,
+               safePoints.isEmpty || time - safePoints.last!.time >= pointInterval {
+                // Keep the PAT context, but use the timestamp of the actual
+                // sequence/GOP packet as the decoder's new media clock.
+                safePoints.append(Point(time: time, offset: lastPATOffset))
             }
             _ = packetOffset // Retained in the closure signature for clarity.
         }
@@ -135,7 +149,8 @@ public struct MPEGTSIndex: Codable, Sendable, Equatable {
                         let headerLength = Int(payload[8])
                         if flags >= 2, headerLength >= 5, payload.count >= 14 {
                             let timestamp = decodePTS(payload, start: 9)
-                            addVideoPTS(timestamp, packetOffset: packetOffset)
+                            let decoderSafe = containsDecoderAnchor(payload)
+                            addVideoPTS(timestamp, packetOffset: packetOffset, decoderSafe: decoderSafe)
                         }
                     }
                 }
@@ -147,10 +162,11 @@ public struct MPEGTSIndex: Codable, Sendable, Equatable {
             }
         }
         guard pending.isEmpty, sawPacket else { throw Failure.notTransportStream }
+        let points = safePoints.isEmpty ? fallbackPoints : safePoints
         if points.isEmpty { return Self(duration: nil, points: []) }
-        if lastVideoTime > points.last!.time {
-            points.append(Point(time: lastVideoTime, offset: lastPATOffset))
-        }
+        // Do not append a terminal point at an arbitrary PAT.  If the last
+        // point is not a decoder anchor, a near-end seek can regress to the
+        // same black-screen failure this index is meant to prevent.
         let duration = max(points.last?.time ?? 0, lastVideoTime) + frameDelta
         return Self(duration: duration > 0 ? duration : nil, points: points)
     }
@@ -167,5 +183,18 @@ public struct MPEGTSIndex: Codable, Sendable, Equatable {
             | (UInt64(bytes[start + 2] & 0xfe) << 14)
             | (UInt64(bytes[start + 3]) << 7)
             | UInt64((bytes[start + 4] & 0xfe) >> 1)
+    }
+
+    /// MPEG-1 video sequence (B3) and GOP (B8) start codes are safe places to
+    /// start a fresh JSMpeg decoder.  The scan is limited to one PES-start TS
+    /// payload; FFmpeg emits these headers at the beginning of its random
+    /// access groups, so no whole-file buffering is required.
+    private static func containsDecoderAnchor(_ bytes: [UInt8]) -> Bool {
+        guard bytes.count >= 4 else { return false }
+        for index in 0...(bytes.count - 4) {
+            guard bytes[index] == 0, bytes[index + 1] == 0, bytes[index + 2] == 1 else { continue }
+            if bytes[index + 3] == 0xb3 || bytes[index + 3] == 0xb8 { return true }
+        }
+        return false
     }
 }

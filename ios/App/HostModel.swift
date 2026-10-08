@@ -51,8 +51,8 @@ import Network
     @Published var backgroundPreparation = (UserDefaults.standard.object(forKey: "backgroundPreparation") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(backgroundPreparation, forKey: "backgroundPreparation") }
     }
-    let version = "0.1.27"
-    let build = "29"
+    let version = "0.1.28"
+    let build = "30"
     var preparingTitle: String { videos.first { $0.id == preparingID }?.title ?? "Your video" }
     var queuedCount: Int { videos.filter { $0.state == "preparing" && $0.id != preparingID }.count }
     private var library: Library?
@@ -410,7 +410,7 @@ import Network
         if let cached = seekIndexes[id] { return cached }
         let sidecar = MediaPipeline.seekIndexURL(for: url)
         if let data = try? Data(contentsOf: sidecar), let index = try? JSONDecoder().decode(MPEGTSIndex.self, from: data),
-           !index.points.isEmpty {
+           index.version == MPEGTSIndex.currentVersion, !index.points.isEmpty {
             seekIndexes[id] = index
             return index
         }

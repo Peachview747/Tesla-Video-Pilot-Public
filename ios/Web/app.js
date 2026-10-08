@@ -218,8 +218,15 @@ function invalidateSeeks() {
   seekGeneration += 1;
   globalThis.clearTimeout?.(seekTimer); seekTimer = null;
 }
+function clearRecoveryTimer(session) {
+  if (!session?.startupTimer) return;
+  globalThis.clearTimeout?.(session.startupTimer);
+  session.startupTimer = null;
+}
 function closePlayer() {
   saveResume();
+  const oldPlayback = playback;
+  clearRecoveryTimer(oldPlayback);
   playback = null;
   globalThis.clearTimeout?.(seekTimer); seekTimer = null;
   const oldPlayer = player;
@@ -257,14 +264,55 @@ function unlockAudio() {
     if (context?.state === 'suspended' || context?.state === 'interrupted') context.resume()?.catch(() => {});
   } catch { /* A later Play or Unmute gesture can retry audio activation. */ }
 }
-function startPlayer(video, seek = null) {
+function startPlayer(video, seek = null, recoveryAttempt = 0) {
   current = video;
   const duration = finiteDuration(video.duration);
   currentOffset = Math.max(0, Number(seek ?? savedResume(video)) || 0);
   if (duration) currentOffset = Math.min(currentOffset, duration);
   const session = {paused:false, failed:false, ended:false, baseOffset:currentOffset,
-    position:currentOffset, duration}; playback = session;
+    position:currentOffset, duration, decoded:false, startupTimer:null, recoveryAttempt}; playback = session;
   const active = () => playback === session && !session.paused && !session.failed && !session.ended;
+  const recoveryDelay = () => {
+    const override = Number(globalThis.__VP_SEEK_RECOVERY_MS);
+    if (Number.isFinite(override) && override >= 0) return override;
+    return session.baseOffset > 0 ? 10000 : 15000;
+  };
+  const armRecovery = (reset = false) => {
+    if (reset) clearRecoveryTimer(session);
+    if (session.decoded || session.failed || session.ended || session.startupTimer) return;
+    const timer = globalThis.setTimeout;
+    if (typeof timer !== 'function') return;
+    session.startupTimer = timer(() => {
+      session.startupTimer = null;
+      if (playback !== session || session.decoded || session.failed || session.ended) return;
+      if (session.recoveryAttempt >= 1) {
+        session.failed = true; session.paused = true;
+        try { player?.pause(); player?.source?.pauseReading?.(); } catch {}
+        $('playback-status').textContent = 'Playback could not resume after seeking. Tap Retry.';
+        $('pause').textContent = 'Retry';
+        return;
+      }
+      const videoAtStart = current;
+      const target = Math.max(0, Math.floor((session.position || session.baseOffset || 0) - 1));
+      const generation = ++seekGeneration;
+      $('playback-status').textContent = 'Restarting seek…';
+      seekChain = seekChain.then(async () => {
+        if (generation !== seekGeneration || current !== videoAtStart) return;
+        await closePlayer();
+        if (generation !== seekGeneration || current !== videoAtStart) return;
+        startPlayer(videoAtStart, target, session.recoveryAttempt + 1);
+      }).catch(error => {
+        if (generation === seekGeneration) {
+          session.failed = true; session.paused = true;
+          $('playback-status').textContent = error?.message || 'Playback could not resume after seeking. Tap Retry.';
+          $('pause').textContent = 'Retry';
+        }
+      });
+    }, recoveryDelay());
+    // Node-based UI tests expose timer handles with `unref`; browsers expose
+    // numeric IDs, so this is intentionally optional.
+    session.startupTimer?.unref?.();
+  };
   $('player-section').hidden = false; $('playing-title').textContent = video.title;
   $('playback-status').textContent = 'Buffering…'; $('pause').textContent = 'Pause'; $('mute').textContent = 'Mute';
   updateTimeline(currentOffset, duration);
@@ -282,6 +330,9 @@ function startPlayer(video, seek = null) {
         currentOffset = actual;
         updateTimeline(actual, session.duration);
       },
+      onSourceEstablished:() => {
+        if (playback === session) armRecovery(true);
+      },
       onSourceDuration:value => {
         if (playback !== session) return;
         const actual = finiteDuration(value);
@@ -289,15 +340,25 @@ function startPlayer(video, seek = null) {
         session.duration = actual;
         updateTimeline(session.position, actual);
       },
-      onStalled:() => { if (active()) $('playback-status').textContent = 'Buffering…'; },
-      onVideoDecode:() => { if (active()) $('playback-status').textContent = 'Playing from your iPhone'; },
+      onStalled:() => {
+        if (active()) {
+          $('playback-status').textContent = 'Buffering…';
+          if (!session.decoded) armRecovery();
+        }
+      },
+      onVideoDecode:() => {
+        session.decoded = true; clearRecoveryTimer(session);
+        if (active()) $('playback-status').textContent = 'Playing from your iPhone';
+      },
       onSourceError:message => {
         if (playback !== session) return;
+        clearRecoveryTimer(session);
         saveResume();
         session.failed = true; $('playback-status').textContent = message;
       },
       onEnded:() => {
         if (playback !== session || session.failed) return;
+        clearRecoveryTimer(session);
         session.ended = true;
         if (session.duration) session.position = session.duration;
         currentOffset = session.position;
@@ -306,6 +367,10 @@ function startPlayer(video, seek = null) {
         clearResume(video);
       }
     });
+    // Arm a bounded watchdog even if the source never emits an established
+    // callback. A failed seek must become a retryable state, not a permanent
+    // black canvas with an endless spinner.
+    armRecovery();
     unlockAudio();
     showTab('player-section');
     $('player-section').scrollIntoView({behavior:'smooth',block:'start'});
@@ -327,6 +392,13 @@ function play(video, seek = null) {
 }
 $('pause').onclick = () => {
   if (!player) return;
+  if (playback?.failed && current) {
+    // The watchdog pauses a decoder that could not produce a frame after a
+    // seek. Reusing the normal seek path guarantees the stale source is
+    // cancelled before the retry starts.
+    requestSeek(currentOffset);
+    return;
+  }
   if (!player.paused) {
     if (playback) playback.paused = true;
     player.pause(); player.source?.pauseReading(); $('pause').textContent = 'Play';

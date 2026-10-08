@@ -71,10 +71,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="v0.1.27-build29-${GITHUB_RUN_NUMBER}"
+          tag="v0.1.28-build30-${GITHUB_RUN_NUMBER}"
           gh release create "$tag" ios/build/MK8iPhone-unsigned.ipa \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "Video Pilot 0.1.27 (build 29)" \
+            --title "Video Pilot 0.1.28 (build 30)" \
             --notes "Unsigned IPA for Sideloadly. Built from commit $GITHUB_SHA." \
             --latest
