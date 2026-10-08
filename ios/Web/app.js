@@ -68,15 +68,20 @@ function card(title, subtitle, action, thumbnail) {
   div.append(body);
   return div;
 }
-function renderQueue(videos) {
+function renderQueue(videos, activeID = '') {
   const queued = videos.filter(video => video.state === 'preparing');
   const panel = $('queue-panel');
   panel.hidden = !queued.length;
   $('queue-badge').textContent = `${queued.length} queued`;
   $('queue-summary').textContent = queued.length ? `${queued.length} video${queued.length === 1 ? '' : 's'} in progress` : '';
   const list = $('queue-list'); list.replaceChildren();
-  queued.forEach((video, index) => list.append(card(`${index + 1}. ${video.title}`, video.message || 'Waiting for preparation', null,
-    video.youtubeID ? `https://i.ytimg.com/vi/${encodeURIComponent(video.youtubeID)}/mqdefault.jpg` : null)));
+  queued.forEach((video, index) => {
+    const active = video.id?.toLowerCase() === activeID?.toLowerCase();
+    const subtitle = active ? (video.message || 'Preparing now') : (video.message || 'Waiting for preparation');
+    const action = active ? null : {label:'Remove', run:() => removeVideo(video.id)};
+    list.append(card(`${index + 1}. ${video.title}`, subtitle, action,
+      video.youtubeID ? `https://i.ytimg.com/vi/${encodeURIComponent(video.youtubeID)}/mqdefault.jpg` : null));
+  });
 }
 async function refresh() {
   if (refreshing) return;
@@ -100,10 +105,15 @@ async function refresh() {
       ? `v${status.version}${status.build ? ` · build ${status.build}` : ''}` : '—';
     const library = $('library'); library.replaceChildren();
     if (!videos.length) library.append(card('Your library is empty', 'Prepare a YouTube video or import a file on the iPhone.'));
-    for (const video of videos) library.append(card(video.title, video.message || video.state,
-      video.state === 'ready' ? {label:savedResume(video) ? 'Resume · ' + formatTime(savedResume(video)) : 'Play',run:() => play(video)} : null,
+    for (const video of videos) {
+      const active = video.id?.toLowerCase() === status.preparingID?.toLowerCase();
+      const action = video.state === 'ready'
+        ? {label:savedResume(video) ? 'Resume · ' + formatTime(savedResume(video)) : 'Play',run:() => play(video)}
+        : (video.state === 'preparing' && !active ? {label:'Remove',run:() => removeVideo(video.id)} : null);
+      library.append(card(video.title, video.message || video.state, action,
       video.youtubeID ? `https://i.ytimg.com/vi/${encodeURIComponent(video.youtubeID)}/mqdefault.jpg` : null));
-    renderQueue(videos);
+    }
+    renderQueue(videos, status.preparingID);
     updatePreparation(status, videos);
     const down = Number(status.downloadMbps) || 0, up = Number(status.uploadMbps) || 0;
     $('traffic-status').textContent = `Receiving ${down.toFixed(2)} Mb/s · Sending ${up.toFixed(2)} Mb/s`;
@@ -163,6 +173,10 @@ function updatePreparation(status, videos) {
 }
 async function queueVideo(url) {
   try { await api('/api/youtube', {url}); notice('Preparing video on your iPhone. It will appear in the library when ready.'); await refresh(); }
+  catch (error) { notice(error.message); }
+}
+async function removeVideo(id) {
+  try { await api('/api/library/remove', {id}); notice('Removed from the preparation queue.'); await refresh(); }
   catch (error) { notice(error.message); }
 }
 $('url-form').onsubmit = event => { event.preventDefault(); void queueVideo($('url').value.trim()); };

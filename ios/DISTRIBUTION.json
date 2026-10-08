@@ -1,10 +1,10 @@
 {
   "name": "Video Pilot",
-  "version": "0.1.25",
-  "build": "27",
+  "version": "0.1.26",
+  "build": "28",
   "iconVersion": "0.1.19",
   "artifactPrefix": "VideoPilot",
-  "releaseNotes": "Build 27 gives the Tesla web interface a complete Video Pilot visual redesign with a branded header, graphic hero, command cards, thumbnail-first feed, and cleaner player overlay.",
+  "releaseNotes": "Build 28 blocks duplicate YouTube preparation jobs and lets the Tesla browser or iPhone remove queued items while an active download continues.",
   "packaging": "arm64-only-adhoc-signature-template",
   "stage": "native-prototype",
   "branch": "iphone-native",

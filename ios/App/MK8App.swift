@@ -617,7 +617,8 @@ private struct VideoCard: View {
                     if let id = video.youtubeID {
                         Button("Copy YouTube link", systemImage: "link") { UIPasteboard.general.string = "https://youtu.be/" + id }
                     }
-                    Button("Delete video", systemImage: "trash", role: .destructive) { host.remove(video.id) }.disabled(host.busy)
+                    Button("Delete video", systemImage: "trash", role: .destructive) { host.remove(video.id) }
+                        .disabled(host.busy && host.preparingID == video.id)
                 } label: { Image(systemName: "ellipsis").padding(6) }.accessibilityLabel("Video actions")
             }
             if video.state == "failed" || video.state == "paused" {

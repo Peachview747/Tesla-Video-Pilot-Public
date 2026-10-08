@@ -51,8 +51,8 @@ import Network
     @Published var backgroundPreparation = (UserDefaults.standard.object(forKey: "backgroundPreparation") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(backgroundPreparation, forKey: "backgroundPreparation") }
     }
-    let version = "0.1.25"
-    let build = "27"
+    let version = "0.1.26"
+    let build = "28"
     var preparingTitle: String { videos.first { $0.id == preparingID }?.title ?? "Your video" }
     var queuedCount: Int { videos.filter { $0.state == "preparing" && $0.id != preparingID }.count }
     private var library: Library?
@@ -293,12 +293,26 @@ import Network
         _ = queue(id: id, imported: nil)
     }
     func importVideo(_ url: URL) { _ = queue(id: nil, imported: url) }
-    func remove(_ id: UUID) {
-        guard !busy else { message = "Wait for the current video to finish."; return }
-        do { try library?.remove(id); seekIndexes.removeValue(forKey: id); refresh() } catch { message = error.localizedDescription }
+    @discardableResult func remove(_ id: UUID) -> Bool {
+        guard let library, library.videos.contains(where: { $0.id == id }) else { return false }
+        if busy && preparingID == id {
+            message = "Pause the active preparation before deleting it."
+            return false
+        }
+        do { try library.remove(id); seekIndexes.removeValue(forKey: id); refresh(); return true }
+        catch { message = error.localizedDescription; return false }
     }
     @discardableResult private func queue(id: String?, imported: URL?) -> LibraryVideo? {
         guard let library else { message = "The library is unavailable."; return nil }
+        if let id, let existing = library.videos.first(where: {
+            guard let existingID = $0.youtubeID else { return false }
+            return existingID.caseInsensitiveCompare(id) == .orderedSame
+        }) {
+            message = existing.state == "preparing"
+                ? "That video is already in the preparation queue."
+                : "That video is already in your library. Use Play or Retry instead."
+            return nil
+        }
         let video: LibraryVideo
         do { video = try library.add(title: id.map { "YouTube \($0)" } ?? imported?.lastPathComponent ?? "Video", youtubeID: id) }
         catch { message = error.localizedDescription; return nil }
@@ -495,6 +509,17 @@ import Network
             }
             guard let video = queue(id: id, imported: nil) else { return .json(["error": message], status: 409) }
             return .json(["id": video.id.uuidString], status: 202)
+        }
+        if request.path == "/api/library/remove", request.method == "POST" {
+            guard let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: String],
+                  let rawID = body["id"], let id = UUID(uuidString: rawID) else {
+                return .json(["error": "Choose a library item to remove."], status: 400)
+            }
+            guard library?.videos.contains(where: { $0.id == id }) == true else {
+                return .json(["error": "That library item no longer exists."], status: 404)
+            }
+            guard remove(id) else { return .json(["error": message], status: 409) }
+            return .json(["removed": true])
         }
         if request.path == "/api/search", request.method == "GET" {
             let query = request.query.first(where: { $0.name == "q" })?.value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
