@@ -12,6 +12,20 @@ const playbackClient = (() => {
   return `vp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 })();
 const notice = message => { $('notice').textContent = message; };
+const themeKey = 'video-pilot-theme';
+function applyTheme(theme) {
+  const value = theme === 'dark' ? 'dark' : 'light';
+  const root = document.documentElement;
+  if (!root) return;
+  root.dataset.theme = value;
+  const toggle = $('theme-toggle');
+  if (toggle) {
+    toggle.textContent = value === 'dark' ? 'Light mode' : 'Dark mode';
+    toggle.setAttribute('aria-pressed', value === 'dark' ? 'true' : 'false');
+  }
+  try { globalThis.localStorage?.setItem(themeKey, value); } catch {}
+}
+try { applyTheme(globalThis.localStorage?.getItem(themeKey) || 'light'); } catch { applyTheme('light'); }
 const resumeKey = video => 'video-pilot-resume:' + (video?.id || '');
 function savedResume(video) {
   try {
@@ -458,6 +472,9 @@ document.querySelectorAll?.('.tab').forEach(tab => tab.onclick = () => showTab(t
 $('menu-toggle').onclick = () => {
   const menu = $('tab-menu'), open = menu.hidden;
   menu.hidden = !open; $('menu-toggle').setAttribute('aria-expanded', open ? 'true' : 'false');
+};
+if ($('theme-toggle')) $('theme-toggle').onclick = () => {
+  applyTheme(document.documentElement?.dataset.theme === 'dark' ? 'light' : 'dark');
 };
 document.addEventListener?.('click', event => {
   const menu = $('tab-menu'), toggle = $('menu-toggle');

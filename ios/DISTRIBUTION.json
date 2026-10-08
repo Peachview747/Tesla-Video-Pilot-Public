@@ -1,10 +1,10 @@
 {
   "name": "Video Pilot",
   "version": "0.1.28",
-  "build": "32",
+  "build": "33",
   "iconVersion": "0.1.28",
   "artifactPrefix": "Tesla-Video-Pilot",
-  "releaseNotes": "Build 32 adopts the bright Video Pilot media-cockpit icon: a clean center-screen play surface framed by a silver Tesla-inspired cabin, while retaining decoder-safe seek recovery.",
+  "releaseNotes": "Build 33 carries the bright media-cockpit icon into the iPhone and Tesla web UI, adds persistent light/dark appearance toggles, and retains decoder-safe seek recovery.",
   "packaging": "arm64-only-adhoc-signature-template",
   "stage": "native-prototype",
   "branch": "iphone-native",

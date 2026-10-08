@@ -8,11 +8,12 @@ import MK8Core
     @UIApplicationDelegateAdaptor(MK8AppDelegate.self) private var appDelegate
     @StateObject private var host = HostModel()
     @Environment(\.scenePhase) private var phase
+    @AppStorage("appearanceMode") private var appearanceMode = "light"
     var body: some Scene {
         WindowGroup {
             AppRootView(host: host)
             .tint(MK8Theme.accent)
-            .preferredColorScheme(.dark)
+            .preferredColorScheme(appearanceMode == "dark" ? .dark : .light)
             .onChange(of: phase) { _, value in
                 if value == .background { host.backgrounded() }
                 if value == .active { host.foregrounded() }
@@ -88,13 +89,17 @@ private struct AppRootView: View {
 }
 
 private enum MK8Theme {
-    static let background = Color(red: 0.025, green: 0.035, blue: 0.06)
-    static let card = Color(red: 0.075, green: 0.095, blue: 0.13)
-    static let cardRaised = Color(red: 0.105, green: 0.135, blue: 0.18)
-    static let accent = Color(red: 1, green: 0.22, blue: 0.30)
-    static let accentDeep = Color(red: 0.60, green: 0.04, blue: 0.10)
-    static let secondary = Color(red: 0.62, green: 0.68, blue: 0.74)
-    static let steel = Color(red: 0.20, green: 0.27, blue: 0.34)
+    private static func adaptive(_ light: UIColor, _ dark: UIColor) -> Color {
+        Color(uiColor: UIColor { traits in traits.userInterfaceStyle == .dark ? dark : light })
+    }
+    static let background = adaptive(UIColor(red: 0.93, green: 0.95, blue: 0.97, alpha: 1), UIColor(red: 0.035, green: 0.05, blue: 0.07, alpha: 1))
+    static let card = adaptive(.white, UIColor(red: 0.075, green: 0.10, blue: 0.13, alpha: 1))
+    static let cardRaised = adaptive(UIColor(red: 0.985, green: 0.99, blue: 1, alpha: 1), UIColor(red: 0.11, green: 0.145, blue: 0.18, alpha: 1))
+    static let accent = adaptive(UIColor(red: 0.14, green: 0.21, blue: 0.26, alpha: 1), UIColor(red: 0.88, green: 0.92, blue: 0.95, alpha: 1))
+    static let accentDeep = adaptive(UIColor(red: 0.05, green: 0.10, blue: 0.14, alpha: 1), UIColor(red: 0.18, green: 0.25, blue: 0.30, alpha: 1))
+    static let secondary = adaptive(UIColor(red: 0.38, green: 0.44, blue: 0.49, alpha: 1), UIColor(red: 0.62, green: 0.69, blue: 0.74, alpha: 1))
+    static let steel = adaptive(UIColor(red: 0.63, green: 0.70, blue: 0.75, alpha: 1), UIColor(red: 0.30, green: 0.40, blue: 0.47, alpha: 1))
+    static let blue = adaptive(UIColor(red: 0.42, green: 0.62, blue: 0.79, alpha: 1), UIColor(red: 0.54, green: 0.73, blue: 0.88, alpha: 1))
 }
 
 private struct HostScreen<Content: View>: View {
@@ -108,7 +113,7 @@ private struct HostScreen<Content: View>: View {
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.interactively)
         .background(
-            LinearGradient(colors: [MK8Theme.background, Color.black], startPoint: .topLeading, endPoint: .bottomTrailing)
+            LinearGradient(colors: [MK8Theme.cardRaised, MK8Theme.background], startPoint: .topLeading, endPoint: .bottomTrailing)
                 .ignoresSafeArea()
         )
     }
@@ -126,11 +131,11 @@ private struct HostCard<Content: View>: View {
                 in: RoundedRectangle(cornerRadius: 22)
             )
             .overlay(alignment: .topLeading) {
-                Capsule().fill(MK8Theme.accent.opacity(0.8)).frame(width: 34, height: 3)
+                Capsule().fill(MK8Theme.steel.opacity(0.9)).frame(width: 34, height: 3)
                     .padding(.leading, 20)
             }
-            .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.075), lineWidth: 1))
-            .shadow(color: .black.opacity(0.24), radius: 12, y: 8)
+            .overlay(RoundedRectangle(cornerRadius: 22).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .shadow(color: .black.opacity(0.10), radius: 12, y: 8)
     }
 }
 
@@ -150,16 +155,24 @@ private struct VPMark: View {
     var size: CGFloat = 56
     var body: some View {
         ZStack {
-            Circle()
+            RoundedRectangle(cornerRadius: size * 0.22)
                 .fill(LinearGradient(colors: [MK8Theme.accent, MK8Theme.accentDeep], startPoint: .topLeading, endPoint: .bottomTrailing))
-            Circle().stroke(.white.opacity(0.28), lineWidth: 1)
-            Text("VP")
-                .font(.system(size: size * 0.25, weight: .heavy, design: .rounded))
-                .tracking(-1)
-                .foregroundStyle(.white)
+            RoundedRectangle(cornerRadius: size * 0.22)
+                .stroke(MK8Theme.steel.opacity(0.65), lineWidth: 1)
+            VStack(spacing: size * 0.06) {
+                RoundedRectangle(cornerRadius: size * 0.07)
+                    .fill(Color.white.opacity(0.13))
+                    .overlay {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: size * 0.22, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                    .frame(width: size * 0.68, height: size * 0.43)
+                Capsule().fill(MK8Theme.steel.opacity(0.9)).frame(width: size * 0.44, height: 2)
+            }
         }
         .frame(width: size, height: size)
-        .shadow(color: MK8Theme.accent.opacity(0.28), radius: 12, y: 6)
+        .shadow(color: MK8Theme.accent.opacity(0.18), radius: 10, y: 5)
     }
 }
 
@@ -175,8 +188,8 @@ private struct DashboardMetric: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(11)
-        .background(MK8Theme.background.opacity(0.58), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.06), lineWidth: 1))
+        .background(MK8Theme.background.opacity(0.72), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.06), lineWidth: 1))
     }
 }
 
@@ -288,7 +301,7 @@ private struct ChargingView: View {
             Text("Keep this screen open for continuous playback. Locking the phone can pause hosting.")
                 .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
             Button("Back to Video Pilot", systemImage: "chevron.down") { dismiss() }.buttonStyle(.bordered).controlSize(.large)
-        }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity).background(.black).foregroundStyle(.white)
+        }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity).background(MK8Theme.background).foregroundStyle(MK8Theme.accent)
             .onAppear { previousBrightness = UIScreen.main.brightness; UIScreen.main.brightness = min(UIScreen.main.brightness, 0.08) }
             .onDisappear { if let previousBrightness { UIScreen.main.brightness = previousBrightness } }
     }
@@ -694,8 +707,18 @@ private struct VideoCard: View {
 private struct HostSettingsView: View {
     @ObservedObject var host: HostModel
     @ObservedObject private var background = BackgroundPreparation.shared
+    @AppStorage("appearanceMode") private var appearanceMode = "light"
     var body: some View {
         HostScreen(title: "Settings") {
+            HostCard {
+                Label("Appearance", systemImage: appearanceMode == "dark" ? "moon.fill" : "sun.max.fill").font(.headline)
+                Toggle("Dark mode", isOn: Binding(
+                    get: { appearanceMode == "dark" },
+                    set: { appearanceMode = $0 ? "dark" : "light" }
+                ))
+                Text("Light mode matches the bright media-cockpit design. Dark mode keeps the same layout with graphite surfaces.")
+                    .font(.footnote).foregroundStyle(MK8Theme.secondary)
+            }
             HostCard {
                 Label("App authorization", systemImage: "faceid").font(.headline)
                 Text(host.hostAuthorized ? "Face ID approved for this app session." : "Face ID will be requested once before hosting starts.")
