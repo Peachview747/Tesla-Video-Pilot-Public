@@ -31,6 +31,24 @@ test('forwards only visible bytes and completes after the final chunk', async ()
   } finally { fixture.restore(); }
 });
 
+test('passes indexed seek time and measured duration to the player session', async () => {
+  const events = [];
+  const response = new Response(new Uint8Array([1]), {headers:{
+    'x-video-seek-time':'41.25', 'x-video-duration':'123.5'
+  }});
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => response;
+  const source = new JSMpegHttpSource('/api/stream/test.ts', {
+    onSourceStartTime:value => events.push(['seek', value]),
+    onSourceDuration:value => events.push(['duration', value])
+  });
+  source.connect({write() {}});
+  try {
+    await source.read();
+    assert.deepEqual(events, [['seek', 41.25], ['duration', 123.5]]);
+  } finally { source.destroy(); globalThis.fetch = original; }
+});
+
 const tick = () => new Promise(resolve => setTimeout(resolve, 10));
 async function until(condition) {
   for (let i = 0; i < 100 && !condition(); i++) await tick();

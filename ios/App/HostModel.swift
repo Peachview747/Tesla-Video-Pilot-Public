@@ -50,6 +50,7 @@ import Network
         didSet { UserDefaults.standard.set(backgroundPreparation, forKey: "backgroundPreparation") }
     }
     let version = "0.1.19"
+    let build = "21"
     var preparingTitle: String { videos.first { $0.id == preparingID }?.title ?? "Your video" }
     var queuedCount: Int { videos.filter { $0.state == "preparing" && $0.id != preparingID }.count }
     private var library: Library?
@@ -57,6 +58,10 @@ import Network
     private var tunnel: PhoneTunnel?
     private var localStreams = 0
     private var tunnelStreams = 0
+    // Indexes are built once per prepared file and then reused by every
+    // browser seek. Existing library items without a sidecar are migrated
+    // lazily on their first seek so opening the app stays fast.
+    private var seekIndexes: [UUID: MPEGTSIndex] = [:]
     private let networkMonitor = NWPathMonitor()
     private var meter: TransferMeter
     private var metricsTask: Task<Void, Never>?
@@ -272,7 +277,7 @@ import Network
     func importVideo(_ url: URL) { _ = queue(id: nil, imported: url) }
     func remove(_ id: UUID) {
         guard !busy else { message = "Wait for the current video to finish."; return }
-        do { try library?.remove(id); refresh() } catch { message = error.localizedDescription }
+        do { try library?.remove(id); seekIndexes.removeValue(forKey: id); refresh() } catch { message = error.localizedDescription }
     }
     @discardableResult private func queue(id: String?, imported: URL?) -> LibraryVideo? {
         guard let library else { message = "The library is unavailable."; return nil }
@@ -287,6 +292,7 @@ import Network
         guard !busy, let library, let video = library.videos.first(where: { $0.id == id }) else { return }
         let job = try? MediaPipeline.store.load(id)
         guard job != nil || video.youtubeID != nil else { message = "Import this file again from Files."; return }
+        seekIndexes.removeValue(forKey: id)
         MediaPipeline.store.clearFailures(id)
         MediaDownloader.shared.forget(jobID: id)
         launchPreparation(video: video, restored: job)
@@ -343,6 +349,7 @@ import Network
             } catch {
                 await MediaDownloader.shared.cancel(jobID: video.id)
                 try? FileManager.default.removeItem(at: output)
+                try? FileManager.default.removeItem(at: MediaPipeline.seekIndexURL(for: output))
                 let paused = error is CancellationError || Task.isCancelled
                 let text = paused ? "Paused. Tap Resume; completed downloads are saved." : error.localizedDescription
                 let title = (try? MediaPipeline.store.load(video.id))?.title
@@ -367,6 +374,24 @@ import Network
         launchPreparation(video: next, restored: try? MediaPipeline.store.load(next.id))
     }
     private func refresh() { videos = library?.videos ?? [] }
+    private func seekIndex(for id: UUID, file url: URL) -> MPEGTSIndex? {
+        if let cached = seekIndexes[id] { return cached }
+        let sidecar = MediaPipeline.seekIndexURL(for: url)
+        if let data = try? Data(contentsOf: sidecar), let index = try? JSONDecoder().decode(MPEGTSIndex.self, from: data),
+           !index.points.isEmpty {
+            seekIndexes[id] = index
+            return index
+        }
+        guard let built = try? MPEGTSIndex.build(file: url), !built.points.isEmpty else { return nil }
+        // The sidecar is only an optimization; a write failure must not make a
+        // video unplayable. The in-memory index still fixes this session.
+        if let data = try? JSONEncoder().encode(built) {
+            try? data.write(to: sidecar, options: .atomic)
+            try? MediaPipeline.protect(sidecar)
+        }
+        seekIndexes[id] = built
+        return built
+    }
     private func notify(title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = "Video Pilot"
@@ -435,7 +460,7 @@ import Network
             if let progress = preparation?.fraction { progressValue = progress } else { progressValue = NSNull() }
             return .json(["hosting": running, "busy": busy, "publicAccess": true, "authentication": "faceID-on-start",
                           "youtubeSearch": !searchKey.isEmpty, "youtubeExplore": !searchKey.isEmpty,
-                          "tunnel": tunnelState.rawValue, "version": version,
+                          "tunnel": tunnelState.rawValue, "version": version, "build": build,
                           "activeStreams": activeStreams, "queuedCount": queuedCount, "downloadMbps": traffic.downloadMbps,
                           "uploadMbps": traffic.uploadMbps,
                           "preparationStage": preparation?.stage.rawValue ?? "idle",
@@ -473,17 +498,38 @@ import Network
                 return .json(["error": "Video is not ready or no longer exists."], status: 404)
             }
             let fileSize = ((try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?.int64Value ?? 0
+            let index = seekIndex(for: id, file: url)
             var offset: Int64 = 0
+            var seekTime: Double?
             if let rawSeek = request.query.first(where: { $0.name == "seek" })?.value,
-               let seek = Double(rawSeek), seek.isFinite, seek > 0,
-               let duration = video.duration, duration > 0,
-               fileSize > 0 {
-                let ratio = min(0.999, max(0, seek / duration))
-                offset = Int64(Double(fileSize) * ratio)
-                offset -= offset % 188
+               let seek = Double(rawSeek), seek.isFinite, seek > 0, fileSize > 0 {
+                if let index, let point = index.point(for: seek) {
+                    // The index points to a PAT context, not an arbitrary byte
+                    // in a PES packet. That lets JSMpeg rebuild decoder state
+                    // after a seek instead of inheriting a partial buffer.
+                    offset = min(max(0, point.offset), max(0, fileSize - 188))
+                    seekTime = point.time
+                    if let measured = index.duration,
+                       video.duration == nil || abs((video.duration ?? measured) - measured) > 1 {
+                        // Repair legacy library entries whose source duration
+                        // disagreed with the prepared MPEG-TS output.
+                        try? library?.update(id, state: "ready", duration: measured)
+                        refresh()
+                    }
+                } else {
+                    // Keep a conservative compatibility fallback for files
+                    // made by an older build that cannot be indexed.
+                    if let duration = video.duration, duration > 0 {
+                        let ratio = min(0.999, max(0, seek / duration))
+                        offset = Int64(Double(fileSize) * ratio)
+                        offset -= offset % 188
+                    }
+                }
             }
             var headers = ["X-Accel-Buffering": "no", "Accept-Ranges": "bytes"]
             if offset > 0 { headers["X-Video-Seek"] = String(offset) }
+            if let seekTime { headers["X-Video-Seek-Time"] = String(format: "%.3f", seekTime) }
+            if let duration = index?.duration { headers["X-Video-Duration"] = String(format: "%.3f", duration) }
             let fileRange: Range<Int64>? = offset > 0 ? offset..<fileSize : nil
             return HTTPResponse(status: 200, contentType: "video/mp2t", headers: headers,
                                 file: url, fileRange: fileRange)

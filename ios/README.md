@@ -1,12 +1,12 @@
 # Video Pilot iPhone distribution — native prototype 0.1.19
 
-This is the native iPhone host source in the public Video Pilot build snapshot. The iPhone is the origin server; the Tesla opens the served browser interface. It does not need Express, PostgreSQL, Python, Telegram, or a laptop at runtime.
+This distribution lives in `ios/` on the `iphone-native` branch of the same Tesla Video Player repository. The iPhone is the origin server; the Tesla opens the served browser interface. It does not need Express, PostgreSQL, Python, Telegram, or a laptop at runtime.
 
 **Status:** native prototype source, not a validated release. Native compilation runs in the iPhone GitHub workflow. Real iPhone/Tesla testing is required before calling the app usable. Version 0.1.4 implements a native outbound WebSocket relay through the existing Cloudflare Worker. A one-time Worker update and the existing TV_SECRET are required before the public URL reaches the phone. This build does not deploy your Cloudflare account automatically.
 
 The user confirmed that v0.1.2 opens its GUI and began local media/YouTube testing. Version 0.1.3 adds a new dashboard, progress reporting, traffic measurements, a custom icon, and supported background transfers; those additions still need physical-device validation.
 
-Version 0.1.19 uses the Video Pilot identity: a Tesla-inspired car outline containing **VP** and **VER 1.19**. Keep the artwork's displayed version, `iconVersion`, marketing version, and build number aligned for future releases.
+Version 0.1.19 build 21 uses the Video Pilot identity: a Tesla-inspired car outline containing **VP** and **VER 1.19**. The marketing version and icon remain 1.19; the build number is the incrementing source/IPA revision.
 
 ## Implemented
 
@@ -20,8 +20,10 @@ Version 0.1.19 uses the Video Pilot identity: a Tesla-inspired car outline conta
 - YouTubeKit performs extraction locally on the phone, without a remote extraction fallback. Combined streams or separate audio/video streams are downloaded with URLSession.
 - An embedded FFmpeg library converts downloaded or imported MP4/MOV files into MPEG-TS with MPEG-1 video and MP2 audio. Conversion finishes before playback starts; this is not live conversion.
 - The browser uses the repository's existing JSMpeg decoder, canvas rendering, and incremental HTTP transport. Pause pauses HTTP consumption, and closing the player aborts the stream.
+- Prepared MPEG-TS files receive a timestamp/PAT seek sidecar. Seeks no longer use a variable-bitrate byte ratio, and decoder teardown is serialized so rapid forward/backward seeks do not overlap old and new buffers.
 - Local metadata is stored in an atomic JSON index; no PostgreSQL service is needed. Files remain in the app sandbox. Preparation interrupted by app termination is marked failed on next launch.
 - The tunnel key and YouTube search key are stored in Keychain. Face ID/device authentication is requested once when hosting first starts in each app session. There is no browser PIN or login gate after that: anyone who obtains the public URL can view the library, queue downloads, and stream while hosting is active. Browser writes still require a matching Origin/Host.
+- Account sign-in is not a generic browser feature. The safe YouTube OAuth design, scopes, PKCE flow, and Google Cloud prerequisites are documented in [`OAUTH.md`](OAUTH.md); the current API-key search remains public-data-only.
 
 ## Install locally
 
@@ -31,9 +33,9 @@ The existing unsigned MK8 IPAs can be imported into **SideStore** on the iPhone 
 
 ### GitHub build / sideload
 
-1. Open **Actions → Build unsigned iPhone IPA** in the public repository and choose **Run workflow** on `main`.
-2. Download the `VideoPilot-unsigned-ipa` artifact from the completed run and extract the IPA. This public repository intentionally does not publish releases or commit IPA binaries.
-3. Sign and install it with Sideloadly or AltStore using your own Apple ID and their current instructions. GitHub cannot sign/install the app onto an iPhone for you. Never add your Apple ID password or signing material to this repository or chat.
+1. Open the repository's [Releases page](https://github.com/Peachview747/Tesla-Video-Player/releases) in your regular browser while signed into GitHub. This is a private repository, so the browser needs repository access.
+2. Open the newest iPhone prerelease, then download `MK8iPhone-v<version>-unsigned.ipa` from **Assets**. Select that IPA directly in Sideloadly. Version 0.1.1 selects only the ordinary arm64 device slice from bundled FFmpeg frameworks and prepares Apple ad-hoc signatures. The build signs, replaces signatures, and strictly verifies the app/frameworks before packaging. These template signatures do not authorize installation; your sideload tool still needs to perform personal Apple signing. GitHub's automatically generated Source code ZIP/TAR files contain the project sources. Workflow artifact ZIPs remain available as a fallback under **Actions → iPhone distribution** and must be extracted to obtain the inner IPA.
+3. Sign and install it with Sideloadly or AltStore using your own Apple ID and their current instructions. Both standard routes need a computer for initial setup; GitHub alone cannot sign/install the app onto an iPhone. Never add your Apple ID password or signing material to this repository or chat.
    If the iPhone says **Untrusted Developer**, open **Settings → General → VPN & Device Management**, select your Apple ID under **Developer App**, and choose **Trust** (or **Trust & Restart**). If prompted, enable **Settings → Privacy & Security → Developer Mode**, restart, and confirm.
 4. Free personal signing normally needs renewal every seven days and has app limits. Paid Apple developer signing offers different options. An unsigned IPA cannot install directly from Safari. This prototype has no TestFlight distribution yet.
 
@@ -43,7 +45,7 @@ Version 0.1.3 enables **Background downloads**, **Allow extra background time**,
 
 ### Version commits and downloads
 
-Each public snapshot is built from `main`. Before a versioned build, update `ios/DISTRIBUTION.json`, `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in `ios/project.yml`, and the reported version in `ios/App/HostModel.swift`. The public workflow builds and validates an unsigned IPA, then uploads a short-lived artifact; it does not publish a release. Keep private release history and deployment files in the private project.
+Each new version's code and build changes are committed to `iphone-native`. Before pushing a new version, update `ios/DISTRIBUTION.json`, `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in `ios/project.yml`, and the reported version in `ios/App/HostModel.swift`. The iPhone workflow builds and validates the committed source, then publishes the compiled IPA to a matching `ios-v<version>` GitHub prerelease. Release publishing runs only from `iphone-native` after both build/check jobs pass. Pull-request checks do not publish.
 
 Existing version assets are preserved. Bump the version before publishing a changed app. The IPA release assets are stored in the same GitHub project as the source commits. Direct IPA files can also be provided in chat for users who cannot sign into GitHub in their browser; chat download links may need to be refreshed after they expire.
 

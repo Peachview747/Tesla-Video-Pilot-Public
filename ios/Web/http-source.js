@@ -81,6 +81,10 @@ export class JSMpegHttpSource {
       if (this.destroyed) return;
       if (!response.ok) throw new Error(response.status === 401 ? 'Pair this browser again.' : `Video stream failed (HTTP ${response.status}).`);
       if (!response.body) throw new Error('This browser cannot read the video stream.');
+      const seekTime = Number(response.headers.get('x-video-seek-time'));
+      if (Number.isFinite(seekTime) && seekTime >= 0) this.options.onSourceStartTime?.(seekTime);
+      const duration = Number(response.headers.get('x-video-duration'));
+      if (Number.isFinite(duration) && duration > 0) this.options.onSourceDuration?.(duration);
       const expected = Number(response.headers.get('content-length'));
       let received = 0;
       reader = response.body.getReader();

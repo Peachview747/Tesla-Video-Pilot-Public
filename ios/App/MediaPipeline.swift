@@ -110,7 +110,10 @@ enum MediaPipeline {
         if !allowed { progress(.init(stage: .waitingForApp)) }
         try await AppActivity.shared.waitUntilProcessingAllowed()
         try Task.checkCancellation()
-        let duration = await duration(of: source)
+        let sourceDuration = await duration(of: source)
+        // A previous failed conversion must never leave a stale index paired
+        // with a newly downloaded file.
+        try? FileManager.default.removeItem(at: seekIndexURL(for: output))
         if job.isTransportStream {
             let handle = try FileHandle(forReadingFrom: source)
             defer { try? handle.close() }
@@ -122,12 +125,21 @@ enum MediaPipeline {
             if FileManager.default.fileExists(atPath: output.path) { try FileManager.default.removeItem(at: output) }
             try FileManager.default.copyItem(at: source, to: output)
         } else {
-            progress(.init(stage: .processing, fraction: duration == nil ? nil : 0))
-            try await convert(video: source, audio: audio, output: output, duration: duration,
+            progress(.init(stage: .processing, fraction: sourceDuration == nil ? nil : 0))
+            try await convert(video: source, audio: audio, output: output, duration: sourceDuration,
                               quality: job.quality ?? .balanced, jobID: job.id, progress: progress)
         }
+        // MPEG-TS is variable bitrate, so a file-size ratio cannot provide a
+        // reliable seek position. Build a timestamp index once while the file
+        // is local; playback reuses it for every later seek. Prefer the
+        // output's measured duration because FFmpeg can trim or round frames
+        // differently from the downloaded source track.
+        let index = try? MPEGTSIndex.build(file: output)
+        if let index, !index.points.isEmpty {
+            try? writeSeekIndex(index, for: output)
+        }
         progress(.init(stage: .finalizing, fraction: 1))
-        return PreparedMedia(title: job.title, duration: duration)
+        return PreparedMedia(title: job.title, duration: index?.duration ?? sourceDuration)
     }
 
     private static func convert(video: URL, audio: URL?, output: URL, duration: Double?,
@@ -146,6 +158,14 @@ enum MediaPipeline {
     }
 
     static func diagnosticsURL(_ id: UUID) -> URL { store.directory(for: id).appendingPathComponent("conversion.log") }
+    static func seekIndexURL(for output: URL) -> URL {
+        output.deletingPathExtension().appendingPathExtension("seek.json")
+    }
+    private static func writeSeekIndex(_ index: MPEGTSIndex, for output: URL) throws {
+        let data = try JSONEncoder().encode(index)
+        try data.write(to: seekIndexURL(for: output), options: .atomic)
+        try protect(seekIndexURL(for: output))
+    }
     static func protect(_ file: URL) throws {
         try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: file.path)
     }

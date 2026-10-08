@@ -1,9 +1,10 @@
 {
   "name": "Video Pilot",
   "version": "0.1.19",
+  "build": "21",
   "iconVersion": "0.1.19",
   "artifactPrefix": "VideoPilot",
-  "releaseNotes": "Adds one Face ID/device-authentication check when hosting first starts in each app session, then keeps the same Tesla URL available without browser PINs. Refreshes the Tesla-style web navigation and hamburger menu, while retaining repeated-seek recovery, queueing, fullscreen controls, resume checkpoints, and background recovery.",
+  "releaseNotes": "Build 21 repairs timeline duration and seek accuracy with an MPEG-TS timestamp index, serializes decoder teardown for repeated seeks, and keeps the Tesla relay from overlapping stale playback buffers. OAuth requirements are documented separately; API-key YouTube search remains public-data-only.",
   "packaging": "arm64-only-adhoc-signature-template",
   "stage": "native-prototype",
   "branch": "iphone-native",

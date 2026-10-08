@@ -9,7 +9,7 @@ import {JSMpegHttpSource} from '../http-source.js';
 const app = readFileSync(new URL('../app.js', import.meta.url), 'utf8')
   .replace(/^import .*?;\n/, '');
 function setup() {
-  const elements = new Map(), players = [];
+  const elements = new Map(), players = [], intervals = [];
   const element = id => {
     if (!elements.has(id)) elements.set(id, {textContent:'', hidden:false, dataset:{}, scrollIntoView() {},
       removeAttribute(name) { delete this[name]; }});
@@ -32,19 +32,20 @@ function setup() {
     }
     pause() { this.paused = true; this.isPlaying = false; }
     play() { this.paused = false; }
-    destroy() { this.destroyed = true; }
+    destroy() { this.destroyed = true; this.source.destroy(); }
   }
   const context = vm.createContext({
     JSMpegHttpSource,
     document:{getElementById:element},
     window:{JSMpeg:{Player}, addEventListener() {}},
     // The library refresh is outside these focused playback tests.
-    fetch:() => new Promise(() => {}), setInterval() {}, setTimeout, clearTimeout, URL, Number,
+    fetch:() => new Promise(() => {}), setInterval:callback => { intervals.push(callback); }, setTimeout, clearTimeout, URL, Number,
   });
   vm.runInContext(app, context);
   return {
     element, players,
-    play:() => vm.runInContext('play({id:"video", title:"Test video"})', context),
+    play:(video = {id:'video', title:'Test video'}) => { context.testVideo = video; vm.runInContext('play(testVideo)', context); },
+    tick:() => intervals[0]?.(),
     close:() => element('close').onclick(),
     preparation:status => {
       context.testPreparation = status;
@@ -106,12 +107,13 @@ test('stream failures survive late decoder and end callbacks', () => {
   player.options.onVideoDecode(); player.options.onStalled(); player.options.onEnded();
   assert.equal(status.textContent, 'Video stream interrupted.');
 });
-test('finished playback and replacement players ignore late callbacks', () => {
+test('finished playback and replacement players ignore late callbacks', async () => {
   const f = setup(); f.play();
   const first = f.players[0], status = f.element('playback-status');
   first.options.onEnded(); first.options.onVideoDecode(); first.options.onStalled();
   assert.equal(status.textContent, 'Finished');
   f.play();
+  await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(first.destroyed, true);
   first.options.onVideoDecode(); first.options.onSourceError('Old stream failed'); first.options.onEnded();
   assert.equal(status.textContent, 'Buffering…');
@@ -119,6 +121,25 @@ test('finished playback and replacement players ignore late callbacks', () => {
   assert.equal(status.textContent, 'Playing from your iPhone');
   f.close(); first.options.onStalled();
   assert.equal(f.element('player-section').hidden, true);
+});
+
+test('timeline follows the active decoder and snaps to the measured duration at end', () => {
+  const f = setup(); f.play({id:'video', title:'Test video', duration:100});
+  const player = f.players[0];
+  assert.equal(f.element('timeline').max, '100');
+  player.currentTime = 4;
+  f.tick();
+  assert.equal(f.element('timeline').value, '4');
+  assert.equal(f.element('elapsed').textContent, '0:04');
+  // A late duration header repairs a stale library duration for this session.
+  player.options.onSourceDuration(12);
+  player.currentTime = 11;
+  f.tick();
+  assert.equal(f.element('timeline').max, '12');
+  assert.equal(f.element('timeline').value, '11');
+  player.options.onEnded();
+  assert.equal(f.element('timeline').value, '12');
+  assert.equal(f.element('elapsed').textContent, '0:12');
 });
 
 test('repeated seeks serialize teardown and keep one relay player identity', async () => {

@@ -85,7 +85,8 @@ async function refresh() {
     $('dashboard-queue').textContent = String(Number(status.queuedCount) || 0);
     $('settings-auth').textContent = status.authentication === 'faceID-on-start' ? 'Face ID per app session' : 'App authorization';
     $('settings-search').textContent = status.youtubeSearch ? 'Enabled' : 'Add API key on iPhone';
-    $('settings-version').textContent = status.version ? `v${status.version}` : '—';
+    $('settings-version').textContent = status.version
+      ? `v${status.version}${status.build ? ` · build ${status.build}` : ''}` : '—';
     const library = $('library'); library.replaceChildren();
     if (!videos.length) library.append(card('Your library is empty', 'Prepare a YouTube video or import a file on the iPhone.'));
     for (const video of videos) library.append(card(video.title, video.message || video.state,
@@ -172,6 +173,19 @@ function formatTime(value) {
   const seconds = Math.max(0, Math.floor(Number(value) || 0));
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
+function finiteDuration(value) {
+  const duration = Number(value);
+  return Number.isFinite(duration) && duration > 0 ? duration : 0;
+}
+function updateTimeline(position, duration) {
+  const total = finiteDuration(duration);
+  const currentTime = Math.max(0, Number(position) || 0);
+  const clamped = total ? Math.min(currentTime, total) : currentTime;
+  $('timeline').max = String(total || Math.max(1, clamped));
+  $('timeline').value = String(clamped);
+  $('elapsed').textContent = formatTime(clamped);
+  if (total) $('duration').textContent = formatTime(total);
+}
 function invalidateSeeks() {
   seekGeneration += 1;
   globalThis.clearTimeout?.(seekTimer); seekTimer = null;
@@ -182,9 +196,20 @@ function closePlayer() {
   globalThis.clearTimeout?.(seekTimer); seekTimer = null;
   const oldPlayer = player;
   player = null; currentOffset = 0; $('player-section').hidden = true;
-  let stopped;
-  try { stopped = oldPlayer?.source?.destroy?.(); } catch {}
-  try { oldPlayer?.destroy?.(); } catch {}
+  const source = oldPlayer?.source;
+  let stopped = source?.stoppedPromise;
+  let playerDestroyed = false;
+  try {
+    if (typeof oldPlayer?.destroy === 'function') {
+      oldPlayer.destroy();
+      playerDestroyed = true;
+    }
+  } catch {}
+  // JSMpeg.Player.destroy owns source teardown. The direct fallback is only
+  // for lightweight doubles/older decoders that do not expose destroy().
+  if (!playerDestroyed) {
+    try { stopped = source?.destroy?.() || stopped; } catch {}
+  }
   if (!stopped || typeof stopped.then !== 'function') return Promise.resolve();
   // URLSession/ReadableStream cancellation should settle immediately. The
   // timeout is only a guard for browsers that do not resolve an aborted read.
@@ -206,18 +231,36 @@ function unlockAudio() {
 }
 function startPlayer(video, seek = null) {
   current = video;
+  const duration = finiteDuration(video.duration);
   currentOffset = Math.max(0, Number(seek ?? savedResume(video)) || 0);
-  const session = {paused:false, failed:false, ended:false, baseOffset:currentOffset}; playback = session;
+  if (duration) currentOffset = Math.min(currentOffset, duration);
+  const session = {paused:false, failed:false, ended:false, baseOffset:currentOffset,
+    position:currentOffset, duration}; playback = session;
   const active = () => playback === session && !session.paused && !session.failed && !session.ended;
   $('player-section').hidden = false; $('playing-title').textContent = video.title;
   $('playback-status').textContent = 'Buffering…'; $('pause').textContent = 'Pause'; $('mute').textContent = 'Mute';
-  $('timeline').max = String(video.duration || 1); $('timeline').value = String(Math.min(currentOffset, video.duration || 1));
-  $('duration').textContent = formatTime(video.duration); $('elapsed').textContent = formatTime(currentOffset);
+  updateTimeline(currentOffset, duration);
   try {
     const query = currentOffset > 0 ? `?seek=${encodeURIComponent(currentOffset)}` : '';
     player = new window.JSMpeg.Player(`/api/stream/${encodeURIComponent(video.id)}.ts${query}`, {
       headers:{'x-mk8-player': playbackClient},
       source:JSMpegHttpSource,canvas:$('screen'),autoplay:true,loop:false,disableWebAssembly:true,
+      onSourceStartTime:value => {
+        if (playback !== session) return;
+        const actual = Number(value);
+        if (!Number.isFinite(actual) || actual < 0) return;
+        session.baseOffset = actual;
+        session.position = actual;
+        currentOffset = actual;
+        updateTimeline(actual, session.duration);
+      },
+      onSourceDuration:value => {
+        if (playback !== session) return;
+        const actual = finiteDuration(value);
+        if (!actual) return;
+        session.duration = actual;
+        updateTimeline(session.position, actual);
+      },
       onStalled:() => { if (active()) $('playback-status').textContent = 'Buffering…'; },
       onVideoDecode:() => { if (active()) $('playback-status').textContent = 'Playing from your iPhone'; },
       onSourceError:message => {
@@ -227,7 +270,11 @@ function startPlayer(video, seek = null) {
       },
       onEnded:() => {
         if (playback !== session || session.failed) return;
-        session.ended = true; $('playback-status').textContent = 'Finished'; $('pause').textContent = 'Play';
+        session.ended = true;
+        if (session.duration) session.position = session.duration;
+        currentOffset = session.position;
+        updateTimeline(session.position, session.duration);
+        $('playback-status').textContent = 'Finished'; $('pause').textContent = 'Play';
         clearResume(video);
       }
     });
@@ -238,8 +285,17 @@ function startPlayer(video, seek = null) {
 }
 function play(video, seek = null) {
   invalidateSeeks();
-  void closePlayer();
-  startPlayer(video, seek);
+  // Opening the first video can stay synchronous for a responsive button. A
+  // replacement is serialized behind decoder teardown so an old read loop can
+  // never write into the new decoder while a seek is in flight.
+  if (!player && !playback) { startPlayer(video, seek); return; }
+  const generation = seekGeneration;
+  seekChain = seekChain.then(async () => {
+    await closePlayer();
+    if (generation === seekGeneration) startPlayer(video, seek);
+  }).catch(error => {
+    if (generation === seekGeneration) $('playback-status').textContent = error?.message || 'Unable to start playback.';
+  });
 }
 $('pause').onclick = () => {
   if (!player) return;
@@ -310,14 +366,18 @@ document.addEventListener?.('keydown', event => {
   $('tab-menu').hidden = true; $('menu-toggle').setAttribute('aria-expanded', 'false');
 });
 setInterval(() => {
-  if (!player || !playback || playback.paused) return;
+  if (!player || !playback || playback.paused || playback.failed || playback.ended) return;
   const localTime = Number(player.currentTime ?? player.video?.currentTime ?? 0) || 0;
+  if (!Number.isFinite(localTime) || localTime < 0) return;
   const time = (playback.baseOffset || 0) + localTime;
-  const duration = Number(current?.duration || player.video?.duration || 0);
-  currentOffset = Math.max(currentOffset, time);
+  const duration = playback.duration || finiteDuration(current?.duration) || finiteDuration(player.video?.duration);
+  // A freshly-created JSMpeg decoder reports zero before its first frame. Keep
+  // the indexed seek position until real playback advances, but never carry a
+  // position forward from an older player session.
+  playback.position = Math.max(playback.position || 0, duration ? Math.min(time, duration) : time);
+  currentOffset = playback.position;
+  updateTimeline(currentOffset, duration);
   saveResume();
-  $('timeline').max = String(duration || 1); $('timeline').value = String(Math.min(time, duration || time));
-  $('elapsed').textContent = formatTime(time); if (duration) $('duration').textContent = formatTime(duration);
 }, 500);
 window.addEventListener('pagehide', () => { saveResume(); invalidateSeeks(); void closePlayer(); });
 void refresh();

@@ -700,7 +700,7 @@ private struct HostSettingsView: View {
             HStack {
                 Text("Video Pilot")
                 Spacer()
-                Text("Version \(host.version)")
+                Text("Version \(host.version) · build \(host.build)")
             }.font(.footnote).foregroundStyle(MK8Theme.secondary).padding(.horizontal, 4)
         }
     }

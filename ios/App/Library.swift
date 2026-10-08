@@ -32,6 +32,7 @@ struct LibraryVideo: Codable, Identifiable {
         }
     }
     func file(for id: UUID) -> URL { directory.appendingPathComponent(id.uuidString + ".ts") }
+    func seekIndex(for id: UUID) -> URL { MediaPipeline.seekIndexURL(for: file(for: id)) }
     func add(title: String, youtubeID: String? = nil) throws -> LibraryVideo {
         let video = LibraryVideo(id: UUID(), title: title, youtubeID: youtubeID, state: "preparing", createdAt: Date())
         videos.insert(video, at: 0)
@@ -43,12 +44,18 @@ struct LibraryVideo: Codable, Identifiable {
         if let title { videos[i].title = title }
         videos[i].state = state
         videos[i].message = message
-        videos[i].duration = duration
+        // State/title updates during a retry or progress callback should not
+        // erase a duration that was already measured for this library item.
+        // A newly added item starts with nil, so this also preserves the
+        // intended empty value until preparation produces metadata.
+        if let duration { videos[i].duration = duration }
         try save()
     }
     func remove(_ id: UUID) throws {
         let file = file(for: id)
         if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+        let index = seekIndex(for: id)
+        if FileManager.default.fileExists(atPath: index.path) { try FileManager.default.removeItem(at: index) }
         try MediaPipeline.store.remove(id)
         videos.removeAll { $0.id == id }
         try save()
