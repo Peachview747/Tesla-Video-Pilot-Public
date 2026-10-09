@@ -509,6 +509,7 @@ import Network
         // The sidecar is only an optimization; a write failure must not make a
         // video unplayable. The in-memory index still fixes this session.
         if let data = try? JSONEncoder().encode(built) {
+            let sidecar = MediaPipeline.seekIndexURL(for: url)
             try? data.write(to: sidecar, options: .atomic)
             try? MediaPipeline.protect(sidecar)
         }
