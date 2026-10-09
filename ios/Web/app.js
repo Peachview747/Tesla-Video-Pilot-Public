@@ -1,6 +1,7 @@
 import {JSMpegHttpSource} from './http-source.js';
 const $ = id => document.getElementById(id);
 let player = null, current = null, currentOffset = 0, seekTimer = null;
+let fullscreenFallback = false;
 let playback = null;
 let refreshing = false;
 let seekGeneration = 0;
@@ -260,8 +261,32 @@ function clearRecoveryTimer(session) {
   globalThis.clearTimeout?.(session.startupTimer);
   session.startupTimer = null;
 }
+function syncFullscreenControls(active) {
+  const shell = $('player-shell');
+  if (active) shell.classList?.add?.('vp-fullscreen');
+  else shell.classList?.remove?.('vp-fullscreen');
+  $('fullscreen').hidden = !active;
+  $('exit-fullscreen').hidden = active;
+}
+function leaveFullscreen() {
+  fullscreenFallback = false;
+  syncFullscreenControls(false);
+  try {
+    const shell = $('player-shell');
+    const native = document.fullscreenElement === shell || document.webkitFullscreenElement === shell;
+    const exit = document.exitFullscreen || document.webkitExitFullscreen;
+    if (native) exit?.call(document);
+  } catch {}
+}
+function syncCanvasAspect() {
+  const canvas = $('screen');
+  const width = Number(player?.video?.width || canvas?.width);
+  const height = Number(player?.video?.height || canvas?.height);
+  if (width > 0 && height > 0) canvas.style?.setProperty?.('aspect-ratio', `${width} / ${height}`);
+}
 function closePlayer() {
   saveResume();
+  leaveFullscreen();
   const oldPlayback = playback;
   clearRecoveryTimer(oldPlayback);
   playback = null;
@@ -353,6 +378,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
   };
   $('player-section').hidden = false; $('playing-title').textContent = video.title;
   $('playback-status').textContent = 'Buffering…'; $('pause').textContent = 'Pause'; $('mute').textContent = 'Mute';
+  $('screen').style?.setProperty?.('aspect-ratio', 'auto');
   updateTimeline(currentOffset, duration);
   try {
     const query = currentOffset > 0 ? `?seek=${encodeURIComponent(currentOffset)}` : '';
@@ -388,6 +414,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
         }
       },
       onVideoDecode:() => {
+        syncCanvasAspect();
         session.decoded = true; clearRecoveryTimer(session);
         reportDiagnostic('playerDecode', {positionSeconds:session.position || 0});
         if (active()) $('playback-status').textContent = 'Playing from your iPhone';
@@ -467,14 +494,22 @@ $('mute').onclick = () => {
   }
 };
 async function enterFullscreen() {
-  try { await $('player-shell').requestFullscreen?.(); $('fullscreen').hidden = true; $('exit-fullscreen').hidden = false; }
-  catch { notice('Full screen is unavailable in this browser.'); }
+  const shell = $('player-shell');
+  fullscreenFallback = true;
+  syncFullscreenControls(true);
+  try {
+    await shell.requestFullscreen?.();
+    const native = document.fullscreenElement === shell || document.webkitFullscreenElement === shell;
+    if (native) fullscreenFallback = false;
+  } catch { /* The CSS fallback still fills the Tesla browser viewport. */ }
 }
 $('fullscreen').onclick = enterFullscreen;
-$('exit-fullscreen').onclick = () => document.exitFullscreen?.();
+$('exit-fullscreen').onclick = leaveFullscreen;
 document.addEventListener?.('fullscreenchange', () => {
-  const full = document.fullscreenElement === $('player-shell');
-  $('fullscreen').hidden = full; $('exit-fullscreen').hidden = !full;
+  const shell = $('player-shell');
+  const full = document.fullscreenElement === shell || document.webkitFullscreenElement === shell;
+  if (full) { fullscreenFallback = false; syncFullscreenControls(true); }
+  else if (!fullscreenFallback) syncFullscreenControls(false);
 });
 function requestSeek(offset) {
   if (!current) return;

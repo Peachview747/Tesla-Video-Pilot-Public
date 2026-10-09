@@ -1,10 +1,10 @@
 {
   "name": "Video Pilot",
   "version": "0.1.28",
-  "build": "36",
+  "build": "37",
   "iconVersion": "0.1.28",
   "artifactPrefix": "Tesla-Video-Pilot",
-  "releaseNotes": "Build 36 carries the compact fullscreen rail and cellular buffering improvements forward, and adds bounded redacted diagnostics: worker HTTPS probes, tunnel WebSocket RTT, browser round-trip timing, buffer/read progress, seeks, reconnects, and player errors with an in-app export.",
+  "releaseNotes": "Build 37 removes forced 16:9 player bars, follows the decoded video aspect ratio, and adds a browser-independent fullscreen fallback that overlays compact controls on Tesla browsers that do not apply native fullscreen CSS.",
   "packaging": "arm64-only-adhoc-signature-template",
   "stage": "native-prototype",
   "branch": "iphone-native",
