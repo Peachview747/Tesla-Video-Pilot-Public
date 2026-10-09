@@ -733,10 +733,15 @@ $('pause').onclick = () => {
     return;
   }
   if (!player.paused) {
-    if (playback) playback.paused = true;
+    if (playback) { playback.paused = true; playback.pausedAt = Date.now(); }
     player.pause(); player.source?.pauseReading(); $('pause').textContent = 'Play';
     if (!playback?.failed && !playback?.ended) $('playback-status').textContent = 'Paused';
   } else {
+    // The iPhone releases a relay stream nobody has read for 45 s, so after a
+    // long pause reopen at the same position instead of resuming a dead stream.
+    if (current && playback?.pausedAt && Date.now() - playback.pausedAt > 30000) {
+      $('pause').textContent = 'Pause'; requestSeek(currentOffset); return;
+    }
     if (playback) playback.paused = false;
     playback?.resumeWatchdog?.();
     unlockAudio(); player.source?.resumeReading(); player.play(); $('pause').textContent = 'Pause';

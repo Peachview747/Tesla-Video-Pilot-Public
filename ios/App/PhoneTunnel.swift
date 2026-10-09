@@ -142,6 +142,7 @@ import MK8Core
                     socket.cancel(with: .goingAway, reason: nil)
                     return
                 }
+                await self.reapIdlePeers(socket: socket)
                 let id = UUID().uuidString.lowercased()
                 self.pingStartedAt[id] = ProcessInfo.processInfo.systemUptime
                 do { try await self.send(["type": "ping", "id": id], socket: socket) }
@@ -188,6 +189,7 @@ import MK8Core
                 // strand every other browser request.
                 return
             }
+            peer.lastPull = ProcessInfo.processInfo.systemUptime
             guard startDrain else { return }
             peer.transferTask = Task { [weak self, weak peer] in
                 guard let self, let peer else { return }
@@ -312,6 +314,20 @@ import MK8Core
         guard !Task.isCancelled, self.socket === socket, peers[id] === peer else { return }
         remove(id)
     }
+    /// A Worker entry is freed only by an end, error or browser abort that it
+    /// actually observes. Cloudflare does not reliably forward Tesla browser
+    /// aborts, so an abandoned seek stream would otherwise hold one of the
+    /// eight relay slots until the tunnel reconnects. Streams the browser is
+    /// still reading pull every few seconds; a paused player reopens after 30 s.
+    private func reapIdlePeers(socket: URLSessionWebSocketTask) async {
+        let now = ProcessInfo.processInfo.systemUptime
+        let idle = peers.filter { $0.value.ready && $0.value.transferTask == nil && now - $0.value.lastPull > 45 }
+        for (id, peer) in idle {
+            SessionDiagnostics.shared.record(component: "tunnel", event: "peerReaped",
+                fields: ["idleSeconds": String(Int(now - peer.lastPull))])
+            await fail(id, peer: peer, socket: socket)
+        }
+    }
     private func remove(_ id: UUID) { peers.removeValue(forKey: id)?.close(); updateStreams() }
     private func updateStreams() { streamsChanged?(peers.values.filter(\.isFile).count) }
 }
@@ -320,6 +336,7 @@ import MK8Core
     var preparationTask: Task<Void, Never>?
     var transferTask: Task<Void, Never>?
     var ready = false
+    var lastPull = ProcessInfo.processInfo.systemUptime
     var credits = RelayCredits()
     private var body: RelayBody?
     var length: Int { body?.length ?? 0 }
@@ -328,6 +345,7 @@ import MK8Core
     func prepare(_ response: HTTPResponse) throws {
         if let url = response.file { body = try RelayBody(file: url, range: response.fileRange) }
         else { body = RelayBody(data: response.body) }
+        lastPull = ProcessInfo.processInfo.systemUptime
         ready = true
     }
     func nextChunk() throws -> Data {

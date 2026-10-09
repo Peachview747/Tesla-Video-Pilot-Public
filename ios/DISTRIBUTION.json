@@ -1,10 +1,10 @@
 {
   "name": "Video Pilot",
-  "version": "0.1.32",
-  "build": "44",
+  "version": "0.1.33",
+  "build": "45",
   "iconVersion": "0.1.28",
   "artifactPrefix": "Tesla-Video-Pilot",
-  "releaseNotes": "Build 44 keeps the Cloudflare tunnel connected when returning to the app and while the phone is locked (tunnel key now readable after first unlock), and retries 'iPhone is busy' (HTTP 429) during seeks with backoff. Requires the current cloudflare/phone-relay.js Worker deployment.",
+  "releaseNotes": "Build 45 frees relay streams the browser abandoned (no pull for 45 s), so seeking can no longer leave the Worker stuck at 'iPhone is busy' even on an older Worker deployment; a pause longer than 30 s reopens the stream on Play. Includes Build 44: the tunnel stays connected when returning to the app and while the phone is locked, and HTTP 429 during seeks is retried with backoff.",
   "packaging": "arm64-only-adhoc-signature-template",
   "stage": "native-prototype",
   "branch": "iphone-native",

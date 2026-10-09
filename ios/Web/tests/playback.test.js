@@ -50,6 +50,7 @@ function setup({recoveryDelay} = {}) {
     element, players,
     play:(video = {id:'video', title:'Test video'}) => { context.testVideo = video; vm.runInContext('play(testVideo)', context); },
     tick:() => intervals[0]?.(),
+    advanceClock:ms => vm.runInContext(`{ const now = Date.now(); Date.now = () => now + ${ms}; }`, context),
     close:() => element('close').onclick(),
     preparation:status => {
       context.testPreparation = status;
@@ -244,5 +245,26 @@ test('other HTTP 4xx stream errors remain fatal and offer Retry', async () => {
   assert.equal(f.players.length, 1);
   assert.equal(f.element('pause').textContent, 'Retry');
   assert.match(f.element('playback-status').textContent, /HTTP 404/);
+  f.close();
+});
+test('resuming after a long pause reopens the stream at the paused position', async () => {
+  const f = setup(); f.play({id:'video', title:'Test video', duration:100});
+  f.element('pause').onclick();
+  assert.equal(f.element('pause').textContent, 'Play');
+  f.advanceClock(31000);
+  f.element('pause').onclick();
+  await new Promise(resolve => setTimeout(resolve, 650));
+  assert.equal(f.players.length, 2, 'a fresh stream replaces the idle one');
+  assert.equal(f.players[0].destroyed, true);
+  assert.equal(f.element('pause').textContent, 'Pause');
+  f.close();
+});
+test('resuming after a short pause keeps the same stream', async () => {
+  const f = setup(); f.play({id:'video', title:'Test video', duration:100});
+  f.element('pause').onclick();
+  f.element('pause').onclick();
+  await new Promise(resolve => setTimeout(resolve, 650));
+  assert.equal(f.players.length, 1);
+  assert.equal(f.element('pause').textContent, 'Pause');
   f.close();
 });
