@@ -101,6 +101,19 @@ test('Pause works before the first frame and callbacks cannot undo it', () => {
   f.element('mute').onclick(); f.element('mute').onclick();
   assert.equal(player.audioResumes, 3, 'Unmute retries audio context activation');
 });
+test('quiet Tesla audio can be boosted without losing mute state', () => {
+  const f = setup(); f.play();
+  const player = f.players[0];
+  assert.equal(player.volume, 1.7, 'new playback uses the browser audio boost');
+  f.element('audio-boost').onclick();
+  assert.equal(player.volume, 1, 'Audio + can be disabled');
+  f.element('mute').onclick();
+  assert.equal(player.volume, 0, 'mute still wins over the gain setting');
+  f.element('audio-boost').onclick();
+  assert.equal(player.volume, 0, 'changing gain while muted stays silent');
+  f.element('mute').onclick();
+  assert.equal(player.volume, 1.7, 'unmute restores the selected gain');
+});
 test('stream failures survive late decoder and end callbacks', () => {
   const f = setup(); f.play();
   const player = f.players[0], status = f.element('playback-status');

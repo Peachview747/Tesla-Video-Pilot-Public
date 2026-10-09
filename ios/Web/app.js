@@ -6,6 +6,18 @@ let playback = null;
 let refreshing = false;
 let seekGeneration = 0;
 let seekChain = Promise.resolve();
+// Tesla browsers can have a large system volume while the WebAudio output is
+// still quiet. Keep a modest, reversible gain boost in the browser rather
+// than changing the source file (which would require re-preparing videos and
+// could permanently clip loud sources).
+const audioBoostKey = 'video-pilot-audio-boost';
+const audioBoostVolume = 1.7;
+let audioBoost = true;
+let audioMuted = false;
+try {
+  const savedAudioBoost = globalThis.localStorage?.getItem(audioBoostKey);
+  if (savedAudioBoost != null) audioBoost = savedAudioBoost === 'on';
+} catch {}
 // A stable page-local identity lets the relay evict a stream whose browser
 // player was replaced before the browser's fetch abort reached the Worker.
 const playbackClient = (() => {
@@ -326,6 +338,27 @@ function unlockAudio() {
     if (context?.state === 'suspended' || context?.state === 'interrupted') context.resume()?.catch(() => {});
   } catch { /* A later Play or Unmute gesture can retry audio activation. */ }
 }
+function applyAudioState() {
+  if (!player) return;
+  const volume = audioMuted ? 0 : (audioBoost ? audioBoostVolume : 1);
+  try {
+    // JSMpeg exposes both the public volume property and its GainNode. Set
+    // both so a gain change is audible immediately, including already queued
+    // WebAudio buffers.
+    player.volume = volume;
+    const gain = player.audioOut?.gain?.gain;
+    if (gain && typeof gain.value === 'number') gain.value = volume;
+  } catch {}
+  const mute = $('mute');
+  if (mute) mute.textContent = audioMuted ? 'Unmute' : 'Mute';
+  const boost = $('audio-boost');
+  if (boost) {
+    boost.textContent = audioBoost ? 'Audio +' : 'Audio';
+    boost.setAttribute?.('aria-pressed', audioBoost ? 'true' : 'false');
+    boost.title = audioBoost ? 'Audio boost on (170%)' : 'Audio boost off (100%)';
+  }
+  reportDiagnostic('audioState', {muted:audioMuted, boost:audioBoost, gain:volume});
+}
 function startPlayer(video, seek = null, recoveryAttempt = 0) {
   current = video;
   const duration = finiteDuration(video.duration);
@@ -377,6 +410,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
     session.startupTimer?.unref?.();
   };
   $('player-section').hidden = false; $('playing-title').textContent = video.title;
+  audioMuted = false;
   $('playback-status').textContent = 'Buffering…'; $('pause').textContent = 'Pause'; $('mute').textContent = 'Mute';
   $('screen').style?.setProperty?.('aspect-ratio', 'auto');
   updateTimeline(currentOffset, duration);
@@ -438,6 +472,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
         reportDiagnostic('playerEnded', {positionSeconds:session.position || 0, durationSeconds:session.duration || 0});
       }
     });
+    applyAudioState();
     // Arm a bounded watchdog even if the source never emits an established
     // callback. A failed seek must become a retryable state, not a permanent
     // black canvas with an endless spinner.
@@ -488,10 +523,16 @@ $('close').onclick = () => {
 };
 $('mute').onclick = () => {
   if (player) {
-    player.volume = player.volume > 0 ? 0 : 1;
-    if (player.volume > 0) unlockAudio();
-    $('mute').textContent = player.volume > 0 ? 'Mute' : 'Unmute';
+    audioMuted = !audioMuted;
+    applyAudioState();
+    if (!audioMuted) unlockAudio();
   }
+};
+$('audio-boost').onclick = () => {
+  audioBoost = !audioBoost;
+  try { globalThis.localStorage?.setItem(audioBoostKey, audioBoost ? 'on' : 'off'); } catch {}
+  applyAudioState();
+  if (!audioMuted) unlockAudio();
 };
 async function enterFullscreen() {
   const shell = $('player-shell');

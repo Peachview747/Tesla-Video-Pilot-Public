@@ -1,10 +1,10 @@
 {
   "name": "Video Pilot",
   "version": "0.1.28",
-  "build": "37",
+  "build": "38",
   "iconVersion": "0.1.28",
   "artifactPrefix": "Tesla-Video-Pilot",
-  "releaseNotes": "Build 37 removes forced 16:9 player bars, follows the decoded video aspect ratio, and adds a browser-independent fullscreen fallback that overlays compact controls on Tesla browsers that do not apply native fullscreen CSS.",
+  "releaseNotes": "Build 38 adds a reversible 170% browser audio boost for quiet Tesla playback, with a compact toggle and diagnostics. Build 37 removes forced 16:9 player bars, follows the decoded video aspect ratio, and adds a browser-independent fullscreen fallback that overlays compact controls on Tesla browsers that do not apply native fullscreen CSS.",
   "packaging": "arm64-only-adhoc-signature-template",
   "stage": "native-prototype",
   "branch": "iphone-native",
