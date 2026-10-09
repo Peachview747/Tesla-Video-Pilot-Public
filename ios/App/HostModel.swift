@@ -18,6 +18,7 @@ import Network
     @Published var searchKey = Keychain.read("youtube-search")
     @Published private(set) var youtubeSignedIn = false
     let youtubeOAuth = YouTubeOAuth()
+    let pipPlayback = PiPPlayback()
     @Published var tunnelKey = Keychain.read("tunnel-key")
     @Published private(set) var phoneConnection = PhoneConnection()
     @Published private(set) var tunnelState = TunnelConnectionState.notConfigured
@@ -51,8 +52,8 @@ import Network
     @Published var backgroundPreparation = (UserDefaults.standard.object(forKey: "backgroundPreparation") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(backgroundPreparation, forKey: "backgroundPreparation") }
     }
-    let version = "0.1.29"
-    let build = "41"
+    let version = "0.1.30"
+    let build = "42"
     var preparingTitle: String { videos.first { $0.id == preparingID }?.title ?? "Your video" }
     var queuedCount: Int { videos.filter { $0.state == "preparing" && $0.id != preparingID }.count }
     private var library: Library?
@@ -204,7 +205,8 @@ import Network
         updateIdleTimer()
     }
     func backgrounded() {
-        diagnosticsLogger.record(component: "app", event: "backgrounded")
+        diagnosticsLogger.record(component: "app", event: "backgrounded",
+            fields: ["pipActive": "\(pipPlayback.active)", "hosting": "\(running)"])
         resumeHostingOnReturn = server != nil
         if allowBackgroundTime, (server != nil || busy), backgroundTask == .invalid {
             let generation = UUID()
@@ -222,7 +224,8 @@ import Network
         }
     }
     func foregrounded() {
-        diagnosticsLogger.record(component: "app", event: "foregrounded")
+        diagnosticsLogger.record(component: "app", event: "foregrounded",
+            fields: ["pipActive": "\(pipPlayback.active)", "hosting": "\(running)"])
         finishBackgroundTime()
         _ = meter.sample(at: ProcessInfo.processInfo.systemUptime)
         trafficHistory.removeAll()
@@ -234,6 +237,8 @@ import Network
         updateIdleTimer()
     }
     private func expireBackgroundTime() {
+        diagnosticsLogger.record(component: "app", event: "backgroundGraceExpired",
+            fields: ["pipActive": "\(pipPlayback.active)", "hosting": "\(running)"])
         finishBackgroundTime()
         message = "iOS background time expired. Hosting will reconnect when Video Pilot returns."
     }

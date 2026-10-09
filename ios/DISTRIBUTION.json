@@ -1,10 +1,10 @@
 {
   "name": "Video Pilot",
-  "version": "0.1.29",
-  "build": "41",
+  "version": "0.1.30",
+  "build": "42",
   "iconVersion": "0.1.28",
   "artifactPrefix": "Tesla-Video-Pilot",
-  "releaseNotes": "Build 41 repairs timestamp-based buffering after seeks, preserves unread decoder data while compacting consumed buffers, cancels queued audio on pause and restores its audible position, fixes replay and retry states, persists diagnostics through lost acknowledgements with full offline export and redaction, retries transient Worker failures, stages queued file imports durably, supports cancelling and deleting active preparations, and improves request and conversion validation. Native and on-car validation are reported separately.",
+  "releaseNotes": "Build 42 adds an experimental native Picture in Picture player for a real movie selected from Files. Background audio is enabled for actual playback, with PiP lifecycle and app background/grace-expiration diagnostics. Hosting survival during PiP remains subject to device testing; no Cloudflare change is required.",
   "packaging": "arm64-only-adhoc-signature-template",
   "stage": "native-prototype",
   "branch": "iphone-native",

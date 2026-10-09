@@ -1,4 +1,6 @@
-# Video Pilot iPhone distribution — native prototype 0.1.29
+# Video Pilot iPhone distribution — native prototype 0.1.30
+
+Build 42 adds an experimental native Picture in Picture player for real movies from Files, with PiP/background lifecycle diagnostics. See [BUILD_42_REVIEW.md](BUILD_42_REVIEW.md) for the device test steps and limits.
 
 Build 41 repairs recorded-player timestamp initialization, consumed-buffer compaction, audible pause/resume, fullscreen exit visibility, offline diagnostics delivery/export, transient tunnel reconnection, durable queued file imports, and active preparation cancellation/deletion. See [BUILD_41_REVIEW.md](BUILD_41_REVIEW.md) for the fixes, verification, and device-test limits.
 

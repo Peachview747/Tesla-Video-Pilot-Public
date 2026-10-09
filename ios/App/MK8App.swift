@@ -85,6 +85,7 @@ private struct AppRootView: View {
                 }
             }
         }
+        .modifier(PiPPlayerPresentation(playback: host.pipPlayback))
     }
 }
 
@@ -710,6 +711,9 @@ private struct HostSettingsView: View {
     @AppStorage("appearanceMode") private var appearanceMode = "light"
     var body: some View {
         HostScreen(title: "Settings") {
+            HostCard {
+                PiPExperimentView(playback: host.pipPlayback)
+            }
             HostCard {
                 Label("Appearance", systemImage: appearanceMode == "dark" ? "moon.fill" : "sun.max.fill").font(.headline)
                 Toggle("Dark mode", isOn: Binding(
