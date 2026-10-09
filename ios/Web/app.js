@@ -11,9 +11,10 @@ let seekChain = Promise.resolve();
 // than changing the source file (which would require re-preparing videos and
 // could permanently clip loud sources).
 const audioBoostKey = 'video-pilot-audio-boost';
-const audioBoostVolume = 1.7;
+const audioBoostVolume = 1.35;
 let audioBoost = true;
 let audioMuted = false;
+let audioLimiter = null;
 try {
   const savedAudioBoost = globalThis.localStorage?.getItem(audioBoostKey);
   if (savedAudioBoost != null) audioBoost = savedAudioBoost === 'on';
@@ -304,6 +305,8 @@ function closePlayer() {
   playback = null;
   globalThis.clearTimeout?.(seekTimer); seekTimer = null;
   const oldPlayer = player;
+  try { audioLimiter?.disconnect?.(); } catch {}
+  audioLimiter = null;
   player = null; currentOffset = 0; $('player-section').hidden = true;
   const source = oldPlayer?.source;
   let stopped = source?.stoppedPromise;
@@ -338,6 +341,34 @@ function unlockAudio() {
     if (context?.state === 'suspended' || context?.state === 'interrupted') context.resume()?.catch(() => {});
   } catch { /* A later Play or Unmute gesture can retry audio activation. */ }
 }
+function configureAudioLimiter() {
+  const output = player?.audioOut;
+  const context = output?.context;
+  const gain = output?.gain;
+  if (!context || !gain || typeof context.createDynamicsCompressor !== 'function') return;
+  try {
+    if (audioLimiter?.context === context) return;
+    audioLimiter?.disconnect?.();
+    // JSMpeg normally connects its gain node directly to the destination.
+    // Replace that direct edge with a conservative compressor so the optional
+    // browser boost cannot clip loud source peaks into crackling distortion.
+    gain.disconnect();
+    const limiter = context.createDynamicsCompressor();
+    limiter.threshold.value = -6;
+    limiter.knee.value = 8;
+    limiter.ratio.value = 12;
+    limiter.attack.value = 0.003;
+    limiter.release.value = 0.12;
+    gain.connect(limiter);
+    limiter.connect(context.destination);
+    audioLimiter = limiter;
+  } catch {
+    // Older Tesla WebAudio implementations may not support a compressor;
+    // leave JSMpeg's direct, unmodified output intact in that case.
+    try { gain.disconnect(); gain.connect(context.destination); } catch {}
+    audioLimiter = null;
+  }
+}
 function applyAudioState() {
   if (!player) return;
   const volume = audioMuted ? 0 : (audioBoost ? audioBoostVolume : 1);
@@ -355,7 +386,7 @@ function applyAudioState() {
   if (boost) {
     boost.textContent = audioBoost ? 'Audio +' : 'Audio';
     boost.setAttribute?.('aria-pressed', audioBoost ? 'true' : 'false');
-    boost.title = audioBoost ? 'Audio boost on (170%)' : 'Audio boost off (100%)';
+    boost.title = audioBoost ? 'Audio boost on (135%)' : 'Audio boost off (100%)';
   }
   reportDiagnostic('audioState', {muted:audioMuted, boost:audioBoost, gain:volume});
 }
@@ -472,6 +503,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
         reportDiagnostic('playerEnded', {positionSeconds:session.position || 0, durationSeconds:session.duration || 0});
       }
     });
+    configureAudioLimiter();
     applyAudioState();
     // Arm a bounded watchdog even if the source never emits an established
     // callback. A failed seek must become a retryable state, not a permanent
