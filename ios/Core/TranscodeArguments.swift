@@ -22,7 +22,10 @@ public enum TranscodeArguments {
             "-r", "30", "-pix_fmt", "yuv420p", "-b:v", quality.bitrate, "-maxrate", "1800k",
             "-bufsize", "800k", "-bf", "0", "-g", "30", "-threads", "0",
             "-codec:a", "mp2", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-            "-muxdelay", "0.001", output
+            // The video owns the timeline. Pad short audio with silence and
+            // stop at the video end, rather than emitting an audio-only tail
+            // that leaves the Tesla timeline running after the final frame.
+            "-af", "apad", "-shortest", "-muxdelay", "0.001", output
         ]
         return args
     }

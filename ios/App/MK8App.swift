@@ -216,7 +216,7 @@ private struct DashboardView: View {
                         .font(.subheadline).foregroundStyle(MK8Theme.secondary)
                 }
                 HStack(spacing: 8) {
-                    DashboardMetric(title: "Tunnel", value: host.running ? (host.tunnelState == .connected ? "Live" : "Starting") : "Off", symbol: "antenna.radiowaves.left.and.right")
+                    DashboardMetric(title: "Tunnel", value: host.running ? host.tunnelState.title : "Off", symbol: "antenna.radiowaves.left.and.right")
                     DashboardMetric(title: "Ready", value: "\(host.videos.filter { $0.state == "ready" }.count)", symbol: "play.rectangle.fill")
                     DashboardMetric(title: "Queue", value: "\(host.queuedCount)", symbol: "clock.fill")
                 }
@@ -687,8 +687,7 @@ private struct VideoCard: View {
                     if let id = video.youtubeID {
                         Button("Copy YouTube link", systemImage: "link") { UIPasteboard.general.string = "https://youtu.be/" + id }
                     }
-                    Button("Delete video", systemImage: "trash", role: .destructive) { host.remove(video.id) }
-                        .disabled(host.busy && host.preparingID == video.id)
+                    Button(host.preparingID == video.id ? "Cancel and delete video" : "Delete video", systemImage: "trash", role: .destructive) { host.remove(video.id) }
                 } label: { Image(systemName: "ellipsis").padding(6) }.accessibilityLabel("Video actions")
             }
             if video.state == "failed" || video.state == "paused" {
@@ -767,8 +766,10 @@ private struct HostSettingsView: View {
                 Text("Records redacted app-level timing, tunnel round trips, browser response times, buffer/read progress, byte counts, seeks, and errors. It never records video data, keys, cookies, tokens, or full URLs. iOS does not expose raw packets or every router hop.")
                     .font(.footnote).foregroundStyle(MK8Theme.secondary)
                 HStack {
-                    if let file = host.diagnosticsExportURL() {
-                        ShareLink(item: file) { Label("Export log", systemImage: "square.and.arrow.up") }
+                    if diagnostics.eventCount > 0 {
+                        // Share the live journal without generating a new
+                        // multi-megabyte snapshot on every SwiftUI redraw.
+                        ShareLink(item: diagnostics.logURL) { Label("Export app + received web log", systemImage: "square.and.arrow.up") }
                             .buttonStyle(.borderedProminent)
                     } else {
                         Label("No events recorded yet", systemImage: "doc.text.magnifyingglass")

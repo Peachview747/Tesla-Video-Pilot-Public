@@ -2,12 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-import {JSMpegHttpSource} from '../http-source.js';
+import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedPlayerPause} from '../http-source.js';
+import {DiagnosticsJournal} from '../diagnostics.js';
 
 // Run the shipped UI against small DOM/player doubles. Decoder callbacks are
 // driven separately from network establishment, just as in recorded JSMpeg.
 const app = readFileSync(new URL('../app.js', import.meta.url), 'utf8')
-  .replace(/^import .*?;\n/, '');
+  .replace(/^import .*?;\n/gm, '');
 function setup({recoveryDelay} = {}) {
   const elements = new Map(), players = [], intervals = [];
   const element = id => {
@@ -36,6 +37,8 @@ function setup({recoveryDelay} = {}) {
   }
   const context = vm.createContext({
     JSMpegHttpSource,
+    installRecordedBufferWindow, installRecordedAudioOutput, installRecordedPlayerPause,
+    DiagnosticsJournal,
     document:{getElementById:element},
     window:{JSMpeg:{Player}, addEventListener() {}},
     // The library refresh is outside these focused playback tests.
@@ -113,6 +116,27 @@ test('quiet Tesla audio can be boosted without losing mute state', () => {
   assert.equal(player.volume, 0, 'changing gain while muted stays silent');
   f.element('mute').onclick();
   assert.equal(player.volume, 1, 'unmute restores the selected unity gain');
+});
+test('startup recovery holds a manual pause and rearms when playback resumes', async () => {
+  const f = setup({recoveryDelay:10}); f.play();
+  f.element('pause').onclick();
+  await new Promise(resolve => setTimeout(resolve, 35));
+  assert.equal(f.players.length, 1);
+  assert.equal(f.element('playback-status').textContent, 'Paused');
+  f.element('pause').onclick();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(f.players.length, 2, 'Resuming a silent source rearms recovery');
+  f.close();
+});
+test('fullscreen exposes Exit and restores the Full screen button on exit', async () => {
+  const f = setup(); f.play();
+  await f.element('fullscreen').onclick();
+  assert.equal(f.element('fullscreen').hidden, true);
+  assert.equal(f.element('exit-fullscreen').hidden, false);
+  f.element('exit-fullscreen').onclick();
+  assert.equal(f.element('fullscreen').hidden, false);
+  assert.equal(f.element('exit-fullscreen').hidden, true);
+  f.close();
 });
 test('stream failures survive late decoder and end callbacks', () => {
   const f = setup(); f.play();

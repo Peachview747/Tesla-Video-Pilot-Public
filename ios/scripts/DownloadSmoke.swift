@@ -183,6 +183,17 @@ private final class FixtureTrust: NSObject, URLSessionDelegate, @unchecked Senda
             try MediaPipeline.store.remove(id)
             print("Native download check passed: " + route)
         }
+        // A zero-byte leftover cannot satisfy a completed direct download.
+        let emptyID = UUID()
+        var emptyEndpoint = URLComponents(url: base.appendingPathComponent("normal"), resolvingAgainstBaseURL: false)!
+        emptyEndpoint.queryItems = [URLQueryItem(name: "token", value: "PRIVATE+VALUE/TOKEN=")]
+        let emptyURL = emptyEndpoint.url!
+        try MediaPipeline.store.save(.init(id: emptyID, title: "empty cache", videoURL: emptyURL))
+        let emptyDescriptor = MediaDownloadDescriptor(jobID: emptyID, track: .video)
+        try Data().write(to: MediaPipeline.store.file(for: emptyDescriptor))
+        let replacement = try await downloader.download(emptyURL, descriptor: emptyDescriptor, background: false,
+            progress: { _, _ in }, traffic: { _ in })
+        try expect(try Data(contentsOf: replacement) == expected, "Empty cache was mistaken for a finished download")
         let metricsSession = URLSession(configuration: .ephemeral, delegate: trust, delegateQueue: nil)
         defer { metricsSession.invalidateAndCancel() }
         let (data, _) = try await metricsSession.data(from: base.appendingPathComponent("metrics"))

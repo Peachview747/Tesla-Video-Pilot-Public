@@ -46,7 +46,7 @@ jobs:
 
   iphone:
     name: Build unsigned IPA
-    needs: source-safety
+    needs: [source-safety, web]
     runs-on: macos-15
     timeout-minutes: 60
     steps:

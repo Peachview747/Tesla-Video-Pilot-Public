@@ -1,10 +1,10 @@
 {
   "name": "Video Pilot",
-  "version": "0.1.28",
-  "build": "40",
+  "version": "0.1.29",
+  "build": "41",
   "iconVersion": "0.1.28",
   "artifactPrefix": "Tesla-Video-Pilot",
-  "releaseNotes": "Build 40 makes legacy resume and seek recovery non-blocking, bounds long-video decoder memory, restores a 12/6-second cellular read-ahead window, starts audio at unity gain with an optional 115% boost, and adds persistent browser diagnostics plus a combined web/iPhone export and copy fallback. Build 39 top-aligned fullscreen playback and added the upper-right Exit full screen control.",
+  "releaseNotes": "Build 41 repairs timestamp-based buffering after seeks, preserves unread decoder data while compacting consumed buffers, cancels queued audio on pause and restores its audible position, fixes replay and retry states, persists diagnostics through lost acknowledgements with full offline export and redaction, retries transient Worker failures, stages queued file imports durably, supports cancelling and deleting active preparations, and improves request and conversion validation. Native and on-car validation are reported separately.",
   "packaging": "arm64-only-adhoc-signature-template",
   "stage": "native-prototype",
   "branch": "iphone-native",

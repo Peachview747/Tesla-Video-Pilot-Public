@@ -21,7 +21,10 @@ final class YouTubeOAuth: NSObject, ObservableObject, ASWebAuthenticationPresent
 
     @Published private(set) var signedIn = false
     @Published private(set) var accountName = ""
+    @Published private(set) var isSigningIn = false
     private var session: ASWebAuthenticationSession?
+    private var generation = UUID()
+    private var refreshTask: Task<Tokens, Error>?
 
     override init() {
         super.init()
@@ -29,6 +32,12 @@ final class YouTubeOAuth: NSObject, ObservableObject, ASWebAuthenticationPresent
     }
 
     func signIn() async throws {
+        guard !isSigningIn else { throw Failure.couldNotStart }
+        isSigningIn = true
+        defer { isSigningIn = false }
+        generation = UUID()
+        refreshTask?.cancel(); refreshTask = nil
+        let attempt = generation
         let verifier = Self.randomString(length: 64)
         let state = Self.randomString(length: 32)
         var components = URLComponents(string: "https://accounts.google.com/o/oauth2/v2/auth")!
@@ -46,25 +55,57 @@ final class YouTubeOAuth: NSObject, ObservableObject, ASWebAuthenticationPresent
         guard let url = components.url else { throw Failure.invalidAuthorizationURL }
         let callback = try await authenticate(url: url, state: state)
         let exchanged = try await exchange(code: callback, verifier: verifier)
+        guard generation == attempt else { throw CancellationError() }
         try Self.saveTokens(exchanged)
+        // Refresh work begun against the previous account during the browser
+        // exchange cannot overwrite the newly selected account's tokens.
+        generation = UUID()
+        refreshTask?.cancel(); refreshTask = nil
         signedIn = true
         accountName = "Google account connected"
     }
 
     func signOut() {
+        generation = UUID()
+        session?.cancel(); session = nil
+        refreshTask?.cancel(); refreshTask = nil
         try? Keychain.write("", account: Self.account)
         signedIn = false
         accountName = ""
     }
 
-    func accessToken() async throws -> String {
+    func accessToken(forceRefresh: Bool = false) async throws -> String {
+        let attempt = generation
         guard var tokens = Self.loadTokens() else { throw Failure.notSignedIn }
-        if tokens.expiresAt.timeIntervalSinceNow < 60 {
-            tokens = try await refresh(tokens)
+        if forceRefresh || tokens.expiresAt.timeIntervalSinceNow < 60 {
+            let task: Task<Tokens, Error>
+            if let existing = refreshTask { task = existing }
+            else {
+                let original = tokens
+                task = Task { try await self.refresh(original) }
+                refreshTask = task
+            }
+            do { tokens = try await task.value }
+            catch {
+                if generation == attempt { refreshTask = nil }
+                throw error
+            }
+            guard generation == attempt else { throw CancellationError() }
+            refreshTask = nil
             try Self.saveTokens(tokens)
         }
+        guard generation == attempt else { throw CancellationError() }
         signedIn = true
         return tokens.accessToken
+    }
+
+    func retryUnauthorized<T>(_ operation: (String) async throws -> T) async throws -> T {
+        let token = try await accessToken()
+        do { return try await operation(token) }
+        catch let error as NSError where error.domain == "MK8.YouTube" && error.code == 401 {
+            let refreshed = try await accessToken(forceRefresh: true)
+            return try await operation(refreshed)
+        }
     }
 
     func request(_ url: URL, method: String = "GET") async throws -> Data {
@@ -119,7 +160,7 @@ final class YouTubeOAuth: NSObject, ObservableObject, ASWebAuthenticationPresent
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw Failure.tokenExchangeFailed }
         struct Result: Decodable { let access_token: String; let expires_in: Int; let refresh_token: String? }
         let result = try JSONDecoder().decode(Result.self, from: data)
-        return Tokens(accessToken: result.access_token, refreshToken: result.refresh_token ?? Self.loadTokens()?.refreshToken ?? "", expiresAt: Date().addingTimeInterval(TimeInterval(result.expires_in)))
+        return Tokens(accessToken: result.access_token, refreshToken: result.refresh_token ?? "", expiresAt: Date().addingTimeInterval(TimeInterval(result.expires_in)))
     }
 
     private func refresh(_ tokens: Tokens) async throws -> Tokens {
@@ -129,7 +170,15 @@ final class YouTubeOAuth: NSObject, ObservableObject, ASWebAuthenticationPresent
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = Self.form(["client_id": Self.clientID, "refresh_token": tokens.refreshToken, "grant_type": "refresh_token"]).data(using: .utf8)
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw Failure.refreshFailed }
+        guard let http = response as? HTTPURLResponse else { throw Failure.invalidResponse }
+        if http.statusCode == 400, let detail = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           detail["error"] as? String == "invalid_grant" {
+            // Only clear the credentials that actually failed, not a newer
+            // sign-in that completed while this refresh was in flight.
+            if Self.loadTokens()?.refreshToken == tokens.refreshToken { signOut() }
+            throw Failure.notSignedIn
+        }
+        guard (200..<300).contains(http.statusCode) else { throw Failure.refreshFailed }
         struct Result: Decodable { let access_token: String; let expires_in: Int }
         let result = try JSONDecoder().decode(Result.self, from: data)
         return Tokens(accessToken: result.access_token, refreshToken: tokens.refreshToken, expiresAt: Date().addingTimeInterval(TimeInterval(result.expires_in)))

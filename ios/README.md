@@ -1,4 +1,6 @@
-# Video Pilot iPhone distribution — native prototype 0.1.28
+# Video Pilot iPhone distribution — native prototype 0.1.29
+
+Build 41 repairs recorded-player timestamp initialization, consumed-buffer compaction, audible pause/resume, fullscreen exit visibility, offline diagnostics delivery/export, transient tunnel reconnection, durable queued file imports, and active preparation cancellation/deletion. See [BUILD_41_REVIEW.md](BUILD_41_REVIEW.md) for the fixes, verification, and device-test limits.
 
 This distribution lives in `ios/` on the `iphone-native` branch of the same Tesla Video Player repository. The iPhone is the origin server; the Tesla opens the served browser interface. It does not need Express, PostgreSQL, Python, Telegram, or a laptop at runtime.
 

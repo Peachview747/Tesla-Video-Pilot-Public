@@ -22,7 +22,8 @@ public struct MediaByteRange: Sendable, Equatable {
     public var count: Int64 { end - start + 1 }
     public var header: String { "bytes=\(start)-\(end)" }
     public static func make(length: Int64, chunkSize: Int64 = 2 * 1_024 * 1_024) -> [Self] {
-        guard length > 0, length <= 50_000_000_000, chunkSize > 0, chunkSize <= 50_000_000_000 else { return [] }
+        guard length > 0, length <= 50_000_000_000, chunkSize > 0, chunkSize <= 50_000_000_000,
+              (length - 1) / chunkSize + 1 <= 65_536 else { return [] }
         return stride(from: Int64(0), to: length, by: Int(chunkSize)).map {
             Self(start: $0, end: min(length - 1, $0 + chunkSize - 1))
         }

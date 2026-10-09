@@ -97,7 +97,7 @@ enum YouTubeSearch {
         }
         let subscriptions = try JSONDecoder().decode(Subscriptions.self, from: try await request("subscriptions", query: [
             URLQueryItem(name: "part", value: "snippet"), URLQueryItem(name: "mine", value: "true"),
-            URLQueryItem(name: "maxResults", value: "20")
+            URLQueryItem(name: "maxResults", value: "50"), URLQueryItem(name: "order", value: "alphabetical")
         ], accessToken: accessToken)).items.compactMap { $0.snippet.resourceId.channelId }
         guard !subscriptions.isEmpty else { return [] }
 
@@ -117,7 +117,7 @@ enum YouTubeSearch {
         ], accessToken: accessToken)).items.compactMap { $0.contentDetails.relatedPlaylists.uploads }
 
         struct FeedItem { let video: SearchVideo; let publishedAt: String }
-        let feed = await withTaskGroup(of: [FeedItem].self, returning: [FeedItem].self) { group in
+        let feed = try await withThrowingTaskGroup(of: [FeedItem].self, returning: [FeedItem].self) { group in
             for playlistID in channels {
                 group.addTask {
                     struct Playlist: Decodable {
@@ -135,11 +135,11 @@ enum YouTubeSearch {
                         }
                         let items: [Item]
                     }
-                    guard let data = try? await request("playlistItems", query: [
+                    let data = try await request("playlistItems", query: [
                         URLQueryItem(name: "part", value: "snippet,contentDetails"),
                         URLQueryItem(name: "playlistId", value: playlistID), URLQueryItem(name: "maxResults", value: "5")
-                    ], accessToken: accessToken),
-                    let items = try? JSONDecoder().decode(Playlist.self, from: data).items else { return [] }
+                    ], accessToken: accessToken)
+                    let items = try JSONDecoder().decode(Playlist.self, from: data).items
                     return items.compactMap { item in
                         guard let id = item.contentDetails.videoId else { return nil }
                         return FeedItem(video: SearchVideo(id: id, title: item.snippet.title, channel: item.snippet.channelTitle,
@@ -149,7 +149,7 @@ enum YouTubeSearch {
                 }
             }
             var result: [FeedItem] = []
-            for await items in group { result.append(contentsOf: items) }
+            for try await items in group { result.append(contentsOf: items) }
             return result
         }
         var seen = Set<String>()

@@ -5,6 +5,55 @@ import XCTest
 final class RelayTests: XCTestCase {
     private let url = URL(string: "https://tv.jcruzhoovertesla.workers.dev")!
 
+    func testWorkerProbeRetriesTemporaryAvailabilityFailures() throws {
+        for status in [408, 429, 500, 502, 503, 504, 522] {
+            XCTAssertThrowsError(try RelayWorkerCheck.validate(status: status, data: Data("<!doctype html>".utf8))) { error in
+                XCTAssertEqual(error as? RelayWorkerCheck.Failure, .unavailable(status))
+            }
+        }
+        for data in [Data("<!doctype html>".utf8), Data("{}".utf8), Data()] {
+            XCTAssertThrowsError(try RelayWorkerCheck.validate(status: 200, data: data)) { error in
+                XCTAssertEqual(error as? RelayWorkerCheck.Failure, .unavailable(200))
+            }
+        }
+        try RelayWorkerCheck.validate(status: 200, data: Data("{\"protocol\":\"mk8-relay-v1\",\"configured\":true}".utf8))
+    }
+
+    func testWorkerProbeReportsSetupAndKeyFailuresWithoutEndlessRetry() {
+        for status in [401, 403] {
+            XCTAssertThrowsError(try RelayWorkerCheck.validate(status: status, data: Data())) { error in
+                XCTAssertEqual(error as? RelayWorkerCheck.Failure, .keyRejected)
+            }
+        }
+        for status in [404, 405, 426] {
+            XCTAssertThrowsError(try RelayWorkerCheck.validate(status: status, data: Data())) { error in
+                XCTAssertEqual(error as? RelayWorkerCheck.Failure, .setupRequired)
+            }
+        }
+        for (status, body) in [(503, "{\"error\":\"Deploy the iPhone Worker update\"}"),
+                               (200, "{\"protocol\":\"incompatible\",\"configured\":true}")] {
+            XCTAssertThrowsError(try RelayWorkerCheck.validate(status: status, data: Data(body.utf8))) { error in
+                XCTAssertEqual(error as? RelayWorkerCheck.Failure, .setupRequired)
+            }
+        }
+        XCTAssertThrowsError(try RelayWorkerCheck.validate(status: 200, data: Data("{\"protocol\":\"mk8-relay-v1\",\"configured\":false}".utf8))) { error in
+            XCTAssertEqual(error as? RelayWorkerCheck.Failure, .keyRejected)
+        }
+    }
+
+    func testMaximumValidRequestEnvelopeFitsControlMessageBudget() throws {
+        let body = Data(repeating: 0x61, count: 16_384)
+        let headers = ["host": url.host!, "x-padding": String(repeating: "a", count: 11_800)]
+        let target = "/api/test?value=" + String(repeating: "x", count: 4_000)
+        let request = try RelayProtocol.request(method: "POST", target: target, headers: headers,
+            base64Body: body.base64EncodedString(), publicURL: url)
+        XCTAssertEqual(request.body, body)
+        let message = try JSONSerialization.data(withJSONObject: ["type": "request", "id": UUID().uuidString,
+            "method": "POST", "target": target, "headers": headers, "body": body.base64EncodedString()])
+        XCTAssertGreaterThan(message.count, 32_768)
+        XCTAssertLessThanOrEqual(message.count, RelayProtocol.maximumControlMessage)
+    }
+
     func testRelayPreservesCookiesOriginAndBody() throws {
         let body = Data("{\"url\":\"dQw4w9WgXcQ\"}".utf8)
         let request = try RelayProtocol.request(method: "POST", target: "/api/youtube",

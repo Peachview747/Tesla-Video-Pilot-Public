@@ -19,6 +19,8 @@ import Combine
     private let maxBytes = 2_000_000
     private let formatter = ISO8601DateFormatter()
     private var lastEventByKey: [String: TimeInterval] = [:]
+    private var browserEventIDs = Set<String>()
+    private var browserEventOrder: [String] = []
     private let allowedWebEvents: Set<String> = [
         "playerStart", "playerSeek", "sourceResponse", "sourceEstablished",
         "sourceProgress", "sourceBuffer", "sourceCompleted", "playerDecode",
@@ -30,7 +32,7 @@ import Combine
         "seekTargetSeconds", "positionSeconds", "durationSeconds", "bufferSeconds",
         "receivedBytes", "expectedBytes", "elapsedMs", "responseStatus", "error",
         "recoveryAttempt", "buffered", "paused", "headroomSeconds", "pendingEvents",
-        "muted", "boost", "gain", "videoBufferBytes", "audioBufferBytes"
+        "muted", "boost", "gain", "videoBufferBytes", "audioBufferBytes", "eventId", "occurredAt"
     ]
 
     private init() {
@@ -78,23 +80,23 @@ import Combine
         }
         guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
               let line = String(data: data, encoding: .utf8) else { return }
-        append(line + "\n")
-        eventCount += 1
+        guard let retainedCount = append(line + "\n") else { return }
+        eventCount = retainedCount
         lastEventAt = Date()
     }
 
-    func recordWeb(event: String, fields: [String: String]) {
-        guard allowedWebEvents.contains(event) else { return }
-        let safeFields = fields.filter { allowedWebFields.contains($0.key) }
-        let interval: TimeInterval
-        switch event {
-        case "sourceProgress": interval = 1
-        case "browserRTT": interval = 5
-        default: interval = 0
+    @discardableResult func recordWeb(event: String, fields: [String: String]) -> Bool {
+        guard enabled, allowedWebEvents.contains(event) else { return false }
+        if let id = fields["eventId"], id.count <= 96 {
+            if browserEventIDs.contains(id) { return true }
+            browserEventIDs.insert(id); browserEventOrder.append(id)
+            if browserEventOrder.count > 1024 { browserEventIDs.remove(browserEventOrder.removeFirst()) }
         }
-        record(component: "browser", event: event, fields: safeFields,
-               throttleKey: interval > 0 ? "browser-\(event)" : nil,
-               minimumInterval: interval)
+        let safeFields = fields.filter { allowedWebFields.contains($0.key) }
+        // Events are already throttled at the source. Receipt-time throttling
+        // drops the distinct samples that arrive together after reconnection.
+        record(component: "browser", event: event, fields: safeFields)
+        return true
     }
 
     func exportURL() -> URL? {
@@ -122,6 +124,7 @@ import Combine
         eventCount = 0
         lastEventAt = nil
         lastEventByKey.removeAll()
+        browserEventIDs.removeAll(); browserEventOrder.removeAll()
     }
 
     static func routeName(_ path: String) -> String {
@@ -131,7 +134,7 @@ import Combine
         return String(path.split(separator: "/").first.map(String.init) ?? "asset")
     }
 
-    private func append(_ text: String) {
+    private func append(_ text: String) -> Int? {
         do {
             let manager = FileManager.default
             try manager.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -139,29 +142,36 @@ import Combine
                 try Data(text.utf8).write(to: logURL, options: .atomic)
             } else {
                 let handle = try FileHandle(forWritingTo: logURL)
+                defer { try? handle.close() }
                 try handle.seekToEnd()
                 try handle.write(contentsOf: Data(text.utf8))
                 try handle.close()
             }
-            trimIfNeeded()
+            let retained = trimIfNeeded() ?? (eventCount + 1)
             try? MediaPipeline.protect(logURL)
+            return retained
         } catch {
             // Diagnostics must never interfere with hosting or playback.
+            return nil
         }
     }
 
-    private func trimIfNeeded() {
-        guard let data = try? Data(contentsOf: logURL), data.count > maxBytes else { return }
-        let start = data.count - maxBytes
-        let suffix = data.suffix(maxBytes)
+    private func trimIfNeeded() -> Int? {
+        // Check metadata first. Reading a multi-megabyte journal on every
+        // tunnel frame used to compete with playback on the main actor.
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: logURL.path)[.size]) as? NSNumber,
+              size.intValue > maxBytes, let data = try? Data(contentsOf: logURL) else { return nil }
+        // Rotate to half the cap. Keeping almost exactly maxBytes forces a
+        // full-file rewrite on every subsequent event once the journal fills.
+        let suffix = data.suffix(maxBytes / 2)
         let trimmed: Data
         if let newline = suffix.firstIndex(of: 10) {
             trimmed = Data(suffix[suffix.index(after: newline)...])
         } else {
             trimmed = Data(suffix)
         }
-        _ = start // Keep the intent explicit: retain only the most recent bounded suffix.
         try? trimmed.write(to: logURL, options: .atomic)
+        return trimmed.filter { $0 == 10 }.count
     }
 
     private func countExistingEvents() -> Int {
@@ -184,7 +194,8 @@ import Combine
             return "[redacted]"
         }
         let clean = value.filter { !$0.isNewline && $0 != "\u{0}" }
-        if clean.contains("://") || clean.lowercased().contains("x-secret") { return "[redacted-url-or-credential]" }
+        if clean.contains("://") || clean.lowercased().contains("x-secret") ||
+            clean.lowercased().contains("bearer ") || clean.contains("@") { return "[redacted-url-or-credential]" }
         return String(clean.prefix(240))
     }
 }

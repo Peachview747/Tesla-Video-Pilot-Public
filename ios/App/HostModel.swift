@@ -51,8 +51,8 @@ import Network
     @Published var backgroundPreparation = (UserDefaults.standard.object(forKey: "backgroundPreparation") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(backgroundPreparation, forKey: "backgroundPreparation") }
     }
-    let version = "0.1.28"
-    let build = "40"
+    let version = "0.1.29"
+    let build = "41"
     var preparingTitle: String { videos.first { $0.id == preparingID }?.title ?? "Your video" }
     var queuedCount: Int { videos.filter { $0.state == "preparing" && $0.id != preparingID }.count }
     private var library: Library?
@@ -65,6 +65,9 @@ import Network
     // a utility task so opening or seeking never blocks the HTTP route.
     private var seekIndexes: [UUID: MPEGTSIndex] = [:]
     private var seekIndexTasks: [UUID: Task<MPEGTSIndex?, Never>] = [:]
+    private var seekIndexGenerations: [UUID: UUID] = [:]
+    private var importsInProgress = Set<UUID>()
+    private var removalsRequested = Set<UUID>()
     private let networkMonitor = NWPathMonitor()
     private var meter: TransferMeter
     private var metricsTask: Task<Void, Never>?
@@ -75,6 +78,7 @@ import Network
     private var preparationTask: Task<Void, Never>?
     private var diagnosticsProbeTask: Task<Void, Never>?
     private var authenticationContext: LAContext?
+    private var authenticationGeneration: UUID?
     private let diagnosticsLogger = SessionDiagnostics.shared
 
     init() {
@@ -132,12 +136,15 @@ import Network
             return
         }
         authorizingHost = true
+        let generation = UUID()
+        authenticationGeneration = generation
         authenticationContext = context
         message = "Confirm Face ID to authorize the Tesla host."
         context.evaluatePolicy(.deviceOwnerAuthentication,
                                localizedReason: "Authorize Video Pilot to host your Tesla browser.") { [weak self] success, error in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.authenticationGeneration == generation else { return }
+                self.authenticationGeneration = nil
                 self.authenticationContext = nil
                 self.authorizingHost = false
                 guard success else {
@@ -177,6 +184,10 @@ import Network
         do { try server.start() } catch { stop(); message = error.localizedDescription }
     }
     func stop() {
+        authenticationGeneration = nil
+        authenticationContext?.invalidate()
+        authenticationContext = nil
+        authorizingHost = false
         diagnosticsLogger.record(component: "host", event: "stopped")
         diagnosticsProbeTask?.cancel()
         diagnosticsProbeTask = nil
@@ -189,6 +200,7 @@ import Network
         activeStreams = 0
         localStreams = 0
         tunnelStreams = 0
+        if !busy { finishBackgroundTime() }
         updateIdleTimer()
     }
     func backgrounded() {
@@ -259,7 +271,10 @@ import Network
         request.cachePolicy = .reloadIgnoringLocalCacheData
         let started = ProcessInfo.processInfo.systemUptime
         do {
-            let (_, response) = try await URLSession(configuration: .ephemeral).data(for: request)
+            request.timeoutInterval = 8
+            let session = URLSession(configuration: .ephemeral)
+            defer { session.invalidateAndCancel() }
+            let (_, response) = try await session.data(for: request)
             let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1000
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             diagnosticsLogger.record(component: "network", event: "workerProbe",
@@ -355,17 +370,47 @@ import Network
         guard let id = YouTubeID.parse(input) else { message = "Enter a YouTube video URL or 11-character ID."; return }
         _ = queue(id: id, imported: nil)
     }
-    func importVideo(_ url: URL) { _ = queue(id: nil, imported: url) }
+    func importVideo(_ url: URL) {
+        guard let library else { message = "The library is unavailable."; return }
+        do {
+            let video = try library.add(title: url.deletingPathExtension().lastPathComponent, state: "importing")
+            importsInProgress.insert(video.id)
+            refresh()
+            let quality = mediaQuality
+            Task {
+                do {
+                    _ = try await MediaPipeline.stageImported(url, jobID: video.id, quality: quality)
+                    try library.update(video.id, state: "preparing")
+                    message = "Imported video added to the preparation queue."
+                } catch {
+                    try? library.update(video.id, state: "failed", message: error.localizedDescription)
+                    message = "Import failed: \(error.localizedDescription)"
+                }
+                importsInProgress.remove(video.id)
+                if removalsRequested.remove(video.id) != nil { _ = remove(video.id) }
+                refresh()
+                startNextQueued()
+            }
+        } catch { message = error.localizedDescription }
+    }
     @discardableResult func remove(_ id: UUID) -> Bool {
         guard let library, library.videos.contains(where: { $0.id == id }) else { return false }
         if busy && preparingID == id {
-            message = "Pause the active preparation before deleting it."
-            return false
+            removalsRequested.insert(id)
+            preparationTask?.cancel()
+            message = "Cancelling preparation and removing the video…"
+            return true
+        }
+        if importsInProgress.contains(id) {
+            removalsRequested.insert(id)
+            message = "Removing the imported video when its file copy finishes…"
+            return true
         }
         do {
             try library.remove(id)
             seekIndexes.removeValue(forKey: id)
             seekIndexTasks.removeValue(forKey: id)?.cancel()
+            seekIndexGenerations.removeValue(forKey: id)
             refresh()
             return true
         }
@@ -375,7 +420,7 @@ import Network
         guard let library else { message = "The library is unavailable."; return nil }
         if let id, let existing = library.videos.first(where: {
             guard let existingID = $0.youtubeID else { return false }
-            return existingID.caseInsensitiveCompare(id) == .orderedSame
+            return existingID == id
         }) {
             message = existing.state == "preparing"
                 ? "That video is already in the preparation queue."
@@ -394,6 +439,8 @@ import Network
         let job = try? MediaPipeline.store.load(id)
         guard job != nil || video.youtubeID != nil else { message = "Import this file again from Files."; return }
         seekIndexes.removeValue(forKey: id)
+        seekIndexTasks.removeValue(forKey: id)?.cancel()
+        seekIndexGenerations.removeValue(forKey: id)
         MediaPipeline.store.clearFailures(id)
         MediaDownloader.shared.forget(jobID: id)
         launchPreparation(video: video, restored: job)
@@ -452,6 +499,7 @@ import Network
                 try? FileManager.default.removeItem(at: output)
                 try? FileManager.default.removeItem(at: MediaPipeline.seekIndexURL(for: output))
                 seekIndexTasks.removeValue(forKey: video.id)?.cancel()
+                seekIndexGenerations.removeValue(forKey: video.id)
                 let paused = error is CancellationError || Task.isCancelled
                 let text = paused ? "Paused. Tap Resume; completed downloads are saved." : error.localizedDescription
                 let title = (try? MediaPipeline.store.load(video.id))?.title
@@ -466,13 +514,16 @@ import Network
             preparationStartedAt = nil
             preparation = nil
             preparationTask = nil
+            if removalsRequested.remove(video.id) != nil {
+                if remove(video.id) { message = "Video removed." }
+            }
             startNextQueued()
             updateIdleTimer()
             refresh()
         }
     }
     private func startNextQueued() {
-        guard !busy, let next = library?.videos.first(where: { $0.state == "preparing" }) else { return }
+        guard !busy, let next = library?.videos.filter({ $0.state == "preparing" }).min(by: { $0.createdAt < $1.createdAt }) else { return }
         launchPreparation(video: next, restored: try? MediaPipeline.store.load(next.id))
     }
     private func refresh() { videos = library?.videos ?? [] }
@@ -494,15 +545,27 @@ import Network
         // declare the phone disconnected. Coalesce concurrent seeks for the
         // same legacy file into one utility-priority background scan.
         let task: Task<MPEGTSIndex?, Never>
+        let generation: UUID
         if let existing = seekIndexTasks[id] {
             task = existing
+            guard let existingGeneration = seekIndexGenerations[id] else { return nil }
+            generation = existingGeneration
         } else {
+            generation = UUID()
+            seekIndexGenerations[id] = generation
             task = Task.detached(priority: .utility) {
                 try? MPEGTSIndex.build(file: url)
             }
             seekIndexTasks[id] = task
         }
-        guard let built = await task.value, !built.points.isEmpty else {
+        let result = await task.value
+        // Delete/retry may replace this file while the background scan awaits.
+        // A stale task must never recreate a sidecar or overwrite a new index.
+        guard seekIndexGenerations[id] == generation else { return nil }
+        seekIndexGenerations[id] = nil
+        guard let built = result, !built.points.isEmpty,
+              library?.videos.contains(where: { $0.id == id && $0.state == "ready" }) == true,
+              FileManager.default.fileExists(atPath: url.path) else {
             seekIndexTasks[id] = nil
             return nil
         }
@@ -557,10 +620,10 @@ import Network
             guard let video = library.videos.first(where: { $0.id == job.id }) else {
                 try? MediaPipeline.store.remove(job.id); continue
             }
-            // Failed and paused jobs stay available for an explicit retry, including cached sources.
-            guard video.state == "preparing", !busy else { continue }
-            launchPreparation(video: video, restored: job)
+            // Failed and paused jobs stay available for an explicit retry.
+            _ = video
         }
+        startNextQueued()
     }
 
     private func respond(to request: HTTPRequest) async -> HTTPResponse {
@@ -576,6 +639,7 @@ import Network
         }
         let assets: [String: (String, String)] = ["/": ("index.html", "text/html; charset=utf-8"),
             "/app.js": ("app.js", "text/javascript"), "/http-source.js": ("http-source.js", "text/javascript"),
+            "/diagnostics.js": ("diagnostics.js", "text/javascript"),
             "/style.css": ("style.css", "text/css"), "/jsmpeg.min.js": ("jsmpeg.min.js", "text/javascript")]
         if request.method == "GET", let (name, type) = assets[request.path] {
             guard let root = Bundle.main.resourceURL?.appendingPathComponent("GeneratedWeb"),
@@ -606,7 +670,7 @@ import Network
                           "diagnosticsEventCount": diagnosticsLogger.eventCount])
         }
         if request.path == "/api/diagnostics/export", request.method == "GET" {
-            guard diagnosticsLogger.enabled, let data = diagnosticsLogger.exportData() else {
+            guard let data = diagnosticsLogger.exportData() else {
                 return .json(["error": "No diagnostic events recorded yet."], status: 404)
             }
             return HTTPResponse(status: 200, contentType: "application/x-ndjson; charset=utf-8", body: data,
@@ -625,12 +689,13 @@ import Network
                 if let raw = entry["fields"] as? [String: Any] {
                     for (key, value) in raw.prefix(24) { fields[key] = String(describing: value) }
                 }
-                diagnosticsLogger.recordWeb(event: event, fields: fields)
-                accepted += 1
+                if let eventID = entry["eventId"] as? String { fields["eventId"] = eventID }
+                if let occurredAt = entry["occurredAt"] as? String { fields["occurredAt"] = occurredAt }
+                if diagnosticsLogger.recordWeb(event: event, fields: fields) { accepted += 1 }
             }
             diagnosticsLogger.record(component: "browser", event: "batchReceived",
                 fields: ["accepted": String(accepted)], throttleKey: "browser-batch", minimumInterval: 1)
-            return .json(["accepted": true, "count": accepted])
+            return .json(["accepted": accepted == min(events.count, 64), "count": accepted])
         }
         if request.path == "/api/youtube", request.method == "POST" {
             guard let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: String],
@@ -649,7 +714,7 @@ import Network
                 return .json(["error": "That library item no longer exists."], status: 404)
             }
             guard remove(id) else { return .json(["error": message], status: 409) }
-            return .json(["removed": true])
+            return .json(["removed": !removalsRequested.contains(id), "pending": removalsRequested.contains(id)])
         }
         if request.path == "/api/search", request.method == "GET" {
             let query = request.query.first(where: { $0.name == "q" })?.value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -657,13 +722,16 @@ import Network
             do {
                 let results: [SearchVideo]
                 if youtubeSignedIn {
-                    results = try await YouTubeSearch.search(query, accessToken: try await youtubeOAuth.accessToken())
+                    results = try await youtubeOAuth.retryUnauthorized { token in
+                        try await YouTubeSearch.search(query, accessToken: token)
+                    }
                 } else {
                     guard !searchKey.isEmpty else { return .json(["error": "Sign in with Google on the iPhone or add a YouTube Data API key in Settings."], status: 503) }
                     results = try await YouTubeSearch.search(query, apiKey: searchKey)
                 }
                 return HTTPResponse(status: 200, contentType: "application/json", body: try JSONEncoder().encode(results))
             } catch {
+                youtubeSignedIn = youtubeOAuth.signedIn
                 return .json(["error": "YouTube search failed: \(error.localizedDescription)"], status: 503)
             }
         }
@@ -671,7 +739,9 @@ import Network
             do {
                 let results: [SearchVideo]
                 if youtubeSignedIn {
-                    results = try await YouTubeSearch.subscriptions(accessToken: try await youtubeOAuth.accessToken())
+                    results = try await youtubeOAuth.retryUnauthorized { token in
+                        try await YouTubeSearch.subscriptions(accessToken: token)
+                    }
                 } else {
                     guard !searchKey.isEmpty else { return .json(["error": "Sign in with Google on the iPhone or add a YouTube Data API key in Settings."], status: 503) }
                     results = try await YouTubeSearch.trending(apiKey: searchKey)
@@ -679,6 +749,7 @@ import Network
                 return .json(results.map { ["id": $0.id, "title": $0.title, "channel": $0.channel, "thumbnail": $0.thumbnail ?? ""] })
             }
             catch {
+                youtubeSignedIn = youtubeOAuth.signedIn
                 return .json(["error": "YouTube Explore failed: \(error.localizedDescription)"], status: 503)
             }
         }

@@ -10,6 +10,10 @@ public enum RelayProtocol {
     // allowance. The last partial frame is still permitted for exact bytes.
     public static let fileChunk = maximumChunk / 188 * 188
     public static let maximumRequests = 8
+    // A 16 KiB body expands to ~22 KiB when base64 encoded, on top of the
+    // Worker's allowed 12 KiB header envelope. Valid requests can exceed the
+    // old 32 KiB control-message limit without exceeding HTTP's body limit.
+    public static let maximumControlMessage = 65_536
 
     public enum InvalidMessage: Error { case request, frame }
 

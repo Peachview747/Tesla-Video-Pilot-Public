@@ -364,7 +364,7 @@ final class MediaDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Se
         let destination = try MediaPipeline.store.file(for: descriptor)
         if FileManager.default.fileExists(atPath: destination.path) {
             let size = Self.fileSize(destination)
-            if descriptor.range == nil || descriptor.range?.count == size {
+            if size > 0 && (descriptor.range == nil || descriptor.range?.count == size) {
                 progress(size, size)
                 return destination
             }
@@ -386,7 +386,8 @@ final class MediaDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Se
                 continuation.resume(with: result)
                 return
             }
-            if FileManager.default.fileExists(atPath: destination.path) {
+            if FileManager.default.fileExists(atPath: destination.path), Self.fileSize(destination) > 0,
+               descriptor.range == nil || descriptor.range?.count == Self.fileSize(destination) {
                 lock.unlock()
                 let size = Self.fileSize(destination)
                 progress(size, size)
@@ -402,6 +403,13 @@ final class MediaDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Se
             guard let request = request(url, range: descriptor.range, transport: transport) else {
                 lock.unlock()
                 continuation.resume(throwing: MediaError.badDownload)
+                return
+            }
+            // Do not replace an existing continuation for the same track or
+            // chunk. That strands the first caller forever on a double retry.
+            guard handlers[descriptor.taskDescription] == nil else {
+                lock.unlock()
+                continuation.resume(throwing: MediaError.downloadFailed("This track is already downloading."))
                 return
             }
             let task = existing ?? (background ? backgroundSession : foregroundSession).downloadTask(with: request)

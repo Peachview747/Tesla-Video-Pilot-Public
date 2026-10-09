@@ -115,7 +115,8 @@ import MK8Core
     }
 
     private func checkWorker(secret: String) async throws {
-        var request = URLRequest(url: publicURL.appendingPathComponent("__iphone/status"))
+        var request = URLRequest(url: publicURL.appendingPathComponent("__iphone/status"),
+                                 cachePolicy: .reloadIgnoringLocalCacheData)
         request.setValue(secret, forHTTPHeaderField: "x-secret")
         let started = ProcessInfo.processInfo.systemUptime
         let (data, response) = try await session.data(for: request)
@@ -124,11 +125,10 @@ import MK8Core
         SessionDiagnostics.shared.record(component: "network", event: "workerCheck",
             fields: ["status": String(http.statusCode), "elapsedMs": String(format: "%.1f", elapsed),
                      "probe": "phone-to-cloudflare-https"])
-        if http.statusCode == 401 { throw RelayError.keyRejected }
-        guard http.statusCode == 200,
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object["protocol"] as? String == RelayProtocol.name else { throw RelayError.workerSetup }
-        guard object["configured"] as? Bool == true else { throw RelayError.keyRejected }
+        do { try RelayWorkerCheck.validate(status: http.statusCode, data: data) }
+        catch RelayWorkerCheck.Failure.keyRejected { throw RelayError.keyRejected }
+        catch RelayWorkerCheck.Failure.setupRequired { throw RelayError.workerSetup }
+        // Temporary HTTP failures remain retryable in the reconnect loop.
     }
 
     private func startHeartbeat(socket: URLSessionWebSocketTask, generation: UUID) {
@@ -151,7 +151,7 @@ import MK8Core
     }
 
     private func handle(_ text: String, socket: URLSessionWebSocketTask) throws {
-        guard text.utf8.count <= 32768, let data = text.data(using: .utf8),
+        guard text.utf8.count <= RelayProtocol.maximumControlMessage, let data = text.data(using: .utf8),
               let value = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = value["type"] as? String else { throw RelayError.protocolMismatch }
         SessionDiagnostics.shared.record(component: "tunnel", event: "controlReceived",

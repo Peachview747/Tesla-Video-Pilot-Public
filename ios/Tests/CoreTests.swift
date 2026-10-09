@@ -30,6 +30,17 @@ final class CoreTests: XCTestCase {
         ] { XCTAssertThrowsError(try HTTPRequest.parse(Data(value.utf8))) }
         XCTAssertThrowsError(try HTTPRequest.parse(Data(repeating: 65, count: 16_385)))
     }
+    func testRejectsControlCharactersAndAmbiguousRequestLines() {
+        for value in [
+            "GET  / HTTP/1.1\r\n\r\n",
+            " GET / HTTP/1.1\r\n\r\n",
+            "GET\t/ HTTP/1.1\r\n\r\n",
+            "GET /a\u{0}b HTTP/1.1\r\n\r\n",
+            "GET /a\u{7f}b HTTP/1.1\r\n\r\n",
+            "GET /a#fragment HTTP/1.1\r\n\r\n",
+            "GET / HTTP/1.1\r\nCookie: good\u{0}bad\r\n\r\n"
+        ] { XCTAssertThrowsError(try HTTPRequest.parse(Data(value.utf8))) }
+    }
     func testFFmpegPathsStaySeparateArguments() {
         let path = "/tmp/a 'quoted' name.mp4"
         let args = TranscodeArguments.make(video: path, audio: "/tmp/audio.m4a", output: "/tmp/out.ts")

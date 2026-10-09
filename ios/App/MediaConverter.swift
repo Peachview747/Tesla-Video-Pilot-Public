@@ -19,6 +19,16 @@ enum MediaConverter {
     static func convert(video: URL, audio: URL?, output: URL, duration: Double?,
                         quality: MediaQuality, progress: @escaping Progress,
                         runner: Runner? = nil) async throws {
+        guard video.standardizedFileURL != output.standardizedFileURL,
+              audio?.standardizedFileURL != output.standardizedFileURL else {
+            throw Failure(code: -1, log: "The converted video must be saved separately from its source.")
+        }
+        var completed = false
+        defer {
+            // A failed or cancelled encode must not leave a partial stream that
+            // another player or retry can mistake for a finished library file.
+            if !completed { try? FileManager.default.removeItem(at: output) }
+        }
         let execute = runner ?? run
         var hardwareFailure: Failure?
         for hardware in [true, false] {
@@ -34,6 +44,7 @@ enum MediaConverter {
                 try Task.checkCancellation()
                 let size = (try? FileManager.default.attributesOfItem(atPath: output.path)[.size] as? NSNumber)?.int64Value ?? 0
                 guard size > 0 else { throw Failure(code: -1, log: "The converter did not produce a video.") }
+                completed = true
                 return
             } catch is CancellationError {
                 throw CancellationError()

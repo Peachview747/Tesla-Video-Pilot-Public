@@ -2,7 +2,7 @@ import UIKit
 
 @MainActor final class AppActivity {
     static let shared = AppActivity()
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     private var observer: NSObjectProtocol?
     var isActive: Bool { UIApplication.shared.applicationState == .active }
     var processingAllowed: Bool { isActive || BackgroundPreparation.shared.isRunning }
@@ -17,14 +17,24 @@ import UIKit
                 guard let self else { return }
                 let waiting = self.waiters
                 self.waiters.removeAll()
-                for continuation in waiting { continuation.resume() }
+                for continuation in waiting.values { continuation.resume() }
             }
         }
     }
 
     func waitUntilActive() async {
-        guard UIApplication.shared.applicationState != .active else { return }
-        await withCheckedContinuation { waiters.append($0) }
+        guard !Task.isCancelled, !isActive else { return }
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                // Activation or cancellation may happen between the first
+                // check and registration. Neither may strand a waiter.
+                if isActive || Task.isCancelled { continuation.resume() }
+                else { waiters[id] = continuation }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.waiters.removeValue(forKey: id)?.resume() }
+        }
     }
     func waitUntilProcessingAllowed() async throws {
         while !processingAllowed {

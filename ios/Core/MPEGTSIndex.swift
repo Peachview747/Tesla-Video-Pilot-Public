@@ -113,6 +113,7 @@ public struct MPEGTSIndex: Codable, Sendable, Equatable {
         }
 
         while let chunk = try handle.read(upToCount: 188 * 4096), !chunk.isEmpty {
+            try Task.checkCancellation()
             pending.append(chunk)
             var consumed = 0
             while pending.count - consumed >= 188 {
@@ -161,6 +162,7 @@ public struct MPEGTSIndex: Codable, Sendable, Equatable {
                 fileOffset += Int64(consumed)
             }
         }
+        try Task.checkCancellation()
         guard pending.isEmpty, sawPacket else { throw Failure.notTransportStream }
         let points = safePoints.isEmpty ? fallbackPoints : safePoints
         if points.isEmpty { return Self(duration: nil, points: []) }

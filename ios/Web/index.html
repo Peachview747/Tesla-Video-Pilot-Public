@@ -56,16 +56,17 @@
         <section id="explore-panel" class="explore-panel" hidden><div class="library-heading"><div><p class="eyebrow">YOUR FEED</p><h2 id="explore-title">Trending now</h2></div><button id="explore-refresh" type="button">Refresh</button></div><div id="explore-results" class="grid"></div></section>
         <section id="queue-panel" class="queue-panel" hidden><div class="library-heading"><h2>Up next</h2><p id="queue-summary"></p></div><div id="queue-list" class="grid"></div></section>
       </section>
-      <section id="player-section" class="tab-panel player-overlay" aria-modal="true" role="dialog" hidden>
+      <section id="player-section" class="tab-panel player-overlay" aria-modal="true" aria-labelledby="playing-title" role="dialog" hidden>
         <div class="player-dialog">
           <div class="player-heading"><h2 id="playing-title"></h2><button id="close" class="close-player" type="button">Close</button></div>
         <div id="player-shell" class="player-shell">
           <canvas id="screen" width="1280" height="720" aria-label="Video player"></canvas>
           <div class="controls" role="group" aria-label="Video controls">
             <button id="back10">−10 sec</button><button id="pause">Pause</button><button id="forward10">+10 sec</button>
-            <button id="mute">Mute</button><button id="audio-boost" type="button" aria-pressed="false" title="Enable a gentle 115% audio boost">Audio +</button><button id="fullscreen">Full screen</button><button id="exit-fullscreen" hidden>Exit full screen</button>
+            <button id="mute">Mute</button><button id="audio-boost" type="button" aria-pressed="false" title="Enable a gentle 115% audio boost">Audio +</button><button id="fullscreen">Full screen</button>
           </div>
           <div class="timeline"><span id="elapsed">0:00</span><input id="timeline" type="range" min="0" max="1" value="0" step="0.1" aria-label="Video timeline"><span id="duration">0:00</span></div>
+          <button id="exit-fullscreen" type="button" hidden>Exit full screen</button>
         </div>
         <p id="playback-status" role="status"></p>
         </div>

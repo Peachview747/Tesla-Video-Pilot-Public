@@ -29,19 +29,24 @@ struct HTTPResponse {
 
     init(route: @escaping Router) { self.route = route }
     func start() throws {
+        stop()
         let listener = try NWListener(using: .tcp, on: 5000)
         self.listener = listener
-        listener.stateUpdateHandler = { [weak self] state in
+        listener.stateUpdateHandler = { [weak self, weak listener] state in
             Task { @MainActor in
+                guard let self, let listener, self.listener === listener else { return }
                 switch state {
-                case .ready: self?.ready?()
-                case .failed: self?.failed?("The local server could not start on port 5000.")
+                case .ready: self.ready?()
+                case .failed: self.failed?("The local server could not start on port 5000.")
                 default: break
                 }
             }
         }
-        listener.newConnectionHandler = { [weak self] connection in
-            Task { @MainActor in self?.accept(connection) }
+        listener.newConnectionHandler = { [weak self, weak listener] connection in
+            Task { @MainActor in
+                guard let self, let listener, self.listener === listener else { connection.cancel(); return }
+                self.accept(connection)
+            }
         }
         listener.start(queue: .main)
     }
@@ -98,11 +103,18 @@ struct HTTPResponse {
             }
         }
         connection.start(queue: .main)
-        timeout = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 15_000_000_000)
-            if !Task.isCancelled { self?.finish() }
-        }
+        armTimeout(seconds: 15, stage: "request")
         read()
+    }
+    private func armTimeout(seconds: UInt64, stage: String) {
+        timeout?.cancel()
+        timeout = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+            guard !Task.isCancelled, let self, !self.done else { return }
+            SessionDiagnostics.shared.record(component: "http", event: "timeout",
+                fields: ["route": self.currentRoute, "stage": stage])
+            self.finish()
+        }
     }
     func finish() {
         guard !done else { return }
@@ -185,9 +197,14 @@ struct HTTPResponse {
     }
     private func send(_ data: Data, then completion: @escaping @MainActor () -> Void) {
         guard !done else { return }
+        // A disconnected or frozen browser may leave contentProcessed pending
+        // indefinitely. Reap only a stalled write, never a continuously active
+        // response, so abandoned seeks cannot occupy all eight local slots.
+        armTimeout(seconds: 45, stage: "write")
         connection.send(content: data, completion: .contentProcessed { [weak self] error in
             Task { @MainActor in
                 guard let self, !self.done else { return }
+                self.timeout?.cancel()
                 if error != nil { self.finish() } else { self.sent?(Int64(data.count)); completion() }
             }
         })

@@ -48,6 +48,24 @@ test('passes indexed seek time and measured duration to the player session', asy
     assert.deepEqual(events, [['seek', 41.25], ['duration', 123.5]]);
   } finally { source.destroy(); globalThis.fetch = original; }
 });
+test('fragmented seek headers cannot gate the source before a decoder establishes its clock', async () => {
+  const decoder = {canPlay:false};
+  const values = [0, 1, 2].map(value => new Uint8Array([value]));
+  const fixture = setup(new Response(new ReadableStream({pull(controller) {
+    if (values.length) controller.enqueue(values.shift()); else controller.close();
+  }})), {currentTime:0, pesPacketInfo:{video:{destination:decoder}}, write(buffer) {
+    const value = new Uint8Array(buffer)[0];
+    this.currentTime = value ? 300 : 0;
+    if (value === 2) decoder.canPlay = true;
+  }});
+  try {
+    fixture.source.resume(300);
+    await fixture.source.read();
+    assert.equal(fixture.chunks.length, 3);
+    assert.equal(fixture.source.buffered, false);
+    assert.equal(fixture.source.completed, true);
+  } finally { fixture.restore(); }
+});
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 10));
 async function until(condition) {

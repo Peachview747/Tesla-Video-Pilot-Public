@@ -2,6 +2,108 @@
 const reportDiagnostic = (event, fields = {}) => {
   try { globalThis.videoPilotDiagnostics?.(event, fields); } catch {}
 };
+
+// Recorded JSMpeg playback needs its PTS table: it establishes the timebase
+// after a remote seek and lets Pause rewind the small WebAudio scheduling
+// lead. EVICT may discard unread frames; EXPAND alone retains the whole file.
+// Keep EXPAND, but move only consumed data out of the window before writes.
+export function installRecordedBufferWindow(decoder, maximumBytes = 16 * 1024 * 1024) {
+  if (!decoder?.bits || typeof decoder.write !== 'function' || decoder.bufferWindowInstalled) return;
+  decoder.bufferWindowInstalled = true;
+  const write = decoder.write;
+  decoder.write = function(pts, buffers) {
+    const bits = this.bits;
+    const incoming = Array.isArray(buffers)
+      ? buffers.reduce((total, buffer) => total + buffer.byteLength, 0) : buffers.byteLength;
+    const timestamps = this.timestamps;
+    // Retain a second behind the audible clock. Pause can rewind about 250ms
+    // of scheduled audio, so discarding everything behind bits.index loses
+    // the samples that need to be played again after Resume.
+    const retainFrom = Number(this.currentTime) - 1;
+    let anchor = 0;
+    if (Array.isArray(timestamps)) {
+      for (let i = 1; i < timestamps.length; i++) {
+        if (timestamps[i].time > retainFrom || timestamps[i].index > bits.index) break;
+        anchor = i;
+      }
+    }
+    const bytesToRemove = Math.max(0, (timestamps?.[anchor]?.index || 0) >> 3);
+    if (bytesToRemove >= 64 * 1024 || (bytesToRemove && bits.byteLength + incoming > bits.bytes.length)) {
+      bits.bytes.copyWithin(0, bytesToRemove, bits.byteLength);
+      bits.byteLength -= bytesToRemove;
+      bits.index -= bytesToRemove * 8;
+      this.bytesWritten -= bytesToRemove;
+      timestamps.splice(0, anchor);
+      for (const timestamp of timestamps) timestamp.index -= bytesToRemove * 8;
+      this.timestampIndex = Math.max(0, this.timestampIndex - anchor);
+    }
+    if (bits.byteLength + incoming > maximumBytes) {
+      throw new Error('Playback buffer reached its safe limit. Tap Retry.');
+    }
+    // The shipped BitBuffer's growth calculation can underallocate for a
+    // single large PES. Reserve the full required size ourselves, capped.
+    if (bits.byteLength + incoming > bits.bytes.length) {
+      bits.resize(Math.min(maximumBytes, Math.max(bits.bytes.length * 2, bits.byteLength + incoming)));
+    }
+    return write.call(this, pts, buffers);
+  };
+}
+
+// JSMpeg.stop() only mutes queued sources. Those sources keep running, and a
+// quick Resume/Unmute can expose an old tail underneath newly queued audio.
+// Track and cancel the short scheduling lead, then reset its clock on Stop.
+export function installRecordedAudioOutput(output, now) {
+  if (!output?.context?.createBufferSource || output.recordedSources) return;
+  const sources = output.recordedSources = new Set();
+  const destroy = output.destroy;
+  output.play = function(sampleRate, left, right) {
+    if (!this.enabled) return;
+    if (!this.unlocked) {
+      this.wallclockStartTime = Math.max(this.wallclockStartTime, now()) + left.length / sampleRate;
+      return;
+    }
+    this.gain.gain.value = this.volume;
+    const buffer = this.context.createBuffer(2, left.length, sampleRate);
+    buffer.getChannelData(0).set(left); buffer.getChannelData(1).set(right);
+    const source = this.context.createBufferSource();
+    source.buffer = buffer; source.connect(this.destination);
+    if (this.startTime < this.context.currentTime) {
+      this.startTime = this.context.currentTime; this.wallclockStartTime = now();
+    }
+    sources.add(source);
+    source.onended = () => { sources.delete(source); try { source.disconnect(); } catch {} };
+    source.start(this.startTime);
+    this.startTime += buffer.duration; this.wallclockStartTime += buffer.duration;
+  };
+  output.stop = function() {
+    for (const source of sources) {
+      source.onended = null;
+      try { source.stop(); } catch {}
+      try { source.disconnect(); } catch {}
+    }
+    sources.clear();
+    this.startTime = this.context.currentTime; this.wallclockStartTime = now();
+    this.gain.gain.value = 0;
+  };
+  output.destroy = function() { this.stop(); return destroy?.call(this); };
+}
+
+// The shipped Player pauses by stopping output and then reading currentTime.
+// Canceling the output queue resets its clock, so capture the audible position
+// first and restore that position after its normal pause bookkeeping.
+export function installRecordedPlayerPause(player) {
+  if (!player || typeof player.pause !== 'function' || player.recordedPauseInstalled) return;
+  player.recordedPauseInstalled = true;
+  const pause = player.pause;
+  player.pause = function(...args) {
+    const rewind = !this.paused && this.audio?.canPlay;
+    const position = this.currentTime;
+    const result = pause.apply(this, args);
+    if (rewind && Number.isFinite(position)) this.seek(position);
+    return result;
+  };
+}
+
 export class JSMpegHttpSource {
   streaming = false;
   established = false;
@@ -22,7 +124,6 @@ export class JSMpegHttpSource {
   stoppedPromise;
   lastProgressReport = 0;
   lastBufferState = null;
-  firstChunkDelivered = false;
   // Keep enough media queued to absorb cellular/Cloudflare jitter. The
   // previous 8/3-second gate made 5G playback underrun and crackle; this
   // 12/6-second hysteresis is still bounded and is released on Pause/seek.
@@ -38,6 +139,7 @@ export class JSMpegHttpSource {
   // Keep this separate from the user's Pause so a frame cannot undo a pause.
   resume(headroom) {
     if (!Number.isFinite(headroom)) return;
+    if (!this.hasPlaybackClock()) return;
     this.headroom = Math.max(0, headroom);
     const time = this.destination?.currentTime;
     this.reportedSourceTime = Number.isFinite(time) ? time : null;
@@ -56,10 +158,17 @@ export class JSMpegHttpSource {
   // Several network chunks can arrive before the next animation frame. Account
   // for their PTS advance too, rather than waiting for the next resume report.
   updateReadAhead() {
+    if (!this.hasPlaybackClock()) return;
     const time = this.destination?.currentTime;
     if (!Number.isFinite(time)) return;
     if (this.reportedSourceTime === null) this.reportedSourceTime = time;
     this.updateBuffering(this.headroom + Math.max(0, time - this.reportedSourceTime));
+  }
+  hasPlaybackClock() {
+    const packets = this.destination?.pesPacketInfo;
+    // A fragmented PAT/PES header can expose a large absolute seek PTS before
+    // any decoder has its timestamp baseline. Do not call that buffered media.
+    return !packets || Object.values(packets).some(packet => packet.destination?.canPlay);
   }
   wakeReading() {
     if (this.controller.signal.aborted || (!this.paused && !this.buffered)) {
@@ -102,8 +211,9 @@ export class JSMpegHttpSource {
         elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - startedAt)});
       if (!response.ok) throw new Error(response.status === 401 ? 'Pair this browser again.' : `Video stream failed (HTTP ${response.status}).`);
       if (!response.body) throw new Error('This browser cannot read the video stream.');
-      const seekTime = Number(response.headers.get('x-video-seek-time'));
-      if (Number.isFinite(seekTime) && seekTime >= 0) this.options.onSourceStartTime?.(seekTime);
+      const seekHeader = response.headers.get('x-video-seek-time');
+      const seekTime = Number(seekHeader);
+      if (seekHeader !== null && Number.isFinite(seekTime) && seekTime >= 0) this.options.onSourceStartTime?.(seekTime);
       const duration = Number(response.headers.get('x-video-duration'));
       if (Number.isFinite(duration) && duration > 0) this.options.onSourceDuration?.(duration);
       const expected = Number(response.headers.get('content-length'));
@@ -127,16 +237,6 @@ export class JSMpegHttpSource {
               elapsedMs:Math.round(now - startedAt), headroomSeconds:this.headroom});
           }
           this.updateReadAhead();
-          // Let the decoder see one transport chunk, then wait for its first
-          // playback headroom report. Without this startup gate a fast relay
-          // can fill the bounded decoder buffer before the first animation
-          // frame has a chance to run.
-          if (this.options.initialBufferGate && !this.firstChunkDelivered) {
-            this.firstChunkDelivered = true;
-            this.buffered = true;
-            reportDiagnostic('sourceBuffer', {bufferSeconds:this.headroom,
-              buffered:true, headroomSeconds:this.headroom});
-          }
         }
       }
       if (!this.controller.signal.aborted) {

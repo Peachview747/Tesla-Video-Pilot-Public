@@ -73,14 +73,46 @@ enum MediaPipeline {
     static func imported(_ source: URL, jobID: UUID, output: URL, background: Bool, quality: MediaQuality,
                          progress: @escaping Progress, traffic: @escaping Traffic) async throws -> PreparedMedia {
         progress(.init(stage: .importing))
+        let job = try await stageImported(source, jobID: jobID, quality: quality)
+        return try await resume(job, output: output, background: background, progress: progress, traffic: traffic)
+    }
+
+    /// Copy a Files import while its security-scoped URL is still available.
+    /// Queued jobs must own a durable local source before that URL is released.
+    /// The hidden staging directory is never returned by store.jobs(), so an
+    /// interrupted copy cannot be mistaken for a resumable preparation job.
+    static func stageImported(_ source: URL, jobID: UUID, quality: MediaQuality) async throws -> MediaPreparationJob {
+        try Task.checkCancellation()
         let access = source.startAccessingSecurityScopedResource()
         defer { if access { source.stopAccessingSecurityScopedResource() } }
         let job = MediaPreparationJob(id: jobID, title: source.deletingPathExtension().lastPathComponent,
                                        sourceExtension: source.pathExtension, quality: quality)
-        try store.save(job)
-        try FileManager.default.copyItem(at: source, to: store.file(for: job, track: .video))
-        try protect(store.file(for: job, track: .video))
-        return try await resume(job, output: output, background: background, progress: progress, traffic: traffic)
+        let staging = store.root.appendingPathComponent(".importing-" + UUID().uuidString)
+        let stagedStore = MediaPreparationStore(root: staging)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        try stagedStore.save(job)
+        let local = stagedStore.file(for: job, track: .video)
+        let reader = try FileHandle(forReadingFrom: source)
+        defer { try? reader.close() }
+        guard FileManager.default.createFile(atPath: local.path, contents: nil) else { throw MediaError.badDownload }
+        try protect(local)
+        let writer = try FileHandle(forWritingTo: local)
+        do {
+            var count: Int64 = 0
+            while let bytes = try reader.read(upToCount: 256 * 1_024), !bytes.isEmpty {
+                try Task.checkCancellation()
+                try writer.write(contentsOf: bytes)
+                count += Int64(bytes.count)
+            }
+            try writer.close()
+            try Task.checkCancellation()
+            guard count > 0 else { throw MediaError.badDownload }
+            try FileManager.default.moveItem(at: stagedStore.directory(for: job.id), to: store.directory(for: job.id))
+        } catch {
+            try? writer.close()
+            throw error
+        }
+        return job
     }
 
     static func resume(_ job: MediaPreparationJob, output: URL, background: Bool,
@@ -111,19 +143,19 @@ enum MediaPipeline {
         try await AppActivity.shared.waitUntilProcessingAllowed()
         try Task.checkCancellation()
         let sourceDuration = await duration(of: source)
+        try Task.checkCancellation()
         // A previous failed conversion must never leave a stale index paired
         // with a newly downloaded file.
         try? FileManager.default.removeItem(at: seekIndexURL(for: output))
         if job.isTransportStream {
-            let handle = try FileHandle(forReadingFrom: source)
-            defer { try? handle.close() }
-            let bytes = try handle.read(upToCount: 188 * 20) ?? Data()
-            guard bytes.count >= 188 * 3, bytes.count % 188 == 0,
-                  stride(from: 0, to: bytes.count, by: 188).allSatisfy({ bytes[$0] == 0x47 }) else {
-                throw MediaError.invalidTransport
-            }
+            // Checking only the opening packets admitted truncated or corrupt
+            // tails. The bounded scanner validates every transport packet.
+            do { _ = try MPEGTSIndex.build(file: source) }
+            catch is CancellationError { throw CancellationError() }
+            catch { throw MediaError.invalidTransport }
             if FileManager.default.fileExists(atPath: output.path) { try FileManager.default.removeItem(at: output) }
             try FileManager.default.copyItem(at: source, to: output)
+            try protect(output)
         } else {
             progress(.init(stage: .processing, fraction: sourceDuration == nil ? nil : 0))
             try await convert(video: source, audio: audio, output: output, duration: sourceDuration,
@@ -134,7 +166,11 @@ enum MediaPipeline {
         // is local; playback reuses it for every later seek. Prefer the
         // output's measured duration because FFmpeg can trim or round frames
         // differently from the downloaded source track.
-        let index = try? MPEGTSIndex.build(file: output)
+        let index: MPEGTSIndex?
+        do { index = try MPEGTSIndex.build(file: output) }
+        catch is CancellationError { throw CancellationError() }
+        catch { throw MediaError.invalidTransport }
+        try Task.checkCancellation()
         if let index, !index.points.isEmpty {
             try? writeSeekIndex(index, for: output)
         }

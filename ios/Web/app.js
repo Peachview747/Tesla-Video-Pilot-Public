@@ -1,9 +1,11 @@
-import {JSMpegHttpSource} from './http-source.js';
+import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedPlayerPause} from './http-source.js';
+import {DiagnosticsJournal} from './diagnostics.js';
 const $ = id => document.getElementById(id);
 let player = null, current = null, currentOffset = 0, seekTimer = null;
 let fullscreenFallback = false;
 let playback = null;
 let refreshing = false;
+let exploring = false, exploreAttemptAt = 0, exploreAccount = null;
 let seekGeneration = 0;
 let seekChain = Promise.resolve();
 // Tesla browsers can have a large system volume while the WebAudio output is
@@ -62,11 +64,12 @@ async function api(path, body) {
   const started = globalThis.performance?.now?.() ?? Date.now();
   let response;
   try {
-    response = await fetch(path, {method:body ? 'POST' : 'GET', credentials:'same-origin', cache:'no-store',
-      headers:body ? {'Content-Type':'application/json'} : {}, body:body ? JSON.stringify(body) : undefined});
-    const raw = await response.text();
-    let result;
-    try { result = raw ? JSON.parse(raw) : {}; }
+    const result = await timedFetch(path, {method:body ? 'POST' : 'GET', credentials:'same-origin', cache:'no-store',
+      headers:body ? {'Content-Type':'application/json'} : {}, body:body ? JSON.stringify(body) : undefined}, 12000, r => r.text());
+    response = result.response;
+    const raw = result.body;
+    let parsed;
+    try { parsed = raw ? JSON.parse(raw) : {}; }
     catch {
       reportDiagnostic('apiError', {responseStatus:response.status,
         elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - started),
@@ -78,10 +81,10 @@ async function api(path, body) {
     if (!response.ok) {
       reportDiagnostic('apiError', {responseStatus:response.status,
         elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - started),
-        error:String(result.error || 'request-failed')});
-      throw new Error(result.error || `Request failed (${response.status}).`);
+        error:String(parsed.error || 'request-failed')});
+      throw new Error(parsed.error || `Request failed (${response.status}).`);
     }
-    return result;
+    return parsed;
   } catch (error) {
     if (!response) reportDiagnostic('apiError', {responseStatus:0,
       elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - started),
@@ -96,21 +99,19 @@ async function api(path, body) {
 const diagnosticsStorageKey = 'video-pilot-browser-diagnostics-v2';
 const diagnosticsMaxEvents = 256;
 const diagnosticsBatchSize = 16;
-const diagnosticsQueue = [];
+const diagnosticsJournal = new DiagnosticsJournal(globalThis.localStorage, diagnosticsStorageKey, diagnosticsMaxEvents);
+const diagnosticsQueue = diagnosticsJournal.events;
 let diagnosticsFlushTimer = null;
 let diagnosticsFlushInFlight = null;
 let diagnosticsRetryDelay = 1000;
-try {
-  const stored = JSON.parse(globalThis.localStorage?.getItem(diagnosticsStorageKey) || '[]');
-  if (Array.isArray(stored)) diagnosticsQueue.push(...stored.slice(-diagnosticsMaxEvents));
-} catch {}
+const diagnosticLastTimes = new Map();
 function persistDiagnostics() {
-  try { globalThis.localStorage?.setItem(diagnosticsStorageKey, JSON.stringify(diagnosticsQueue.slice(-diagnosticsMaxEvents))); } catch {}
+  diagnosticsJournal.persist();
   const pending = $('diagnostics-pending');
-  if (pending) pending.textContent = String(diagnosticsQueue.length);
+  if (pending) pending.textContent = String(diagnosticsJournal.pending.length);
 }
 function scheduleDiagnosticsFlush(delay = 250) {
-  if (diagnosticsFlushTimer || !diagnosticsQueue.length) return;
+  if (diagnosticsFlushTimer || !diagnosticsJournal.pending.length) return;
   diagnosticsFlushTimer = setTimeout(() => {
     diagnosticsFlushTimer = null;
     void flushDiagnostics();
@@ -118,34 +119,40 @@ function scheduleDiagnosticsFlush(delay = 250) {
   diagnosticsFlushTimer?.unref?.();
 }
 function reportDiagnostic(event, fields = {}) {
-  if (diagnosticsQueue.length >= diagnosticsMaxEvents) diagnosticsQueue.shift();
-  diagnosticsQueue.push({event, fields});
-  while (diagnosticsQueue.length > diagnosticsMaxEvents) diagnosticsQueue.shift();
+  const now = Date.now();
+  if (event === 'playerStart') diagnosticLastTimes.delete('playerDecode');
+  if (event === 'playerDecode' || event === 'browserRTT') {
+    if (now - (diagnosticLastTimes.get(event) ?? -Infinity) < 1000) return;
+    diagnosticLastTimes.set(event, now);
+  }
+  diagnosticsJournal.append(event, fields);
   persistDiagnostics();
   scheduleDiagnosticsFlush();
 }
-function timedFetch(url, options = {}, timeout = 4000) {
+function timedFetch(url, options = {}, timeout = 4000, readBody = null) {
   const controller = typeof globalThis.AbortController === 'function' ? new AbortController() : null;
   const request = controller ? {...options, signal:controller.signal} : options;
   let timer;
   const deadline = new Promise((_, reject) => {
     timer = setTimeout(() => { controller?.abort?.(); reject(new Error('request-timeout')); }, timeout);
+    timer?.unref?.();
   });
-  return Promise.race([fetch(url, request), deadline]).finally(() => clearTimeout(timer));
+  const operation = fetch(url, request).then(async response =>
+    readBody ? {response, body:await readBody(response)} : response);
+  return Promise.race([operation, deadline]).finally(() => clearTimeout(timer));
 }
 async function flushDiagnostics(keepalive = false) {
-  if (diagnosticsFlushInFlight || !diagnosticsQueue.length) return diagnosticsFlushInFlight;
-  const events = diagnosticsQueue.slice(0, diagnosticsBatchSize);
+  if (diagnosticsFlushInFlight || !diagnosticsJournal.pending.length) return diagnosticsFlushInFlight;
+  const events = diagnosticsJournal.batch(diagnosticsBatchSize);
   diagnosticsFlushInFlight = (async () => {
     try {
-      const response = await timedFetch('/api/diagnostics', {method:'POST', credentials:'same-origin', cache:'no-store', keepalive,
-        headers:{'Content-Type':'application/json'}, body:JSON.stringify({events})});
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok || result.accepted === false) throw new Error(`diagnostics ${response.status}`);
-      diagnosticsQueue.splice(0, events.length);
+      const {response, body:result} = await timedFetch('/api/diagnostics', {method:'POST', credentials:'same-origin', cache:'no-store', keepalive,
+        headers:{'Content-Type':'application/json'}, body:JSON.stringify({events})}, 4000, r => r.json());
+      if (!response.ok || result.accepted !== true || result.count !== events.length) throw new Error(`diagnostics ${response.status}`);
+      diagnosticsJournal.acknowledge(events.map(entry => entry.eventId));
       persistDiagnostics();
       diagnosticsRetryDelay = 1000;
-      if (diagnosticsQueue.length) scheduleDiagnosticsFlush(0);
+      if (diagnosticsJournal.pending.length) scheduleDiagnosticsFlush(0);
     } catch {
       // Keep the batch locally and retry slowly. Diagnostics must never block
       // playback, but it also must not disappear when the tunnel reconnects.
@@ -196,7 +203,7 @@ function renderQueue(videos, activeID = '') {
   queued.forEach((video, index) => {
     const active = video.id?.toLowerCase() === activeID?.toLowerCase();
     const subtitle = active ? (video.message || 'Preparing now') : (video.message || 'Waiting for preparation');
-    const action = active ? null : {label:'Remove', run:() => removeVideo(video.id)};
+    const action = {label:active ? 'Cancel and remove' : 'Remove', run:() => removeVideo(video.id)};
     list.append(card(`${index + 1}. ${video.title}`, subtitle, action,
       video.youtubeID ? `https://i.ytimg.com/vi/${encodeURIComponent(video.youtubeID)}/mqdefault.jpg` : null));
   });
@@ -229,7 +236,7 @@ async function refresh() {
       const active = video.id?.toLowerCase() === status.preparingID?.toLowerCase();
       const action = video.state === 'ready'
         ? {label:savedResume(video) ? 'Resume · ' + formatTime(savedResume(video)) : 'Play',run:() => play(video)}
-        : (video.state === 'preparing' && !active ? {label:'Remove',run:() => removeVideo(video.id)} : null);
+        : {label:active ? 'Cancel and remove' : 'Remove',run:() => removeVideo(video.id)};
       library.append(card(video.title, video.message || video.state, action,
       video.youtubeID ? `https://i.ytimg.com/vi/${encodeURIComponent(video.youtubeID)}/mqdefault.jpg` : null));
     }
@@ -245,7 +252,11 @@ async function refresh() {
       : 'Paste a video URL above. To enable search, add a YouTube Data API key in the iPhone app.';
     $('url-form').querySelector('button').disabled = false;
     $('preparation-detail').dataset.queue = status.queuedCount ? `${status.queuedCount} more queued` : '';
-    if (status.youtubeExplore && !$('explore-results').children.length) void loadExplore();
+    if (exploreAccount !== Boolean(status.youtubeSignedIn)) {
+      exploreAccount = Boolean(status.youtubeSignedIn);
+      $('explore-results').replaceChildren(); exploreAttemptAt = 0;
+    }
+    if (status.youtubeExplore && !$('explore-results').children.length && Date.now() - exploreAttemptAt > 60000) void loadExplore();
   } catch (error) {
     $('connection').textContent = 'Connection lost'; $('connection').dataset.state = 'offline';
     notice(error.message || 'Open Video Pilot on the iPhone and start hosting.');
@@ -256,10 +267,13 @@ function statusLabel(status) {
   return status.tunnel || 'Waiting';
 }
 async function loadExplore() {
+  if (exploring) return;
+  exploring = true; exploreAttemptAt = Date.now();
   try {
     const results = await api('/api/explore');
     $('explore-results').replaceChildren(...results.map(video => card(video.title, video.channel, {label:'Add to queue',run:() => queueVideo(video.id)}, video.thumbnail)));
   } catch (error) { notice(error.message); }
+  finally { exploring = false; }
 }
 function updatePreparation(status, videos) {
   $('preparation-panel').hidden = !status.busy;
@@ -296,7 +310,7 @@ async function queueVideo(url) {
   catch (error) { notice(error.message); }
 }
 async function removeVideo(id) {
-  try { await api('/api/library/remove', {id}); notice('Removed from the preparation queue.'); await refresh(); }
+  try { const result = await api('/api/library/remove', {id}); notice(result.pending ? 'Cancelling preparation and removing video…' : 'Video removed.'); await refresh(); }
   catch (error) { notice(error.message); }
 }
 $('url-form').onsubmit = event => { event.preventDefault(); void queueVideo($('url').value.trim()); };
@@ -349,8 +363,8 @@ function syncFullscreenControls(active) {
   const shell = $('player-shell');
   if (active) shell.classList?.add?.('vp-fullscreen');
   else shell.classList?.remove?.('vp-fullscreen');
-  $('fullscreen').hidden = !active;
-  $('exit-fullscreen').hidden = active;
+  $('fullscreen').hidden = active;
+  $('exit-fullscreen').hidden = !active;
 }
 function leaveFullscreen() {
   fullscreenFallback = false;
@@ -475,23 +489,14 @@ function applyAudioState() {
   reportDiagnostic('audioState', {muted:audioMuted, boost:audioBoost, gain:volume});
 }
 function boundDecoderBuffers() {
-  // The HTTP source deliberately uses JSMpeg's recorded/static timing path so
-  // seeks can carry an explicit MPEG-TS timestamp. That path defaults decoder
-  // bit buffers to EXPAND, which can retain an entire long video in the Tesla
-  // browser. Switch only the decoder buffers to EVICT after construction; the
-  // source's 12/6-second backpressure still controls how much data arrives.
-  const evict = globalThis.JSMpeg?.BitBuffer?.MODE?.EVICT;
-  if (!evict) return;
-  const decoders = [player?.video, player?.audio].filter(Boolean);
-  for (const decoder of decoders) {
-    if (decoder.bits) decoder.bits.mode = evict;
-    // Every seek creates a fresh player and supplies its own HTTP offset, so
-    // retaining JSMpeg's unbounded timestamp table is unnecessary. Keeping
-    // decoder time via advanceDecodedTime preserves the visible timeline.
-    decoder.collectTimestamps = false;
-    if (Array.isArray(decoder.timestamps)) decoder.timestamps.length = 0;
-    decoder.timestampIndex = 0;
+  // Retain timestamp initialization and unread bytes. Compact only consumed
+  // data, preserving the small rewind window used by JSMpeg's pause logic.
+  for (const decoder of [player?.video, player?.audio].filter(Boolean)) {
+    installRecordedBufferWindow(decoder);
   }
+  installRecordedAudioOutput(player?.audioOut,
+    () => globalThis.JSMpeg?.Now?.() ?? (globalThis.performance?.now?.() ?? Date.now()) / 1000);
+  installRecordedPlayerPause(player);
   reportDiagnostic('decoderBuffersBound', {
     videoBufferBytes:Number(player?.video?.bits?.bytes?.length) || 0,
     audioBufferBytes:Number(player?.audio?.bits?.bytes?.length) || 0
@@ -548,6 +553,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
     session.startupTimer = timer(() => {
       session.startupTimer = null;
       if (playback !== session || session.decoded || session.failed || session.ended) return;
+      if (session.paused) return;
       if (session.recoveryAttempt >= 1) {
         session.failed = true; session.paused = true;
         try { player?.pause(); player?.source?.pauseReading?.(); } catch {}
@@ -561,6 +567,10 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
     // numeric IDs, so this is intentionally optional.
     session.startupTimer?.unref?.();
   };
+  session.resumeWatchdog = () => {
+    session.lastDecodedAt = globalThis.performance?.now?.() ?? Date.now();
+    armRecovery(true);
+  };
   $('player-section').hidden = false; $('playing-title').textContent = video.title;
   audioMuted = false;
   $('playback-status').textContent = 'Buffering…'; $('pause').textContent = 'Pause'; $('mute').textContent = 'Mute';
@@ -571,7 +581,6 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
     player = new window.JSMpeg.Player(`/api/stream/${encodeURIComponent(video.id)}.ts${query}`, {
       headers:{'x-mk8-player': playbackClient},
       source:JSMpegHttpSource,canvas:$('screen'),autoplay:true,loop:false,disableWebAssembly:true,
-      initialBufferGate:true,
       onSourceStartTime:value => {
         if (playback !== session) return;
         const actual = Number(value);
@@ -601,6 +610,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
         }
       },
       onVideoDecode:() => {
+        if (playback !== session || session.failed || session.ended) return;
         syncCanvasAspect();
         session.decoded = true;
         if (session.startupTimer) {
@@ -614,9 +624,10 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
         // hanging until the Tesla browser is refreshed.
         if (!session.stallTimer) {
           session.stallTimer = setInterval(() => {
-            if (playback !== session || session.paused || session.failed || session.ended) {
+            if (playback !== session || session.failed || session.ended) {
               clearRecoveryTimer(session); return;
             }
+            if (session.paused) return;
             const now = globalThis.performance?.now?.() ?? Date.now();
             if (now - session.lastDecodedAt < 10000) return;
             const timer = session.stallTimer;
@@ -642,7 +653,9 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
         reportDiagnostic('playerError', {error:text, positionSeconds:session.position || 0,
           recoveryAttempt:session.recoveryAttempt});
         if (retryable && restartSession('Connection interrupted. Reconnecting…')) return;
-        session.failed = true; $('playback-status').textContent = text;
+        session.failed = true; session.paused = true;
+        try { player?.pause(); player?.source?.pauseReading?.(); } catch {}
+        $('pause').textContent = 'Retry'; $('playback-status').textContent = text;
       },
       onEnded:() => {
         if (playback !== session || session.failed) return;
@@ -683,6 +696,7 @@ function play(video, seek = null) {
 }
 $('pause').onclick = () => {
   if (!player) return;
+  if (playback?.ended && current) { requestSeek(0); return; }
   if (playback?.failed && current) {
     // The watchdog pauses a decoder that could not produce a frame after a
     // seek. Reusing the normal seek path guarantees the stale source is
@@ -696,6 +710,7 @@ $('pause').onclick = () => {
     if (!playback?.failed && !playback?.ended) $('playback-status').textContent = 'Paused';
   } else {
     if (playback) playback.paused = false;
+    playback?.resumeWatchdog?.();
     unlockAudio(); player.source?.resumeReading(); player.play(); $('pause').textContent = 'Pause';
     if (!playback?.failed && !playback?.ended) $('playback-status').textContent = 'Buffering…';
   }
@@ -781,14 +796,25 @@ function downloadDiagnosticsText(text, name) {
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 function browserDiagnosticsText() {
-  return diagnosticsQueue.length ? diagnosticsQueue.map(JSON.stringify).join('\n') + '\n' : '';
+  return diagnosticsJournal.text();
 }
 async function combinedDiagnosticsText() {
   await flushDiagnostics();
-  const response = await timedFetch('/api/diagnostics/export', {credentials:'same-origin', cache:'no-store'}, 5000);
-  const text = await response.text();
+  const {response, body:text} = await timedFetch('/api/diagnostics/export', {credentials:'same-origin', cache:'no-store'}, 5000, r => r.text());
   if (!response.ok) throw new Error('The iPhone has no combined log yet.');
-  return text;
+  // Include every locally retained browser event, including batches awaiting
+  // delivery. De-duplicate ACKed entries already present in the phone journal.
+  const merged = [], ids = new Set();
+  for (const line of (text + '\n' + browserDiagnosticsText()).split('\n')) {
+    if (!line.trim()) continue;
+    try { const entry = JSON.parse(line);
+      if (entry.eventId && ids.has(entry.eventId)) continue;
+      if (entry.eventId) ids.add(entry.eventId);
+      merged.push(entry);
+    } catch {}
+  }
+  merged.sort((a, b) => String(a.occurredAt || a.timestamp || '').localeCompare(String(b.occurredAt || b.timestamp || '')));
+  return merged.map(JSON.stringify).join('\n') + '\n';
 }
 function showDiagnosticsText(text) {
   const output = $('diagnostics-log');

@@ -25,9 +25,13 @@ public struct HTTPRequest {
             throw ParseError.tooLarge
         }
         let lines = text.components(separatedBy: "\r\n")
-        let start = (lines.first ?? "").split(separator: " ")
+        let start = (lines.first ?? "").split(separator: " ", omittingEmptySubsequences: false)
         guard start.count == 3, start[2] == "HTTP/1.1", start[1].hasPrefix("/"),
-              !start[1].hasPrefix("//") else { throw ParseError.malformed }
+              !start[1].hasPrefix("//"), !start[1].contains("#"),
+              start[0].range(of: "^[A-Z]+$", options: .regularExpression) != nil,
+              !start[1].unicodeScalars.contains(where: { $0.value <= 32 || $0.value == 127 }) else {
+            throw ParseError.malformed
+        }
         var headers = [String: String]()
         for line in lines.dropFirst() {
             guard let colon = line.firstIndex(of: ":") else { throw ParseError.malformed }
@@ -36,7 +40,11 @@ public struct HTTPRequest {
                   name.range(of: "^[a-z0-9!#$%&'*+.^_`|~-]+$", options: .regularExpression) != nil else {
                 throw ParseError.malformed
             }
-            headers[name] = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            let value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            guard !value.unicodeScalars.contains(where: { $0.value < 32 && $0.value != 9 || $0.value == 127 }) else {
+                throw ParseError.malformed
+            }
+            headers[name] = value
         }
         if headers["transfer-encoding"] != nil { throw ParseError.unsupportedTransferEncoding }
         let lengthString = headers["content-length"] ?? "0"

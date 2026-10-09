@@ -16,6 +16,7 @@ public struct MediaTransferPlan: Codable, Sendable {
     public var rangeTransport: MediaRangeTransport { transport ?? .header }
     public var valid: Bool {
         url.scheme == "https" && length > 0 && length <= 50_000_000_000 && chunkSize > 0 && chunkSize <= 16 * 1_024 * 1_024
+            && (length - 1) / chunkSize + 1 <= 65_536
             && (remainderStart == nil || (remainderStart! >= 0 && remainderStart! < length && remainderStart! % chunkSize == 0))
     }
     public var ranges: [MediaByteRange] { valid ? MediaByteRange.make(length: length, chunkSize: chunkSize) : [] }
