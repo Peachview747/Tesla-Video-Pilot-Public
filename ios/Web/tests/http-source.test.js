@@ -82,14 +82,14 @@ test('playback reports and manual resume cannot release the other pause reason',
     fixture.source.resume(12);
     fixture.source.pauseReading();
     const reading = fixture.source.read();
-    fixture.source.resume(5);
+    fixture.source.resume(6);
     await tick();
     assert.equal(fixture.chunks.length, 0, 'Playback headroom must not undo manual Pause');
     fixture.source.resume(12);
     fixture.source.resumeReading();
     await tick();
     assert.equal(fixture.chunks.length, 0, 'Manual Resume must not undo the high-water wait');
-    fixture.source.resume(5);
+    fixture.source.resume(6);
     await reading;
     assert.equal(fixture.chunks.length, 1);
     assert.equal(fixture.source.completed, true);
@@ -161,7 +161,7 @@ test('read-ahead uses the shipped MPEG-TS demuxer PTS and recorded playback cont
       video:{startTime:100, currentTime:100, frameRate:30, decode:() => false},
     });
     player.updateForStaticFile();
-    assert.equal(fixture.source.buffered, true, 'Thirteen seconds of headroom must stay held');
+    assert.equal(fixture.source.buffered, true, 'High headroom must stay held');
     clock = 7000; player.video.currentTime = 107;
     player.updateForStaticFile();
     await reading;

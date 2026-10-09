@@ -142,6 +142,8 @@ canvas { display: block; width: 100%; height: auto; aspect-ratio: auto; border-r
 :root[data-theme="dark"] .public-access-card { background: linear-gradient(135deg, #17232c, #101820); }
 .secondary-action { display: flex; align-items: center; justify-content: space-between; width: 100%; border-color: var(--stroke-bright); background: var(--panel); color: var(--graphite); box-shadow: none; text-align: left; }
 .secondary-action:hover { background: var(--blue-soft); border-color: var(--blue); color: var(--graphite-strong); }
+.diagnostics-actions { display: grid; gap: 8px; }
+.diagnostics-log { width: 100%; min-height: 150px; margin-top: 10px; padding: 10px; border: 1px solid var(--stroke); border-radius: 10px; background: var(--screen); color: var(--text); font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; box-sizing: border-box; }
 .auth-note { display: grid; gap: 3px; margin: 14px 0; padding: 13px 15px; border: 1px solid #c9d9e4; border-radius: 13px; background: #f2f8fc; color: var(--muted); }
 :root[data-theme="dark"] .auth-note { background: #152532; border-color: #3d5666; }
 .auth-note strong { color: var(--graphite); }

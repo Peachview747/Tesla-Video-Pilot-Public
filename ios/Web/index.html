@@ -63,7 +63,7 @@
           <canvas id="screen" width="1280" height="720" aria-label="Video player"></canvas>
           <div class="controls" role="group" aria-label="Video controls">
             <button id="back10">−10 sec</button><button id="pause">Pause</button><button id="forward10">+10 sec</button>
-            <button id="mute">Mute</button><button id="audio-boost" type="button" aria-pressed="true" title="Boost decoded audio for the Tesla browser">Audio +</button><button id="fullscreen">Full screen</button><button id="exit-fullscreen" hidden>Exit full screen</button>
+            <button id="mute">Mute</button><button id="audio-boost" type="button" aria-pressed="false" title="Enable a gentle 115% audio boost">Audio +</button><button id="fullscreen">Full screen</button><button id="exit-fullscreen" hidden>Exit full screen</button>
           </div>
           <div class="timeline"><span id="elapsed">0:00</span><input id="timeline" type="range" min="0" max="1" value="0" step="0.1" aria-label="Video timeline"><span id="duration">0:00</span></div>
         </div>
@@ -74,6 +74,7 @@
       <section id="settings-tab" class="tab-panel" hidden>
         <div class="hero-heading"><div><p class="eyebrow">VIDEO PILOT</p><h1>Settings</h1><p class="hero-copy">Connection details and setup guidance.</p></div></div>
         <article class="settings-card"><h2>iPhone host</h2><p>Keep Video Pilot open on the iPhone while the Tesla browser is connected. The live tunnel state is shown at the top of this page.</p><div class="setting-row"><span>Host authorization</span><strong id="settings-auth">Face ID per app session</strong></div><div class="setting-row"><span>YouTube account</span><strong id="settings-youtube">Not connected</strong></div><div class="setting-row"><span>Search</span><strong id="settings-search">Unavailable</strong></div><div class="setting-row"><span>Version</span><strong id="settings-version">—</strong></div><p>Connect or disconnect Google from Video Pilot → Settings on the iPhone. Google tokens never enter the Tesla browser.</p></article>
+        <article class="settings-card"><h2>Diagnostics</h2><p>Browser playback, buffering, resume, and tunnel errors are retained locally and copied to the iPhone when the tunnel is available. Export one combined log after reproducing a problem.</p><div class="setting-row"><span>Browser events waiting</span><strong id="diagnostics-pending">0</strong></div><div class="diagnostics-actions"><button id="export-diagnostics" class="secondary-action" type="button">Export web + iPhone log <span>↗</span></button><button id="copy-diagnostics" class="secondary-action" type="button">Show / copy log <span>⌘</span></button></div><textarea id="diagnostics-log" class="diagnostics-log" hidden readonly aria-label="Video Pilot diagnostics log"></textarea><p id="diagnostics-export-status" role="status"></p></article>
         <article class="settings-card public-access-card"><h2>Address access</h2><p>Face ID protects host activation on the iPhone. Once hosting is active, anyone who obtains this address can view the library, queue downloads, and stream videos, so keep it private.</p><button class="secondary-action" data-go="youtube-tab">Back to home <span>→</span></button></article>
       </section>
     </div>

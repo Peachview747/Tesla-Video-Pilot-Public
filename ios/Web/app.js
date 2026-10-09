@@ -10,9 +10,12 @@ let seekChain = Promise.resolve();
 // still quiet. Keep a modest, reversible gain boost in the browser rather
 // than changing the source file (which would require re-preparing videos and
 // could permanently clip loud sources).
-const audioBoostKey = 'video-pilot-audio-boost';
-const audioBoostVolume = 1.35;
-let audioBoost = true;
+const audioBoostKey = 'video-pilot-audio-boost-v2';
+// Start at unity gain. A previous build enabled a 170%/135% boost by default;
+// that could clip already-hot sources on Tesla's WebAudio path. Audio + is
+// still available as a conservative, reversible 115% option.
+const audioBoostVolume = 1.15;
+let audioBoost = false;
 let audioMuted = false;
 let audioLimiter = null;
 try {
@@ -47,48 +50,114 @@ function savedResume(video) {
     return Number.isFinite(value) && value >= 3 ? value : 0;
   } catch { return 0; }
 }
-function saveResume() {
-  if (!current || currentOffset < 3 || playback?.ended) return;
-  try { globalThis.localStorage?.setItem(resumeKey(current), String(Math.floor(currentOffset))); } catch {}
+function saveResume(video = current, position = currentOffset) {
+  const offset = Number(position) || 0;
+  if (!video || offset < 3 || playback?.ended) return;
+  try { globalThis.localStorage?.setItem(resumeKey(video), String(Math.floor(offset))); } catch {}
 }
 function clearResume(video = current) {
   try { globalThis.localStorage?.removeItem(resumeKey(video)); } catch {}
 }
 async function api(path, body) {
-  const response = await fetch(path, {method:body ? 'POST' : 'GET', credentials:'same-origin', cache:'no-store',
-    headers:body ? {'Content-Type':'application/json'} : {}, body:body ? JSON.stringify(body) : undefined});
-  const raw = await response.text();
-  let result;
-  try { result = raw ? JSON.parse(raw) : {}; }
-  catch {
-    throw new Error(response.ok
-      ? 'The host returned an unexpected page. Refresh the Tesla browser and keep Video Pilot open.'
-      : `Connection to Video Pilot failed (${response.status}). Refresh to retry.`);
+  const started = globalThis.performance?.now?.() ?? Date.now();
+  let response;
+  try {
+    response = await fetch(path, {method:body ? 'POST' : 'GET', credentials:'same-origin', cache:'no-store',
+      headers:body ? {'Content-Type':'application/json'} : {}, body:body ? JSON.stringify(body) : undefined});
+    const raw = await response.text();
+    let result;
+    try { result = raw ? JSON.parse(raw) : {}; }
+    catch {
+      reportDiagnostic('apiError', {responseStatus:response.status,
+        elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - started),
+        error:response.ok ? 'unexpected-page' : 'invalid-json'});
+      throw new Error(response.ok
+        ? 'The host returned an unexpected page. Refresh the Tesla browser and keep Video Pilot open.'
+        : `Connection to Video Pilot failed (${response.status}). Refresh to retry.`);
+    }
+    if (!response.ok) {
+      reportDiagnostic('apiError', {responseStatus:response.status,
+        elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - started),
+        error:String(result.error || 'request-failed')});
+      throw new Error(result.error || `Request failed (${response.status}).`);
+    }
+    return result;
+  } catch (error) {
+    if (!response) reportDiagnostic('apiError', {responseStatus:0,
+      elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - started),
+      error:String(error?.message || 'network-failure')});
+    throw error;
   }
-  if (!response.ok) throw new Error(result.error || `Request failed (${response.status}).`);
-  return result;
 }
 // Browser-side telemetry is batched before it crosses the relay. It contains
 // timing, counters, and player state only; URLs, IDs, headers, and media bytes
-// are intentionally excluded. The iPhone decides whether to retain it.
+// are intentionally excluded. Keep a small local ring as well: a tunnel hiccup
+// must not erase the very events needed to diagnose that hiccup.
+const diagnosticsStorageKey = 'video-pilot-browser-diagnostics-v2';
+const diagnosticsMaxEvents = 256;
+const diagnosticsBatchSize = 16;
 const diagnosticsQueue = [];
 let diagnosticsFlushTimer = null;
+let diagnosticsFlushInFlight = null;
+let diagnosticsRetryDelay = 1000;
+try {
+  const stored = JSON.parse(globalThis.localStorage?.getItem(diagnosticsStorageKey) || '[]');
+  if (Array.isArray(stored)) diagnosticsQueue.push(...stored.slice(-diagnosticsMaxEvents));
+} catch {}
+function persistDiagnostics() {
+  try { globalThis.localStorage?.setItem(diagnosticsStorageKey, JSON.stringify(diagnosticsQueue.slice(-diagnosticsMaxEvents))); } catch {}
+  const pending = $('diagnostics-pending');
+  if (pending) pending.textContent = String(diagnosticsQueue.length);
+}
+function scheduleDiagnosticsFlush(delay = 250) {
+  if (diagnosticsFlushTimer || !diagnosticsQueue.length) return;
+  diagnosticsFlushTimer = setTimeout(() => {
+    diagnosticsFlushTimer = null;
+    void flushDiagnostics();
+  }, delay);
+  diagnosticsFlushTimer?.unref?.();
+}
 function reportDiagnostic(event, fields = {}) {
-  if (diagnosticsQueue.length >= 64) diagnosticsQueue.shift();
+  if (diagnosticsQueue.length >= diagnosticsMaxEvents) diagnosticsQueue.shift();
   diagnosticsQueue.push({event, fields});
-  if (!diagnosticsFlushTimer) diagnosticsFlushTimer = setTimeout(() => {
-    diagnosticsFlushTimer = null; void flushDiagnostics();
-  }, 250);
+  while (diagnosticsQueue.length > diagnosticsMaxEvents) diagnosticsQueue.shift();
+  persistDiagnostics();
+  scheduleDiagnosticsFlush();
+}
+function timedFetch(url, options = {}, timeout = 4000) {
+  const controller = typeof globalThis.AbortController === 'function' ? new AbortController() : null;
+  const request = controller ? {...options, signal:controller.signal} : options;
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => { controller?.abort?.(); reject(new Error('request-timeout')); }, timeout);
+  });
+  return Promise.race([fetch(url, request), deadline]).finally(() => clearTimeout(timer));
 }
 async function flushDiagnostics(keepalive = false) {
-  if (!diagnosticsQueue.length) return;
-  const events = diagnosticsQueue.splice(0, diagnosticsQueue.length);
-  try {
-    await fetch('/api/diagnostics', {method:'POST', credentials:'same-origin', cache:'no-store', keepalive,
-      headers:{'Content-Type':'application/json'}, body:JSON.stringify({events})});
-  } catch { /* Diagnostics must never interrupt playback. */ }
+  if (diagnosticsFlushInFlight || !diagnosticsQueue.length) return diagnosticsFlushInFlight;
+  const events = diagnosticsQueue.slice(0, diagnosticsBatchSize);
+  diagnosticsFlushInFlight = (async () => {
+    try {
+      const response = await timedFetch('/api/diagnostics', {method:'POST', credentials:'same-origin', cache:'no-store', keepalive,
+        headers:{'Content-Type':'application/json'}, body:JSON.stringify({events})});
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.accepted === false) throw new Error(`diagnostics ${response.status}`);
+      diagnosticsQueue.splice(0, events.length);
+      persistDiagnostics();
+      diagnosticsRetryDelay = 1000;
+      if (diagnosticsQueue.length) scheduleDiagnosticsFlush(0);
+    } catch {
+      // Keep the batch locally and retry slowly. Diagnostics must never block
+      // playback, but it also must not disappear when the tunnel reconnects.
+      diagnosticsRetryDelay = Math.min(30_000, diagnosticsRetryDelay * 2);
+      scheduleDiagnosticsFlush(diagnosticsRetryDelay);
+    } finally { diagnosticsFlushInFlight = null; }
+  })();
+  return diagnosticsFlushInFlight;
 }
 globalThis.videoPilotDiagnostics = reportDiagnostic;
+scheduleDiagnosticsFlush(0);
+persistDiagnostics();
 function showTab(id) {
   document.querySelectorAll?.('.tab-panel').forEach(panel => { panel.hidden = panel.id !== id; });
   document.querySelectorAll?.('.tab').forEach(tab => {
@@ -270,9 +339,11 @@ function invalidateSeeks() {
   globalThis.clearTimeout?.(seekTimer); seekTimer = null;
 }
 function clearRecoveryTimer(session) {
-  if (!session?.startupTimer) return;
-  globalThis.clearTimeout?.(session.startupTimer);
+  if (!session) return;
+  if (session.startupTimer) globalThis.clearTimeout?.(session.startupTimer);
+  if (session.stallTimer) globalThis.clearInterval?.(session.stallTimer);
   session.startupTimer = null;
+  session.stallTimer = null;
 }
 function syncFullscreenControls(active) {
   const shell = $('player-shell');
@@ -297,8 +368,9 @@ function syncCanvasAspect() {
   const height = Number(player?.video?.height || canvas?.height);
   if (width > 0 && height > 0) canvas.style?.setProperty?.('aspect-ratio', `${width} / ${height}`);
 }
-function closePlayer() {
-  saveResume();
+function closePlayer(resumePosition = null) {
+  if (resumePosition !== null && current) saveResume(current, resumePosition);
+  else saveResume();
   leaveFullscreen();
   const oldPlayback = playback;
   clearRecoveryTimer(oldPlayback);
@@ -345,8 +417,19 @@ function configureAudioLimiter() {
   const output = player?.audioOut;
   const context = output?.context;
   const gain = output?.gain;
-  if (!context || !gain || typeof context.createDynamicsCompressor !== 'function') return;
+  if (!context || !gain) return;
   try {
+    if (!audioBoost) {
+      // Unity gain is the clean baseline. Remove the compressor entirely when
+      // Audio + is off; some Tesla WebAudio builds introduce their own clicks
+      // when an unnecessary dynamics node sits in the output path.
+      audioLimiter?.disconnect?.();
+      audioLimiter = null;
+      gain.disconnect();
+      gain.connect(context.destination);
+      return;
+    }
+    if (typeof context.createDynamicsCompressor !== 'function') return;
     if (audioLimiter?.context === context) return;
     audioLimiter?.disconnect?.();
     // JSMpeg normally connects its gain node directly to the destination.
@@ -354,9 +437,9 @@ function configureAudioLimiter() {
     // browser boost cannot clip loud source peaks into crackling distortion.
     gain.disconnect();
     const limiter = context.createDynamicsCompressor();
-    limiter.threshold.value = -6;
-    limiter.knee.value = 8;
-    limiter.ratio.value = 12;
+    limiter.threshold.value = -3;
+    limiter.knee.value = 6;
+    limiter.ratio.value = 8;
     limiter.attack.value = 0.003;
     limiter.release.value = 0.12;
     gain.connect(limiter);
@@ -371,6 +454,7 @@ function configureAudioLimiter() {
 }
 function applyAudioState() {
   if (!player) return;
+  configureAudioLimiter();
   const volume = audioMuted ? 0 : (audioBoost ? audioBoostVolume : 1);
   try {
     // JSMpeg exposes both the public volume property and its GainNode. Set
@@ -386,26 +470,78 @@ function applyAudioState() {
   if (boost) {
     boost.textContent = audioBoost ? 'Audio +' : 'Audio';
     boost.setAttribute?.('aria-pressed', audioBoost ? 'true' : 'false');
-    boost.title = audioBoost ? 'Audio boost on (135%)' : 'Audio boost off (100%)';
+    boost.title = audioBoost ? 'Audio boost on (115%)' : 'Audio boost off (100%)';
   }
   reportDiagnostic('audioState', {muted:audioMuted, boost:audioBoost, gain:volume});
+}
+function boundDecoderBuffers() {
+  // The HTTP source deliberately uses JSMpeg's recorded/static timing path so
+  // seeks can carry an explicit MPEG-TS timestamp. That path defaults decoder
+  // bit buffers to EXPAND, which can retain an entire long video in the Tesla
+  // browser. Switch only the decoder buffers to EVICT after construction; the
+  // source's 12/6-second backpressure still controls how much data arrives.
+  const evict = globalThis.JSMpeg?.BitBuffer?.MODE?.EVICT;
+  if (!evict) return;
+  const decoders = [player?.video, player?.audio].filter(Boolean);
+  for (const decoder of decoders) {
+    if (decoder.bits) decoder.bits.mode = evict;
+    // Every seek creates a fresh player and supplies its own HTTP offset, so
+    // retaining JSMpeg's unbounded timestamp table is unnecessary. Keeping
+    // decoder time via advanceDecodedTime preserves the visible timeline.
+    decoder.collectTimestamps = false;
+    if (Array.isArray(decoder.timestamps)) decoder.timestamps.length = 0;
+    decoder.timestampIndex = 0;
+  }
+  reportDiagnostic('decoderBuffersBound', {
+    videoBufferBytes:Number(player?.video?.bits?.bytes?.length) || 0,
+    audioBufferBytes:Number(player?.audio?.bits?.bytes?.length) || 0
+  });
 }
 function startPlayer(video, seek = null, recoveryAttempt = 0) {
   current = video;
   const duration = finiteDuration(video.duration);
-  currentOffset = Math.max(0, Number(seek ?? savedResume(video)) || 0);
+  const storedResume = seek === null ? savedResume(video) : 0;
+  currentOffset = Math.max(0, Number(seek ?? storedResume) || 0);
   if (duration) currentOffset = Math.min(currentOffset, duration);
+  if (storedResume > 0) reportDiagnostic('resumeLoaded', {positionSeconds:currentOffset});
   reportDiagnostic('playerStart', {seekTargetSeconds:currentOffset, recoveryAttempt});
   const session = {paused:false, failed:false, ended:false, baseOffset:currentOffset,
-    position:currentOffset, duration, decoded:false, startupTimer:null, recoveryAttempt}; playback = session;
+    position:currentOffset, duration, decoded:false, startupTimer:null, stallTimer:null,
+    lastDecodedAt:0, recoveryAttempt}; playback = session;
   const active = () => playback === session && !session.paused && !session.failed && !session.ended;
   const recoveryDelay = () => {
     const override = Number(globalThis.__VP_SEEK_RECOVERY_MS);
     if (Number.isFinite(override) && override >= 0) return override;
     return session.baseOffset > 0 ? 10000 : 15000;
   };
+  const restartSession = (message, event = null) => {
+    if (session.recoveryAttempt >= 1 || !current) return false;
+    const videoAtError = current;
+    const target = Math.max(0, Math.floor((session.position || session.baseOffset || 0) - 1));
+    const generation = ++seekGeneration;
+    session.failed = true; session.paused = true;
+    if (event) reportDiagnostic(event, {positionSeconds:session.position || 0,
+      seekTargetSeconds:target, recoveryAttempt:session.recoveryAttempt});
+    $('playback-status').textContent = message;
+    seekChain = seekChain.then(async () => {
+      if (generation !== seekGeneration || current !== videoAtError) return;
+      await closePlayer(target);
+      if (generation !== seekGeneration || current !== videoAtError) return;
+      startPlayer(videoAtError, target, session.recoveryAttempt + 1);
+    }).catch(error => {
+      if (generation === seekGeneration) {
+        session.failed = true; session.paused = true;
+        $('playback-status').textContent = error?.message || message;
+        $('pause').textContent = 'Retry';
+      }
+    });
+    return true;
+  };
   const armRecovery = (reset = false) => {
-    if (reset) clearRecoveryTimer(session);
+    if (reset && session.startupTimer) {
+      globalThis.clearTimeout?.(session.startupTimer);
+      session.startupTimer = null;
+    }
     if (session.decoded || session.failed || session.ended || session.startupTimer) return;
     const timer = globalThis.setTimeout;
     if (typeof timer !== 'function') return;
@@ -419,22 +555,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
         $('pause').textContent = 'Retry';
         return;
       }
-      const videoAtStart = current;
-      const target = Math.max(0, Math.floor((session.position || session.baseOffset || 0) - 1));
-      const generation = ++seekGeneration;
-      $('playback-status').textContent = 'Restarting seek…';
-      seekChain = seekChain.then(async () => {
-        if (generation !== seekGeneration || current !== videoAtStart) return;
-        await closePlayer();
-        if (generation !== seekGeneration || current !== videoAtStart) return;
-        startPlayer(videoAtStart, target, session.recoveryAttempt + 1);
-      }).catch(error => {
-        if (generation === seekGeneration) {
-          session.failed = true; session.paused = true;
-          $('playback-status').textContent = error?.message || 'Playback could not resume after seeking. Tap Retry.';
-          $('pause').textContent = 'Retry';
-        }
-      });
+      restartSession('Restarting seek…', 'playerStalled');
     }, recoveryDelay());
     // Node-based UI tests expose timer handles with `unref`; browsers expose
     // numeric IDs, so this is intentionally optional.
@@ -450,6 +571,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
     player = new window.JSMpeg.Player(`/api/stream/${encodeURIComponent(video.id)}.ts${query}`, {
       headers:{'x-mk8-player': playbackClient},
       source:JSMpegHttpSource,canvas:$('screen'),autoplay:true,loop:false,disableWebAssembly:true,
+      initialBufferGate:true,
       onSourceStartTime:value => {
         if (playback !== session) return;
         const actual = Number(value);
@@ -480,7 +602,34 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
       },
       onVideoDecode:() => {
         syncCanvasAspect();
-        session.decoded = true; clearRecoveryTimer(session);
+        session.decoded = true;
+        if (session.startupTimer) {
+          globalThis.clearTimeout?.(session.startupTimer);
+          session.startupTimer = null;
+        }
+        session.lastDecodedAt = globalThis.performance?.now?.() ?? Date.now();
+        // A source can stop producing bytes after the first frame without
+        // firing an error. Keep a low-frequency post-decode watchdog so a
+        // black “Buffering…” screen gets one bounded reconnect instead of
+        // hanging until the Tesla browser is refreshed.
+        if (!session.stallTimer) {
+          session.stallTimer = setInterval(() => {
+            if (playback !== session || session.paused || session.failed || session.ended) {
+              clearRecoveryTimer(session); return;
+            }
+            const now = globalThis.performance?.now?.() ?? Date.now();
+            if (now - session.lastDecodedAt < 10000) return;
+            const timer = session.stallTimer;
+            session.stallTimer = null;
+            globalThis.clearInterval?.(timer);
+            if (!restartSession('Playback interrupted. Reconnecting…', 'playerStalled')) {
+              session.failed = true; session.paused = true;
+              $('playback-status').textContent = 'Playback stalled. Tap Retry.';
+              $('pause').textContent = 'Retry';
+            }
+          }, 2000);
+          session.stallTimer?.unref?.();
+        }
         reportDiagnostic('playerDecode', {positionSeconds:session.position || 0});
         if (active()) $('playback-status').textContent = 'Playing from your iPhone';
       },
@@ -488,8 +637,12 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
         if (playback !== session) return;
         clearRecoveryTimer(session);
         saveResume();
-        session.failed = true; $('playback-status').textContent = message;
-        reportDiagnostic('playerError', {error:String(message || 'unknown'), positionSeconds:session.position || 0});
+        const text = String(message || 'Unable to read video stream.');
+        const retryable = !/Pair this browser|HTTP 4\d\d|not ready|no longer exists/i.test(text);
+        reportDiagnostic('playerError', {error:text, positionSeconds:session.position || 0,
+          recoveryAttempt:session.recoveryAttempt});
+        if (retryable && restartSession('Connection interrupted. Reconnecting…')) return;
+        session.failed = true; $('playback-status').textContent = text;
       },
       onEnded:() => {
         if (playback !== session || session.failed) return;
@@ -503,7 +656,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
         reportDiagnostic('playerEnded', {positionSeconds:session.position || 0, durationSeconds:session.duration || 0});
       }
     });
-    configureAudioLimiter();
+    boundDecoderBuffers();
     applyAudioState();
     // Arm a bounded watchdog even if the source never emits an established
     // callback. A failed seek must become a retryable state, not a permanent
@@ -592,13 +745,17 @@ function requestSeek(offset) {
   const generation = ++seekGeneration;
   $('playback-status').textContent = 'Seeking…';
   reportDiagnostic('playerSeek', {seekTargetSeconds:target, positionSeconds:currentOffset});
+  // Commit the user's target before tearing down the old decoder. If the
+  // replacement stream fails or the page disappears during the handoff,
+  // Resume should reopen at the requested point, not the stale old position.
+  saveResume(video, target);
   seekTimer = setTimeout(() => {
     seekTimer = null;
     seekChain = seekChain.then(async () => {
       // A newer seek supersedes this one while the previous stream is being
       // cancelled. Do not create a player for an obsolete target.
       if (generation !== seekGeneration || current !== video) return;
-      await closePlayer();
+      await closePlayer(target);
       if (generation !== seekGeneration || current !== video) return;
       startPlayer(video, target);
     }).catch(error => {
@@ -614,6 +771,65 @@ $('menu-toggle').onclick = () => {
 };
 if ($('theme-toggle')) $('theme-toggle').onclick = () => {
   applyTheme(document.documentElement?.dataset.theme === 'dark' ? 'light' : 'dark');
+};
+function downloadDiagnosticsText(text, name) {
+  const blob = new Blob([text], {type:'application/x-ndjson'});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url; link.download = name; link.rel = 'noopener';
+  document.body?.append(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+function browserDiagnosticsText() {
+  return diagnosticsQueue.length ? diagnosticsQueue.map(JSON.stringify).join('\n') + '\n' : '';
+}
+async function combinedDiagnosticsText() {
+  await flushDiagnostics();
+  const response = await timedFetch('/api/diagnostics/export', {credentials:'same-origin', cache:'no-store'}, 5000);
+  const text = await response.text();
+  if (!response.ok) throw new Error('The iPhone has no combined log yet.');
+  return text;
+}
+function showDiagnosticsText(text) {
+  const output = $('diagnostics-log');
+  if (!output) return;
+  output.value = text;
+  output.hidden = false;
+  output.focus?.(); output.select?.();
+}
+if ($('export-diagnostics')) $('export-diagnostics').onclick = async () => {
+  const status = $('diagnostics-export-status');
+  status.textContent = 'Flushing browser events…';
+  try {
+    const text = await combinedDiagnosticsText();
+    downloadDiagnosticsText(text, `VideoPilot-diagnostics-${new Date().toISOString().replace(/:/g,'-')}.jsonl`);
+    showDiagnosticsText(text);
+    status.textContent = 'Combined web + iPhone diagnostics downloaded.';
+  } catch {
+    // If the tunnel is down, still make the locally retained browser trace
+    // available instead of losing the evidence that explains the outage.
+    if (diagnosticsQueue.length) {
+      const text = browserDiagnosticsText();
+      downloadDiagnosticsText(text,
+        `VideoPilot-browser-diagnostics-${new Date().toISOString().replace(/:/g,'-')}.jsonl`);
+      showDiagnosticsText(text);
+      status.textContent = 'Tunnel unavailable; browser-only diagnostics downloaded. Reconnect and export again for the combined log.';
+    } else status.textContent = 'Reconnect the iPhone host, then try the export again.';
+  }
+};
+if ($('copy-diagnostics')) $('copy-diagnostics').onclick = async () => {
+  const status = $('diagnostics-export-status');
+  status.textContent = 'Preparing diagnostics…';
+  let text = '';
+  try { text = await combinedDiagnosticsText(); }
+  catch { text = browserDiagnosticsText(); }
+  if (!text) { status.textContent = 'Reconnect the iPhone host, then try the export again.'; return; }
+  showDiagnosticsText(text);
+  try {
+    if (globalThis.navigator?.clipboard?.writeText) await globalThis.navigator.clipboard.writeText(text);
+    else document.execCommand?.('copy');
+    status.textContent = 'Diagnostics shown and copied. Paste them into your support message.';
+  } catch { status.textContent = 'Diagnostics shown below; press and hold the text to copy it.'; }
 };
 document.addEventListener?.('click', event => {
   const menu = $('tab-menu'), toggle = $('menu-toggle');
@@ -638,6 +854,7 @@ setInterval(() => {
   updateTimeline(currentOffset, duration);
   saveResume();
 }, 500);
-window.addEventListener('pagehide', () => { saveResume(); invalidateSeeks(); reportDiagnostic('playerClosed'); void flushDiagnostics(true); void closePlayer(); });
+reportDiagnostic('pageLoaded');
+window.addEventListener('pagehide', () => { saveResume(); invalidateSeeks(); reportDiagnostic('pageHidden'); reportDiagnostic('playerClosed'); void flushDiagnostics(true); void closePlayer(); });
 void refresh();
 setInterval(() => { void refresh(); }, 2000);

@@ -22,12 +22,15 @@ import Combine
     private let allowedWebEvents: Set<String> = [
         "playerStart", "playerSeek", "sourceResponse", "sourceEstablished",
         "sourceProgress", "sourceBuffer", "sourceCompleted", "playerDecode",
-        "playerStalled", "playerError", "playerEnded", "playerClosed", "browserRTT"
+        "playerStalled", "playerError", "playerEnded", "playerClosed", "browserRTT",
+        "apiError", "resumeLoaded", "resumeSaved", "pageLoaded", "pageHidden",
+        "audioState", "decoderBuffersBound", "audioUnderrun"
     ]
     private let allowedWebFields: Set<String> = [
         "seekTargetSeconds", "positionSeconds", "durationSeconds", "bufferSeconds",
         "receivedBytes", "expectedBytes", "elapsedMs", "responseStatus", "error",
-        "recoveryAttempt", "buffered", "paused", "headroomSeconds"
+        "recoveryAttempt", "buffered", "paused", "headroomSeconds", "pendingEvents",
+        "muted", "boost", "gain", "videoBufferBytes", "audioBufferBytes"
     ]
 
     private init() {
@@ -95,8 +98,7 @@ import Combine
     }
 
     func exportURL() -> URL? {
-        guard FileManager.default.fileExists(atPath: logURL.path),
-              let data = try? Data(contentsOf: logURL), !data.isEmpty else { return nil }
+        guard let data = exportData() else { return nil }
         let stamp = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
         let destination = FileManager.default.temporaryDirectory
             .appendingPathComponent("VideoPilot-diagnostics-\(stamp).jsonl")
@@ -104,6 +106,15 @@ import Combine
             try data.write(to: destination, options: .atomic)
             return destination
         } catch { return nil }
+    }
+
+    /// Returns the bounded JSONL journal so the Tesla browser can export the
+    /// same evidence as the native Settings share sheet. No secrets or media
+    /// bytes are added here.
+    func exportData() -> Data? {
+        guard FileManager.default.fileExists(atPath: logURL.path),
+              let data = try? Data(contentsOf: logURL), !data.isEmpty else { return nil }
+        return data
     }
 
     func clear() {

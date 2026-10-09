@@ -22,9 +22,10 @@ export class JSMpegHttpSource {
   stoppedPromise;
   lastProgressReport = 0;
   lastBufferState = null;
-  // Cellular links benefit from more media queued before the next relay pull.
-  // The low-water mark remains finite so Pause and cancellation still release
-  // the reader promptly instead of buffering the whole file.
+  firstChunkDelivered = false;
+  // Keep enough media queued to absorb cellular/Cloudflare jitter. The
+  // previous 8/3-second gate made 5G playback underrun and crackle; this
+  // 12/6-second hysteresis is still bounded and is released on Pause/seek.
   static highWaterHeadroom = 12;
   static lowWaterHeadroom = 6;
   constructor(url, options) {
@@ -126,6 +127,16 @@ export class JSMpegHttpSource {
               elapsedMs:Math.round(now - startedAt), headroomSeconds:this.headroom});
           }
           this.updateReadAhead();
+          // Let the decoder see one transport chunk, then wait for its first
+          // playback headroom report. Without this startup gate a fast relay
+          // can fill the bounded decoder buffer before the first animation
+          // frame has a chance to run.
+          if (this.options.initialBufferGate && !this.firstChunkDelivered) {
+            this.firstChunkDelivered = true;
+            this.buffered = true;
+            reportDiagnostic('sourceBuffer', {bufferSeconds:this.headroom,
+              buffered:true, headroomSeconds:this.headroom});
+          }
         }
       }
       if (!this.controller.signal.aborted) {

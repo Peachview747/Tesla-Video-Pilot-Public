@@ -104,22 +104,22 @@ test('Pause works before the first frame and callbacks cannot undo it', () => {
 test('quiet Tesla audio can be boosted without losing mute state', () => {
   const f = setup(); f.play();
   const player = f.players[0];
-  assert.equal(player.volume, 1.35, 'new playback uses the browser audio boost');
+  assert.equal(player.volume, 1, 'new playback starts at unity gain to avoid clipping');
   f.element('audio-boost').onclick();
-  assert.equal(player.volume, 1, 'Audio + can be disabled');
+  assert.equal(player.volume, 1.15, 'Audio + enables a gentle boost');
   f.element('mute').onclick();
   assert.equal(player.volume, 0, 'mute still wins over the gain setting');
   f.element('audio-boost').onclick();
   assert.equal(player.volume, 0, 'changing gain while muted stays silent');
   f.element('mute').onclick();
-  assert.equal(player.volume, 1.35, 'unmute restores the selected gain');
+  assert.equal(player.volume, 1, 'unmute restores the selected unity gain');
 });
 test('stream failures survive late decoder and end callbacks', () => {
   const f = setup(); f.play();
   const player = f.players[0], status = f.element('playback-status');
   player.options.onSourceError('Video stream interrupted.');
   player.options.onVideoDecode(); player.options.onStalled(); player.options.onEnded();
-  assert.equal(status.textContent, 'Video stream interrupted.');
+  assert.equal(status.textContent, 'Connection interrupted. Reconnecting…');
 });
 test('finished playback and replacement players ignore late callbacks', async () => {
   const f = setup(); f.play();

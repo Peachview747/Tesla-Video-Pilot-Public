@@ -52,7 +52,7 @@ import Network
         didSet { UserDefaults.standard.set(backgroundPreparation, forKey: "backgroundPreparation") }
     }
     let version = "0.1.28"
-        let build = "39"
+    let build = "40"
     var preparingTitle: String { videos.first { $0.id == preparingID }?.title ?? "Your video" }
     var queuedCount: Int { videos.filter { $0.state == "preparing" && $0.id != preparingID }.count }
     private var library: Library?
@@ -61,9 +61,10 @@ import Network
     private var localStreams = 0
     private var tunnelStreams = 0
     // Indexes are built once per prepared file and then reused by every
-    // browser seek. Existing library items without a sidecar are migrated
-    // lazily on their first seek so opening the app stays fast.
+    // browser seek. Existing library items without a sidecar are migrated in
+    // a utility task so opening or seeking never blocks the HTTP route.
     private var seekIndexes: [UUID: MPEGTSIndex] = [:]
+    private var seekIndexTasks: [UUID: Task<MPEGTSIndex?, Never>] = [:]
     private let networkMonitor = NWPathMonitor()
     private var meter: TransferMeter
     private var metricsTask: Task<Void, Never>?
@@ -361,7 +362,13 @@ import Network
             message = "Pause the active preparation before deleting it."
             return false
         }
-        do { try library.remove(id); seekIndexes.removeValue(forKey: id); refresh(); return true }
+        do {
+            try library.remove(id)
+            seekIndexes.removeValue(forKey: id)
+            seekIndexTasks.removeValue(forKey: id)?.cancel()
+            refresh()
+            return true
+        }
         catch { message = error.localizedDescription; return false }
     }
     @discardableResult private func queue(id: String?, imported: URL?) -> LibraryVideo? {
@@ -444,6 +451,7 @@ import Network
                 await MediaDownloader.shared.cancel(jobID: video.id)
                 try? FileManager.default.removeItem(at: output)
                 try? FileManager.default.removeItem(at: MediaPipeline.seekIndexURL(for: output))
+                seekIndexTasks.removeValue(forKey: video.id)?.cancel()
                 let paused = error is CancellationError || Task.isCancelled
                 let text = paused ? "Paused. Tap Resume; completed downloads are saved." : error.localizedDescription
                 let title = (try? MediaPipeline.store.load(video.id))?.title
@@ -468,7 +476,7 @@ import Network
         launchPreparation(video: next, restored: try? MediaPipeline.store.load(next.id))
     }
     private func refresh() { videos = library?.videos ?? [] }
-    private func seekIndex(for id: UUID, file url: URL) -> MPEGTSIndex? {
+    private func cachedSeekIndex(for id: UUID, file url: URL) -> MPEGTSIndex? {
         if let cached = seekIndexes[id] { return cached }
         let sidecar = MediaPipeline.seekIndexURL(for: url)
         if let data = try? Data(contentsOf: sidecar), let index = try? JSONDecoder().decode(MPEGTSIndex.self, from: data),
@@ -476,7 +484,28 @@ import Network
             seekIndexes[id] = index
             return index
         }
-        guard let built = try? MPEGTSIndex.build(file: url), !built.points.isEmpty else { return nil }
+        return nil
+    }
+    private func seekIndex(for id: UUID, file url: URL) async -> MPEGTSIndex? {
+        if let cached = cachedSeekIndex(for: id, file: url) { return cached }
+        // Building a timestamp index scans the entire MPEG-TS file. Never do
+        // that synchronously in the main-actor HTTP route: a large first seek
+        // used to pause the tunnel heartbeat long enough for Cloudflare to
+        // declare the phone disconnected. Coalesce concurrent seeks for the
+        // same legacy file into one utility-priority background scan.
+        let task: Task<MPEGTSIndex?, Never>
+        if let existing = seekIndexTasks[id] {
+            task = existing
+        } else {
+            task = Task.detached(priority: .utility) {
+                try? MPEGTSIndex.build(file: url)
+            }
+            seekIndexTasks[id] = task
+        }
+        guard let built = await task.value, !built.points.isEmpty else {
+            seekIndexTasks[id] = nil
+            return nil
+        }
         // The sidecar is only an optimization; a write failure must not make a
         // video unplayable. The in-memory index still fixes this session.
         if let data = try? JSONEncoder().encode(built) {
@@ -484,7 +513,16 @@ import Network
             try? MediaPipeline.protect(sidecar)
         }
         seekIndexes[id] = built
+        seekIndexTasks[id] = nil
         return built
+    }
+    private func primeSeekIndex(for id: UUID, file url: URL) {
+        guard seekIndexes[id] == nil, seekIndexTasks[id] == nil else { return }
+        // Start migration in the background. The first legacy seek uses a
+        // bounded byte-ratio fallback immediately; later seeks use the exact
+        // MPEG-TS anchors once this task has finished, so the HTTP route never
+        // waits long enough to trip the tunnel's response timeout.
+        Task { [weak self] in _ = await self?.seekIndex(for: id, file: url) }
     }
     private func notify(title: String, body: String) {
         let content = UNMutableNotificationContent()
@@ -563,7 +601,15 @@ import Network
                           "processingSpeed": preparation?.processingSpeed.map { $0 as Any } ?? NSNull(),
                           "preparationSecondsRemaining": preparation?.secondsRemaining.map { $0 as Any } ?? NSNull(),
                           "preparingID": preparingID?.uuidString ?? "",
-                          "diagnosticsEnabled": diagnosticsLogger.enabled])
+                          "diagnosticsEnabled": diagnosticsLogger.enabled,
+                          "diagnosticsEventCount": diagnosticsLogger.eventCount])
+        }
+        if request.path == "/api/diagnostics/export", request.method == "GET" {
+            guard diagnosticsLogger.enabled, let data = diagnosticsLogger.exportData() else {
+                return .json(["error": "No diagnostic events recorded yet."], status: 404)
+            }
+            return HTTPResponse(status: 200, contentType: "application/x-ndjson; charset=utf-8", body: data,
+                                headers: ["Content-Disposition": "attachment; filename=VideoPilot-diagnostics.jsonl"])
         }
         if request.path == "/api/diagnostics", request.method == "POST" {
             guard diagnosticsLogger.enabled,
@@ -571,6 +617,7 @@ import Network
                   let events = object["events"] as? [[String: Any]] else {
                 return .json(["accepted": false])
             }
+            var accepted = 0
             for entry in events.prefix(64) {
                 guard let event = entry["event"] as? String, event.count <= 64 else { continue }
                 var fields: [String: String] = [:]
@@ -578,8 +625,11 @@ import Network
                     for (key, value) in raw.prefix(24) { fields[key] = String(describing: value) }
                 }
                 diagnosticsLogger.recordWeb(event: event, fields: fields)
+                accepted += 1
             }
-            return .json(["accepted": true])
+            diagnosticsLogger.record(component: "browser", event: "batchReceived",
+                fields: ["accepted": String(accepted)], throttleKey: "browser-batch", minimumInterval: 1)
+            return .json(["accepted": true, "count": accepted])
         }
         if request.path == "/api/youtube", request.method == "POST" {
             guard let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: String],
@@ -638,27 +688,28 @@ import Network
                 return .json(["error": "Video is not ready or no longer exists."], status: 404)
             }
             let fileSize = ((try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?.int64Value ?? 0
-            let index = seekIndex(for: id, file: url)
             var offset: Int64 = 0
             var seekTime: Double?
+            var index: MPEGTSIndex? = cachedSeekIndex(for: id, file: url)
+            if index == nil { primeSeekIndex(for: id, file: url) }
             if let rawSeek = request.query.first(where: { $0.name == "seek" })?.value,
                let seek = Double(rawSeek), seek.isFinite, seek > 0, fileSize > 0 {
+                // A normal playback start does not need to scan the file. A
+                // legacy library item without a sidecar is indexed only when
+                // a real seek asks for it, and that scan happens off the main
+                // actor in seekIndex(for:file:).
+                index = cachedSeekIndex(for: id, file: url)
                 if let index, let point = index.point(for: seek) {
                     // The index points to a PAT context, not an arbitrary byte
                     // in a PES packet. That lets JSMpeg rebuild decoder state
                     // after a seek instead of inheriting a partial buffer.
                     offset = min(max(0, point.offset), max(0, fileSize - 188))
                     seekTime = point.time
-                    if let measured = index.duration,
-                       video.duration == nil || abs((video.duration ?? measured) - measured) > 1 {
-                        // Repair legacy library entries whose source duration
-                        // disagreed with the prepared MPEG-TS output.
-                        try? library?.update(id, state: "ready", duration: measured)
-                        refresh()
-                    }
                 } else {
-                    // Keep a conservative compatibility fallback for files
-                    // made by an older build that cannot be indexed.
+                    // Do not hold the HTTP response while migrating a large
+                    // legacy file. Start the exact scan in the background and
+                    // use a packet-aligned approximation for this first seek.
+                    primeSeekIndex(for: id, file: url)
                     if let duration = video.duration, duration > 0 {
                         let ratio = min(0.999, max(0, seek / duration))
                         offset = Int64(Double(fileSize) * ratio)
@@ -666,10 +717,17 @@ import Network
                     }
                 }
             }
+            if let measured = index?.duration,
+               video.duration == nil || abs((video.duration ?? measured) - measured) > 1 {
+                try? library?.update(id, state: "ready", duration: measured)
+                refresh()
+            }
             var headers = ["X-Accel-Buffering": "no", "Accept-Ranges": "bytes"]
             if offset > 0 { headers["X-Video-Seek"] = String(offset) }
             if let seekTime { headers["X-Video-Seek-Time"] = String(format: "%.3f", seekTime) }
-            if let duration = index?.duration { headers["X-Video-Duration"] = String(format: "%.3f", duration) }
+            if let duration = index?.duration ?? video.duration, duration > 0 {
+                headers["X-Video-Duration"] = String(format: "%.3f", duration)
+            }
             let fileRange: Range<Int64>? = offset > 0 ? offset..<fileSize : nil
             return HTTPResponse(status: 200, contentType: "video/mp2t", headers: headers,
                                 file: url, fileRange: fileRange)
