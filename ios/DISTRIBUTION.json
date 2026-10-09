@@ -1,10 +1,10 @@
 {
   "name": "Video Pilot",
-  "version": "0.1.31",
-  "build": "43",
+  "version": "0.1.32",
+  "build": "44",
   "iconVersion": "0.1.28",
   "artifactPrefix": "Tesla-Video-Pilot",
-  "releaseNotes": "Build 43 adds opt-in experimental silent-audio background hosting based on the supplied Grok source, with interruption recovery, native PiP audio coordination, partial-start cleanup, lifecycle diagnostics and policy regression tests. Continuous background hosting remains pending physical-device testing.",
+  "releaseNotes": "Build 44 keeps the Cloudflare tunnel connected when returning to the app and while the phone is locked (tunnel key now readable after first unlock), and retries 'iPhone is busy' (HTTP 429) during seeks with backoff. Requires the current cloudflare/phone-relay.js Worker deployment.",
   "packaging": "arm64-only-adhoc-signature-template",
   "stage": "native-prototype",
   "branch": "iphone-native",
