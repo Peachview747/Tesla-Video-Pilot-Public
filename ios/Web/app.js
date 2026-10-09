@@ -572,7 +572,6 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
     armRecovery(true);
   };
   $('player-section').hidden = false; $('playing-title').textContent = video.title;
-  audioMuted = false;
   $('playback-status').textContent = 'Buffering…'; $('pause').textContent = 'Pause'; $('mute').textContent = 'Mute';
   $('screen').style?.setProperty?.('aspect-ratio', 'auto');
   updateTimeline(currentOffset, duration);

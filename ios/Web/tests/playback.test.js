@@ -138,6 +138,17 @@ test('fullscreen exposes Exit and restores the Full screen button on exit', asyn
   assert.equal(f.element('exit-fullscreen').hidden, true);
   f.close();
 });
+test('seeking keeps the user mute preference across decoder replacement', async () => {
+  const f = setup(); f.play({id:'video', title:'Test', duration:100});
+  f.element('mute').onclick();
+  assert.equal(f.players[0].volume, 0);
+  f.element('forward10').onclick();
+  await new Promise(resolve => setTimeout(resolve, 380));
+  assert.equal(f.players.length, 2);
+  assert.equal(f.players[1].volume, 0);
+  assert.equal(f.element('mute').textContent, 'Unmute');
+  f.close();
+});
 test('stream failures survive late decoder and end callbacks', () => {
   const f = setup(); f.play();
   const player = f.players[0], status = f.element('playback-status');
