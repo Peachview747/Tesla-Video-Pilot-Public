@@ -64,6 +64,7 @@ import UniformTypeIdentifiers
                 }
                 try Task.checkCancellation()
                 guard generation == token else { throw CancellationError() }
+                SilentAudioKeepAlive.shared.setNativePlayback(true)
                 let session = AVAudioSession.sharedInstance()
                 try session.setCategory(.playback, mode: .moviePlayback)
                 try session.setActive(true)
@@ -96,6 +97,7 @@ import UniformTypeIdentifiers
             } catch {
                 if let staged, staged != file { try? FileManager.default.removeItem(at: staged) }
                 guard generation == token else { return }
+                SilentAudioKeepAlive.shared.setNativePlayback(false)
                 loading = false
                 status = error is CancellationError ? "Playback cancelled." : error.localizedDescription
                 SessionDiagnostics.shared.record(component: "pip", event: "openFailed")
@@ -120,6 +122,7 @@ import UniformTypeIdentifiers
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             audioSessionActive = false
         }
+        SilentAudioKeepAlive.shared.setNativePlayback(false)
         active = false
         loading = false
         status = "Playback stopped."

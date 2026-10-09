@@ -15,6 +15,7 @@ import MK8Core
             .tint(MK8Theme.accent)
             .preferredColorScheme(appearanceMode == "dark" ? .dark : .light)
             .onChange(of: phase) { _, value in
+                if value == .inactive { host.preparingToBackground() }
                 if value == .background { host.backgrounded() }
                 if value == .active { host.foregrounded() }
             }
@@ -708,6 +709,7 @@ private struct HostSettingsView: View {
     @ObservedObject var host: HostModel
     @ObservedObject private var background = BackgroundPreparation.shared
     @ObservedObject private var diagnostics = SessionDiagnostics.shared
+    @ObservedObject private var keepalive = SilentAudioKeepAlive.shared
     @AppStorage("appearanceMode") private var appearanceMode = "light"
     var body: some View {
         HostScreen(title: "Settings") {
@@ -802,6 +804,11 @@ private struct HostSettingsView: View {
                 Toggle("Allow extra background time", isOn: $host.allowBackgroundTime)
                 Text("Gives hosting a short grace period. Charging does not enable unlimited hosting while locked.")
                     .font(.footnote).foregroundStyle(MK8Theme.secondary)
+                Divider()
+                Toggle("Experimental silent keepalive", isOn: $host.keepHostingAlive)
+                Text("Attempts to keep hosting active using silent audio. May be interrupted or suspended by iOS; uses extra battery. Turn off PiP for the first test.")
+                    .font(.footnote).foregroundStyle(MK8Theme.secondary)
+                Text(keepalive.status).font(.caption).foregroundStyle(MK8Theme.secondary)
                 Divider()
                 Toggle("Keep screen awake", isOn: $host.keepScreenAwake)
                 Text("Keep this on while charging for continuous Tesla playback. Applies while hosting or preparing.")

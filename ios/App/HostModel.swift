@@ -19,6 +19,13 @@ import Network
     @Published private(set) var youtubeSignedIn = false
     let youtubeOAuth = YouTubeOAuth()
     let pipPlayback = PiPPlayback()
+    @Published var keepHostingAlive = (UserDefaults.standard.object(forKey: "keepHostingAlive") as? Bool) ?? false {
+        didSet {
+            UserDefaults.standard.set(keepHostingAlive, forKey: "keepHostingAlive")
+            updateKeepAlive()
+        }
+    }
+    private var leavingForeground = false
     @Published var tunnelKey = Keychain.read("tunnel-key")
     @Published private(set) var phoneConnection = PhoneConnection()
     @Published private(set) var tunnelState = TunnelConnectionState.notConfigured
@@ -52,8 +59,8 @@ import Network
     @Published var backgroundPreparation = (UserDefaults.standard.object(forKey: "backgroundPreparation") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(backgroundPreparation, forKey: "backgroundPreparation") }
     }
-    let version = "0.1.30"
-    let build = "42"
+    let version = "0.1.31"
+    let build = "43"
     var preparingTitle: String { videos.first { $0.id == preparingID }?.title ?? "Your video" }
     var queuedCount: Int { videos.filter { $0.state == "preparing" && $0.id != preparingID }.count }
     private var library: Library?
@@ -170,6 +177,7 @@ import Network
         server.ready = { [weak self, weak server] in
             guard let self, let server, self.server === server else { return }
             self.running = true
+            self.updateKeepAlive()
             self.refreshAddresses()
             self.updateIdleTimer()
             self.message = "Host ready. Face ID authorized this app session; keep the public address private."
@@ -197,6 +205,7 @@ import Network
         server?.stop()
         server = nil
         running = false
+        updateKeepAlive()
         localURLs = []
         activeStreams = 0
         localStreams = 0
@@ -204,9 +213,21 @@ import Network
         if !busy { finishBackgroundTime() }
         updateIdleTimer()
     }
+    func preparingToBackground() {
+        leavingForeground = true
+        // Begin before suspension, rather than waiting to activate audio after
+        // the app has already entered the background.
+        updateKeepAlive()
+    }
+    private func updateKeepAlive() {
+        SilentAudioKeepAlive.shared.update(enabled: keepHostingAlive,
+            hosting: running, foreground: !leavingForeground)
+    }
     func backgrounded() {
+        preparingToBackground()
         diagnosticsLogger.record(component: "app", event: "backgrounded",
-            fields: ["pipActive": "\(pipPlayback.active)", "hosting": "\(running)"])
+            fields: ["pipActive": "\(pipPlayback.active)", "hosting": "\(running)",
+                     "keepaliveActive": "\(SilentAudioKeepAlive.shared.isActive)"])
         resumeHostingOnReturn = server != nil
         if allowBackgroundTime, (server != nil || busy), backgroundTask == .invalid {
             let generation = UUID()
@@ -225,7 +246,10 @@ import Network
     }
     func foregrounded() {
         diagnosticsLogger.record(component: "app", event: "foregrounded",
-            fields: ["pipActive": "\(pipPlayback.active)", "hosting": "\(running)"])
+            fields: ["pipActive": "\(pipPlayback.active)", "hosting": "\(running)",
+                     "keepaliveActive": "\(SilentAudioKeepAlive.shared.isActive)"])
+        leavingForeground = false
+        updateKeepAlive()
         finishBackgroundTime()
         _ = meter.sample(at: ProcessInfo.processInfo.systemUptime)
         trafficHistory.removeAll()
@@ -238,9 +262,12 @@ import Network
     }
     private func expireBackgroundTime() {
         diagnosticsLogger.record(component: "app", event: "backgroundGraceExpired",
-            fields: ["pipActive": "\(pipPlayback.active)", "hosting": "\(running)"])
+            fields: ["pipActive": "\(pipPlayback.active)", "hosting": "\(running)",
+                     "keepaliveActive": "\(SilentAudioKeepAlive.shared.isActive)"])
         finishBackgroundTime()
-        message = "iOS background time expired. Hosting will reconnect when Video Pilot returns."
+        message = SilentAudioKeepAlive.shared.isActive || pipPlayback.active
+            ? "Background grace expired. Audio hosting support is experimental; check the Tesla connection."
+            : "iOS background time expired. Hosting will reconnect when Video Pilot returns."
     }
     private func finishBackgroundTime() {
         backgroundGeneration = nil
