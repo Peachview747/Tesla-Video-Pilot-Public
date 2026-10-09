@@ -1,0 +1,46 @@
+name: Deploy Cloudflare Worker
+
+# Manual only. Deploys cloudflare/ (worker.js + phone-relay.js) to the `tv`
+# Worker after the relay tests pass. Requires the repository secret
+# CLOUDFLARE_API_TOKEN (Cloudflare "Edit Cloudflare Workers" template).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-cloudflare-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Test and deploy Worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: cloudflare
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Require Cloudflare token
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::Add the CLOUDFLARE_API_TOKEN repository secret (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+      - name: Install relay dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Test Cloudflare relay
+        run: npm test
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx wrangler deploy
