@@ -96,6 +96,7 @@ import Network
         self.meter = meter
         youtubeSignedIn = youtubeOAuth.signedIn
         diagnosticsLogger.record(component: "app", event: "launch")
+        Keychain.migrateToAfterFirstUnlock("tunnel-key")
         do { library = try Library(); refresh() }
         catch { message = "Could not open the local library: \(error.localizedDescription)" }
         networkMonitor.pathUpdateHandler = { [weak self] path in
@@ -257,7 +258,7 @@ import Network
         if busy, !BackgroundPreparation.shared.isRunning { requestBackgroundPreparation() }
         if resumeHostingOnReturn, server == nil { start() }
         resumeHostingOnReturn = false
-        if running { refreshAddresses(); connectTunnel() }
+        if running { refreshAddresses(); connectTunnel(force: false) }
         updateIdleTimer()
     }
     private func expireBackgroundTime() {
@@ -370,9 +371,14 @@ import Network
             }
         } catch { tunnelMessage = "Could not save the tunnel key: \(error.localizedDescription)" }
     }
-    func connectTunnel() {
+    /// `force: false` leaves a connected or already-connecting tunnel alone, so
+    /// returning to the foreground does not drop every active stream.
+    func connectTunnel(force: Bool = true) {
         guard running, tunnelEnabled else { return }
-        let key = Keychain.read("tunnel-key")
+        // A locked phone cannot read the Keychain; fall back to the key already
+        // loaded in memory rather than stopping the tunnel as "not configured".
+        var key = Keychain.read("tunnel-key")
+        if key.isEmpty { key = tunnelKey.trimmingCharacters(in: .whitespacesAndNewlines) }
         guard !key.isEmpty else {
             tunnel?.stop()
             tunnelState = .notConfigured
@@ -395,6 +401,8 @@ import Network
             relay.streamsChanged = { [weak self] in self?.tunnelStreams = $0; self?.updateStreams() }
             tunnel = relay
         }
+        if !force, tunnel != nil,
+           tunnelState == .connected || tunnelState == .connecting || tunnelState == .reconnecting { return }
         tunnel?.start(secret: key)
     }
     private func updateStreams() { activeStreams = localStreams + tunnelStreams }

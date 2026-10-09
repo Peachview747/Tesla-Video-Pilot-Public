@@ -143,7 +143,7 @@ test('seeking keeps the user mute preference across decoder replacement', async 
   f.element('mute').onclick();
   assert.equal(f.players[0].volume, 0);
   f.element('forward10').onclick();
-  await new Promise(resolve => setTimeout(resolve, 380));
+  await new Promise(resolve => setTimeout(resolve, 650));
   assert.equal(f.players.length, 2);
   assert.equal(f.players[1].volume, 0);
   assert.equal(f.element('mute').textContent, 'Unmute');
@@ -196,7 +196,7 @@ test('repeated seeks serialize teardown and keep one relay player identity', asy
   const first = f.players[0];
   const seek = value => f.element('timeline').onchange({target:{value:String(value)}});
   seek(12);
-  await new Promise(resolve => setTimeout(resolve, 320));
+  await new Promise(resolve => setTimeout(resolve, 650));
   assert.equal(f.players.length, 2);
   const second = f.players[1];
   assert.equal(first.destroyed, true);
@@ -206,7 +206,7 @@ test('repeated seeks serialize teardown and keep one relay player identity', asy
   // A newer target supersedes a seek that is still waiting for its old source
   // to settle; only the final target may create another JSMpeg instance.
   seek(2); await new Promise(resolve => setTimeout(resolve, 30)); seek(24);
-  await new Promise(resolve => setTimeout(resolve, 360));
+  await new Promise(resolve => setTimeout(resolve, 650));
   assert.equal(second.destroyed, true);
   assert.equal(second.sourceDestroyed, true);
   assert.equal(f.players.length, 3);
@@ -224,4 +224,25 @@ test('a seek that never decodes gets one bounded retry and a recoverable state',
   assert.equal(f.players[1].paused, true);
   assert.match(f.element('playback-status').textContent, /could not resume after seeking/);
   assert.equal(f.element('pause').textContent, 'Retry');
+});
+
+test('HTTP 429 from a busy relay is retried with backoff instead of failing playback', async () => {
+  const f = setup(); f.play({id:'video', title:'Test video', duration:100});
+  const status = f.element('playback-status');
+  f.players[0].options.onSourceError('Video stream failed (HTTP 429).');
+  assert.equal(status.textContent, 'iPhone is busy. Retrying…');
+  await new Promise(resolve => setTimeout(resolve, 500));
+  assert.equal(f.players.length, 2, 'the same target is reopened after the first backoff');
+  assert.equal(f.players[0].destroyed, true);
+  assert.equal(status.textContent, 'Buffering…');
+  f.close();
+});
+test('other HTTP 4xx stream errors remain fatal and offer Retry', async () => {
+  const f = setup(); f.play({id:'video', title:'Test video', duration:100});
+  f.players[0].options.onSourceError('Video stream failed (HTTP 404).');
+  await new Promise(resolve => setTimeout(resolve, 500));
+  assert.equal(f.players.length, 1);
+  assert.equal(f.element('pause').textContent, 'Retry');
+  assert.match(f.element('playback-status').textContent, /HTTP 404/);
+  f.close();
 });

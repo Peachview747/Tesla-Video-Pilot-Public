@@ -502,7 +502,7 @@ function boundDecoderBuffers() {
     audioBufferBytes:Number(player?.audio?.bits?.bytes?.length) || 0
   });
 }
-function startPlayer(video, seek = null, recoveryAttempt = 0) {
+function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
   current = video;
   const duration = finiteDuration(video.duration);
   const storedResume = seek === null ? savedResume(video) : 0;
@@ -512,7 +512,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
   reportDiagnostic('playerStart', {seekTargetSeconds:currentOffset, recoveryAttempt});
   const session = {paused:false, failed:false, ended:false, baseOffset:currentOffset,
     position:currentOffset, duration, decoded:false, startupTimer:null, stallTimer:null,
-    lastDecodedAt:0, recoveryAttempt}; playback = session;
+    lastDecodedAt:0, recoveryAttempt, busyRetries}; playback = session;
   const active = () => playback === session && !session.paused && !session.failed && !session.ended;
   const recoveryDelay = () => {
     const override = Number(globalThis.__VP_SEEK_RECOVERY_MS);
@@ -537,6 +537,34 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
       if (generation === seekGeneration) {
         session.failed = true; session.paused = true;
         $('playback-status').textContent = error?.message || message;
+        $('pause').textContent = 'Retry';
+      }
+    });
+    return true;
+  };
+  // The relay answers HTTP 429 ("iPhone is busy") while it is still releasing
+  // the previous stream. That is transient after a seek, so retry the same
+  // target with exponential backoff instead of treating it as fatal.
+  const retryBusy = text => {
+    if (!/HTTP 429/.test(text) || !current) return false;
+    if (session.busyRetries >= 5) return false;
+    const videoAtError = current;
+    const target = Math.max(0, Math.floor(session.position || session.baseOffset || 0));
+    const attempt = session.busyRetries + 1;
+    const delay = Math.min(3000, 300 * 2 ** session.busyRetries);
+    const generation = ++seekGeneration;
+    session.failed = true; session.paused = true;
+    reportDiagnostic('playerBusyRetry', {seekTargetSeconds:target, attempt, delayMs:delay});
+    $('playback-status').textContent = 'iPhone is busy. Retrying…';
+    seekChain = seekChain.then(async () => {
+      if (generation !== seekGeneration || current !== videoAtError) return;
+      await closePlayer(target);
+      await new Promise(resolve => globalThis.setTimeout(resolve, delay));
+      if (generation !== seekGeneration || current !== videoAtError) return;
+      startPlayer(videoAtError, target, session.recoveryAttempt, attempt);
+    }).catch(error => {
+      if (generation === seekGeneration) {
+        $('playback-status').textContent = error?.message || 'iPhone is busy.';
         $('pause').textContent = 'Retry';
       }
     });
@@ -651,6 +679,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0) {
         const retryable = !/Pair this browser|HTTP 4\d\d|not ready|no longer exists/i.test(text);
         reportDiagnostic('playerError', {error:text, positionSeconds:session.position || 0,
           recoveryAttempt:session.recoveryAttempt});
+        if (retryBusy(text)) return;
         if (retryable && restartSession('Connection interrupted. Reconnecting…')) return;
         session.failed = true; session.paused = true;
         try { player?.pause(); player?.source?.pauseReading?.(); } catch {}
@@ -770,12 +799,14 @@ function requestSeek(offset) {
       // cancelled. Do not create a player for an obsolete target.
       if (generation !== seekGeneration || current !== video) return;
       await closePlayer(target);
+      // Short grace so the phone can release the old stream before the new one opens.
+      await new Promise(resolve => setTimeout(resolve, 150));
       if (generation !== seekGeneration || current !== video) return;
       startPlayer(video, target);
     }).catch(error => {
       if (generation === seekGeneration) $('playback-status').textContent = error?.message || 'Unable to seek.';
     });
-  }, 250);
+  }, 350);
 }
 $('timeline').onchange = event => requestSeek(Number(event.target.value));
 document.querySelectorAll?.('.tab').forEach(tab => tab.onclick = () => showTab(tab.dataset.tab));
