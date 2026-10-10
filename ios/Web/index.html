@@ -3,102 +3,279 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Video Pilot · iPhone host</title>
+  <title>Video Pilot</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/jsmpeg.min.js" defer></script>
   <script src="/app.js" type="module"></script>
 </head>
 <body>
-  <header>
-    <div class="brand-mark" aria-hidden="true"><span>VP</span></div>
-    <div class="brand-lockup"><strong>Video Pilot</strong><span>iPhone host</span></div>
-    <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false">Dark mode</button>
-    <p id="connection" class="connection-pill">Connecting…</p>
-  </header>
-  <main>
-    <p id="notice" role="status" aria-live="polite"></p>
-    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-    <div id="host-ui" hidden>
-      <nav class="tabs" aria-label="Video Pilot sections">
-        <button id="menu-toggle" class="menu-toggle" aria-expanded="false" aria-controls="tab-menu"><span class="menu-glyph" aria-hidden="true"></span><span>Menu</span></button>
-        <div id="tab-menu" class="tab-menu" hidden>
-          <button class="tab active" data-tab="youtube-tab" aria-controls="youtube-tab">Home</button>
-          <button class="tab" data-tab="library-tab" aria-controls="library-tab">Library</button>
-          <button class="tab" data-tab="settings-tab" aria-controls="settings-tab">Settings</button>
+  <div class="app">
+    <nav id="rail" class="rail" aria-label="Video Pilot sections">
+      <div class="rail-brand" aria-hidden="true">VP</div>
+      <button class="nav-item active" type="button" data-tab="home-tab" aria-current="page">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 10.5 12 3.8l8.5 6.7V20a1 1 0 0 1-1 1h-5v-6.2h-5V21h-5a1 1 0 0 1-1-1z"/></svg>
+        <span>Home</span>
+      </button>
+      <button class="nav-item" type="button" data-tab="library-tab">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4.5h4v15H4zM10 4.5h4v15h-4zM16.2 5.3l3.8-1 3 14.6-3.8.9z"/></svg>
+        <span>Library</span>
+      </button>
+      <button class="nav-item" type="button" data-tab="queue-tab">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v11M7.5 10l4.5 4.5 4.5-4.5M4 19.5h16"/></svg>
+        <span>Downloads</span>
+        <span id="nav-queue-badge" class="nav-badge" hidden></span>
+      </button>
+      <button class="nav-item" type="button" data-tab="settings-tab">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2.2"/><circle cx="10" cy="17" r="2.2"/></svg>
+        <span>Settings</span>
+      </button>
+      <div class="rail-spacer"></div>
+      <button id="connection" class="rail-status" type="button" data-tab="settings-tab" data-state="waiting" title="Connection details">
+        <span class="status-dot" aria-hidden="true"></span><span id="connection-text">Connecting…</span>
+      </button>
+    </nav>
+
+    <main id="main" class="main">
+      <p id="notice" class="notice" role="status" aria-live="polite"></p>
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+      <section id="connecting-panel" class="connecting">
+        <div class="connecting-card">
+          <div class="spinner" aria-hidden="true"></div>
+          <h1>Connecting to your iPhone</h1>
+          <p>Open Video Pilot on the iPhone and start hosting. This page reconnects by itself.</p>
         </div>
-      </nav>
-      <section id="dashboard-tab" class="tab-panel dashboard-panel" hidden>
-        <div class="hero-heading"><div><p class="eyebrow">VIDEO PILOT</p><h1>Dashboard</h1><p class="hero-copy">Your phone is the host. Your Tesla is the screen.</p></div><span id="dashboard-state" class="status-badge">Checking…</span></div>
-        <div class="auth-note"><strong>Face ID protected host</strong><span>Video Pilot authorizes hosting once per iPhone app session. Keep this address private while the host is active.</span></div>
-        <div class="metric-grid">
-          <article class="metric-card"><span>Connection</span><strong id="dashboard-connection">—</strong><small>Cloudflare tunnel</small></article>
-          <article class="metric-card"><span>Download</span><strong id="dashboard-download">—</strong><small>Actual host traffic</small></article>
-          <article class="metric-card"><span>Upload</span><strong id="dashboard-upload">—</strong><small>Actual host traffic</small></article>
-          <article class="metric-card"><span>Queue</span><strong id="dashboard-queue">—</strong><small>Videos preparing</small></article>
-        </div>
-        <section class="dashboard-actions"><h2>Quick actions</h2><div class="action-grid"><button class="secondary-action" data-go="youtube-tab">Find a video <span>→</span></button><button class="secondary-action" data-go="library-tab">Open library <span>→</span></button><button class="secondary-action" data-go="settings-tab">Connection help <span>→</span></button></div></section>
       </section>
-      <section id="preparation-panel" class="preparation" hidden aria-live="polite">
-        <div class="preparation-heading"><h2 id="preparation-title">Preparing video</h2><span id="preparation-percent"></span></div>
-        <p id="preparation-video"></p>
-        <progress id="preparation-progress" max="1" aria-label="Video preparation progress"></progress>
-        <p id="preparation-detail"><span id="queue-count"></span></p>
-      </section>
-      <section id="youtube-tab" class="tab-panel">
-        <div class="hero-heading"><div><p class="eyebrow">VIDEO PILOT</p><h1>What do you want to watch?</h1><p class="hero-copy">Paste a link, search YouTube, or pick up where you left off.</p></div><span id="queue-badge" class="queue-badge">0 queued</span></div>
-        <div class="search-shell">
-          <form id="search-form" class="search-bar" role="search" autocomplete="off">
-            <span class="search-glyph" aria-hidden="true"></span>
-            <input id="query" type="search" placeholder="Search YouTube or paste a link" aria-label="Search YouTube or paste a link" maxlength="300" enterkeyhint="search" autocomplete="off" spellcheck="false">
-            <button id="query-clear" class="query-clear" type="button" aria-label="Clear search" hidden>×</button>
-            <button id="search-submit" class="search-submit" type="submit">Search</button>
-          </form>
-          <div id="suggestions" class="suggestions" role="listbox" aria-label="Suggestions" hidden></div>
-        </div>
-        <div id="search-filters" class="filter-chips" role="group" aria-label="Search filters"><button type="button" data-filter="any" aria-pressed="true">All</button><button type="button" data-filter="short" aria-pressed="false">Under 4 min</button><button type="button" data-filter="medium" aria-pressed="false">4–20 min</button><button type="button" data-filter="long" aria-pressed="false">Over 20 min</button><button type="button" data-filter="week" aria-pressed="false">This week</button><button type="button" data-filter="newest" aria-pressed="false">Newest</button></div>
-        <div id="search-start" class="search-start">
-          <div id="recent-searches" class="chip-row" hidden></div>
-          <div class="chip-row" aria-label="Popular searches"><span class="chip-label">Try</span><button type="button" class="chip" data-query="trending now">Trending</button><button type="button" class="chip" data-query="music">Music</button><button type="button" class="chip" data-query="latest news">News</button><button type="button" class="chip" data-query="Tesla">Tesla</button></div>
-        </div>
-        <div id="search-summary" class="search-summary" hidden></div>
-        <p id="search-hint"></p>
-        <div id="results" class="grid results-grid"></div>
-        <div class="load-more-row"><button id="load-more" class="load-more" type="button" hidden>Load more results</button></div>
-        <section id="explore-panel" class="explore-panel" hidden><div class="library-heading"><div><p class="eyebrow">YOUR FEED</p><h2 id="explore-title">Trending now</h2></div><button id="explore-refresh" type="button">Refresh</button></div><div id="explore-results" class="grid"></div></section>
-        <section id="queue-panel" class="queue-panel" hidden><div class="library-heading"><h2>Up next</h2><p id="queue-summary"></p></div><div id="queue-list" class="grid"></div></section>
-      </section>
-      <section id="player-section" class="tab-panel player-overlay" aria-modal="true" aria-labelledby="playing-title" role="dialog" hidden>
-        <div class="player-dialog">
-          <div class="player-heading"><h2 id="playing-title"></h2><button id="close" class="close-player" type="button">Close</button></div>
-        <div id="player-shell" class="player-shell">
-          <canvas id="screen" width="1280" height="720" aria-label="Video player"></canvas>
-          <div class="controls" role="group" aria-label="Video controls">
-            <button id="back10">−10 sec</button><button id="pause">Pause</button><button id="forward10">+10 sec</button>
-            <button id="mute">Mute</button><button id="audio-boost" type="button" aria-pressed="false" title="Enable a gentle 115% audio boost">Audio +</button><button id="fullscreen">Full screen</button>
+
+      <div id="host-ui" hidden>
+        <!-- Shared "preparing now" strip shown above Home and Library while the phone works. -->
+        <section id="preparation-panel" class="preparation" hidden aria-live="polite">
+          <div class="preparation-text">
+            <strong id="preparation-title">Preparing video</strong>
+            <span id="preparation-video"></span>
           </div>
-          <div class="timeline"><span id="elapsed">0:00</span><input id="timeline" type="range" min="0" max="1" value="0" step="0.1" aria-label="Video timeline"><span id="duration">0:00</span></div>
-          <button id="exit-fullscreen" type="button" hidden>Exit full screen</button>
+          <progress id="preparation-progress" max="1" aria-label="Video preparation progress"></progress>
+          <span id="preparation-percent" class="preparation-percent"></span>
+          <p id="preparation-detail" class="preparation-detail"></p>
+        </section>
+
+        <!-- HOME -->
+        <section id="home-tab" class="tab-panel">
+          <div class="topbar">
+            <div class="search-shell">
+              <form id="search-form" class="search-bar" role="search" autocomplete="off">
+                <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg>
+                <input id="query" type="search" placeholder="Search YouTube or paste a link" aria-label="Search YouTube or paste a link" maxlength="300" enterkeyhint="search" autocomplete="off" spellcheck="false">
+                <button id="query-clear" class="query-clear" type="button" aria-label="Clear search" hidden>×</button>
+                <button id="search-submit" class="search-submit" type="submit">Search</button>
+              </form>
+              <div id="suggestions" class="suggestions" role="listbox" aria-label="Suggestions" hidden></div>
+            </div>
+          </div>
+
+          <div id="search-view" class="search-view" hidden>
+            <div class="view-header">
+              <button id="search-back" class="back-button" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>Home</span></button>
+              <h2 id="search-summary" class="view-title"></h2>
+            </div>
+            <div id="search-filters" class="chip-row" role="group" aria-label="Search filters"><button type="button" class="chip" data-filter="any" aria-pressed="true">All</button><button type="button" class="chip" data-filter="short" aria-pressed="false">Under 4 min</button><button type="button" class="chip" data-filter="medium" aria-pressed="false">4–20 min</button><button type="button" class="chip" data-filter="long" aria-pressed="false">Over 20 min</button><button type="button" class="chip" data-filter="week" aria-pressed="false">This week</button><button type="button" class="chip" data-filter="newest" aria-pressed="false">Newest</button></div>
+            <div id="results" class="video-grid"></div>
+            <div class="load-more-row"><button id="load-more" class="button" type="button" hidden>Load more results</button></div>
+          </div>
+
+          <div id="feed-view" class="feed-view">
+            <div id="search-start" class="chip-row start-chips">
+              <div id="recent-searches" class="chip-group" hidden></div>
+              <div class="chip-group" aria-label="Popular searches"><span class="chip-label">Try</span><button type="button" class="chip" data-query="trending now">Trending</button><button type="button" class="chip" data-query="music">Music</button><button type="button" class="chip" data-query="latest news">News</button><button type="button" class="chip" data-query="Tesla">Tesla</button></div>
+            </div>
+            <div class="feed-header">
+              <h1 class="page-title">For you</h1>
+              <span id="feed-status" class="feed-status"></span>
+              <button id="feed-refresh" class="button quiet small" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4h-4"/></svg><span>Refresh</span></button>
+            </div>
+            <div id="feed" class="feed"></div>
+          </div>
+        </section>
+
+        <!-- CHANNEL PAGE (opened from any channel name) -->
+        <section id="channel-tab" class="tab-panel" hidden>
+          <div class="view-header">
+            <button id="channel-back" class="back-button" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span id="channel-back-label">Back</span></button>
+          </div>
+          <header class="channel-hero">
+            <span id="channel-avatar" class="avatar avatar-large" aria-hidden="true"></span>
+            <div class="channel-hero-text">
+              <h1 id="channel-name" class="page-title">Channel</h1>
+              <p id="channel-meta" class="muted"></p>
+            </div>
+            <button id="channel-refresh" class="button quiet small" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4h-4"/></svg><span>Refresh</span></button>
+          </header>
+          <section id="channel-library" class="channel-section" hidden>
+            <div class="section-header"><h2 id="channel-library-title">In your library</h2><div id="channel-library-tools" class="section-tools"></div></div>
+            <div id="channel-library-list" class="row-scroller"></div>
+          </section>
+          <section class="channel-section">
+            <div class="section-header"><h2>Recent uploads</h2><span id="channel-status" class="muted"></span></div>
+            <div id="channel-videos" class="video-grid"></div>
+            <div class="load-more-row"><button id="channel-more" class="button" type="button" hidden>Load older videos</button></div>
+          </section>
+        </section>
+
+        <!-- LIBRARY -->
+        <section id="library-tab" class="tab-panel" hidden>
+          <div class="page-header">
+            <div><h1 class="page-title">Library</h1><p id="library-count" class="muted"></p></div>
+            <div class="library-toolbar">
+              <span id="library-upgrade"></span>
+              <div class="segmented" role="tablist" aria-label="Library view"><button id="view-channels" type="button" role="tab" data-view="channels" aria-selected="true">Channels</button><button id="view-all" type="button" role="tab" data-view="all" aria-selected="false">All videos</button></div>
+              <label id="library-sort-wrap" class="select-wrap" hidden><span class="sr-only">Sort</span><select id="library-sort" aria-label="Sort library"><option value="added">Recently added</option><option value="newest">Newest release</option><option value="oldest">Oldest release</option><option value="channel">By channel</option></select></label>
+              <input id="library-filter" class="filter-input" type="search" placeholder="Filter library" aria-label="Filter library" autocomplete="off" spellcheck="false">
+            </div>
+          </div>
+          <section id="continue-panel" class="row-section" hidden><div class="section-header"><h2>Continue watching</h2></div><div id="continue-list" class="row-scroller"></div></section>
+          <div id="library" class="library-list"></div>
+        </section>
+
+        <!-- DOWNLOADS / QUEUE -->
+        <section id="queue-tab" class="tab-panel" hidden>
+          <div class="page-header">
+            <div><h1 class="page-title">Downloads</h1><p id="queue-summary" class="muted"></p></div>
+            <span id="queue-badge" class="pill">0 queued</span>
+          </div>
+          <div id="queue-list" class="queue-list"></div>
+          <section id="failed-panel" class="row-section" hidden><div class="section-header"><h2>Needs attention</h2><button id="retry-all" class="button quiet small" type="button">Retry all</button></div><div id="failed-list" class="queue-list"></div></section>
+        </section>
+
+        <!-- SETTINGS -->
+        <section id="settings-tab" class="tab-panel" hidden>
+          <div class="page-header"><div><h1 class="page-title">Settings</h1><p id="settings-version-line" class="muted">Video Pilot</p></div></div>
+          <div class="settings-grid">
+            <article class="settings-card">
+              <h2>Appearance</h2>
+              <div class="setting"><div class="setting-label"><strong>Theme</strong><small>System follows the car's day/night setting.</small></div>
+                <div class="segmented" role="radiogroup" aria-label="Theme" id="theme-choice"><button type="button" data-theme-choice="system" aria-pressed="true">System</button><button type="button" data-theme-choice="light" aria-pressed="false">Light</button><button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button></div></div>
+              <div class="setting"><div class="setting-label"><strong>Text size</strong><small>Larger text is easier to read from the driver's seat.</small></div>
+                <div class="segmented" role="radiogroup" aria-label="Text size" id="text-size-choice"><button type="button" data-text-size="normal" aria-pressed="true">Normal</button><button type="button" data-text-size="large" aria-pressed="false">Large</button></div></div>
+            </article>
+
+            <article class="settings-card">
+              <h2>Playback</h2>
+              <label class="setting toggle"><span class="setting-label"><strong>Resume where I left off</strong><small>Start videos at the last watched position.</small></span><input id="pref-resume" type="checkbox" checked><span class="switch" aria-hidden="true"></span></label>
+              <label class="setting toggle"><span class="setting-label"><strong>Open player full screen</strong><small>Fill the screen as soon as a video starts.</small></span><input id="pref-fullscreen" type="checkbox"><span class="switch" aria-hidden="true"></span></label>
+              <label class="setting toggle"><span class="setting-label"><strong>Audio boost</strong><small>Gentle 115% volume with a limiter for quiet videos.</small></span><input id="pref-boost" type="checkbox"><span class="switch" aria-hidden="true"></span></label>
+              <div class="setting"><div class="setting-label"><strong>Read-ahead buffer</strong><small>More buffer rides through weak cellular coverage.</small></div>
+                <div class="segmented" role="radiogroup" aria-label="Read-ahead buffer" id="buffer-choice"><button type="button" data-buffer="normal" aria-pressed="true">12 s</button><button type="button" data-buffer="large" aria-pressed="false">30 s</button></div></div>
+              <div id="quality-setting" class="setting" hidden><div class="setting-label"><strong>Download quality</strong><small>Applies to new downloads. 1080p uses about twice the data.</small></div>
+                <div class="segmented" role="radiogroup" aria-label="Download quality" id="quality-choice"><button type="button" data-quality="720p" aria-pressed="false">720p</button><button type="button" data-quality="1080p" aria-pressed="false">1080p</button></div></div>
+            </article>
+
+            <article class="settings-card">
+              <h2>Data saver</h2>
+              <label class="setting toggle"><span class="setting-label"><strong>Data saver</strong><small>Smaller thumbnails and slower background checks.</small></span><input id="pref-datasaver" type="checkbox"><span class="switch" aria-hidden="true"></span></label>
+              <div class="stat-list">
+                <div><span>Status checks</span><strong id="stat-poll">every 2 s</strong></div>
+                <div><span>Thumbnails</span><strong id="stat-thumbs">Standard</strong></div>
+              </div>
+            </article>
+
+            <article class="settings-card">
+              <h2>Library</h2>
+              <div class="stat-tiles">
+                <div><strong id="lib-total">0</strong><span>videos</span></div>
+                <div><strong id="lib-ready">0</strong><span>ready</span></div>
+                <div><strong id="lib-channels">0</strong><span>channels</span></div>
+                <div><strong id="lib-hours">0</strong><span>hours</span></div>
+              </div>
+              <div class="stat-list">
+                <div><span>Preparing</span><strong id="lib-preparing">0</strong></div>
+                <div><span>Failed or paused</span><strong id="lib-failed">0</strong></div>
+                <div><span>Watched</span><strong id="lib-watched">0</strong></div>
+              </div>
+              <div class="button-row">
+                <button id="lib-retry-failed" class="button quiet" type="button">Retry failed</button>
+                <button id="lib-remove-watched" class="button quiet danger" type="button">Remove watched…</button>
+                <button id="lib-clear-history" class="button quiet" type="button">Clear watch history…</button>
+              </div>
+              <p id="lib-action-status" class="muted small-text" role="status"></p>
+            </article>
+
+            <article class="settings-card">
+              <h2>Connection</h2>
+              <div class="stat-list">
+                <div><span>Tunnel</span><strong id="conn-tunnel">—</strong></div>
+                <div><span>Response time</span><strong id="conn-rtt">—</strong></div>
+                <div><span>iPhone receiving</span><strong id="conn-down">—</strong></div>
+                <div><span>iPhone sending</span><strong id="conn-up">—</strong></div>
+                <div><span>Active streams</span><strong id="conn-streams">0</strong></div>
+                <div><span>YouTube account</span><strong id="settings-youtube">—</strong></div>
+                <div><span>Host authorization</span><strong id="settings-auth">—</strong></div>
+              </div>
+              <p class="muted small-text">Anyone with this address can browse and stream while hosting is on. Keep it private.</p>
+            </article>
+
+            <article class="settings-card wide">
+              <h2>Diagnostics</h2>
+              <div class="stat-tiles">
+                <div><strong id="diag-buffer">—</strong><span>buffer ahead</span></div>
+                <div><strong id="diag-throughput">—</strong><span>stream speed</span></div>
+                <div><strong id="diag-stalls">0</strong><span>stalls</span></div>
+                <div><strong id="diag-reconnects">0</strong><span>reconnects</span></div>
+              </div>
+              <div class="stat-list two-col">
+                <div><span>Stream received</span><strong id="diag-received">—</strong></div>
+                <div><span>Time to first frame</span><strong id="diag-first-frame">—</strong></div>
+                <div><span>API errors</span><strong id="diag-api-errors">0</strong></div>
+                <div><span>Events waiting to send</span><strong id="diagnostics-pending">0</strong></div>
+                <div><span>Last download</span><strong id="diag-prep-download">—</strong></div>
+                <div><span>Last processing</span><strong id="diag-prep-processing">—</strong></div>
+                <div><span>Hardware decode</span><strong id="diag-prep-hw">—</strong></div>
+                <div><span>Video bitrate</span><strong id="diag-prep-bitrate">—</strong></div>
+              </div>
+              <div class="button-row">
+                <button id="export-diagnostics" class="button quiet" type="button">Download log</button>
+                <button id="copy-diagnostics" class="button quiet" type="button">Show and copy log</button>
+              </div>
+              <textarea id="diagnostics-log" class="diagnostics-log" hidden readonly aria-label="Video Pilot diagnostics log"></textarea>
+              <p id="diagnostics-export-status" class="muted small-text" role="status"></p>
+            </article>
+
+            <article class="settings-card">
+              <h2>About</h2>
+              <div class="stat-list">
+                <div><span>Version</span><strong id="settings-version">—</strong></div>
+                <div><span>Search</span><strong id="settings-search">—</strong></div>
+              </div>
+              <p class="muted small-text">Connect or disconnect Google in Video Pilot → Settings on the iPhone. Google tokens never reach the car.</p>
+            </article>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <!-- PLAYER -->
+  <section id="player-section" class="player-overlay" aria-modal="true" aria-labelledby="playing-title" role="dialog" hidden>
+    <div class="player-dialog">
+      <div class="player-heading">
+        <button id="close" class="back-button" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>Close</span></button>
+        <h2 id="playing-title"></h2>
+        <span id="playback-status" class="playback-status" role="status"></span>
+      </div>
+      <div id="player-shell" class="player-shell">
+        <canvas id="screen" width="1280" height="720" aria-label="Video player"></canvas>
+        <div class="timeline"><span id="elapsed">0:00</span><input id="timeline" type="range" min="0" max="1" value="0" step="0.1" aria-label="Video timeline"><span id="duration">0:00</span></div>
+        <div class="controls" role="group" aria-label="Video controls">
+          <button id="back10" type="button">−10 s</button>
+          <button id="pause" class="primary" type="button">Pause</button>
+          <button id="forward10" type="button">+10 s</button>
+          <span class="controls-spacer"></span>
+          <button id="mute" type="button">Mute</button>
+          <button id="audio-boost" type="button" aria-pressed="false" title="Enable a gentle 115% audio boost">Audio</button>
+          <button id="fullscreen" type="button">Full screen</button>
         </div>
-        <p id="playback-status" role="status"></p>
-        </div>
-      </section>
-      <section id="library-tab" class="tab-panel" hidden>
-        <div class="library-heading"><div><h2>Your library</h2><p id="library-count" class="library-count"></p></div><p id="traffic-status"></p></div>
-        <div class="library-toolbar">
-          <div class="segmented" role="tablist" aria-label="Library view"><button id="view-channels" type="button" role="tab" data-view="channels" aria-selected="true">Channels</button><button id="view-all" type="button" role="tab" data-view="all" aria-selected="false">All videos</button></div>
-          <div class="library-filter-wrap"><input id="library-filter" type="search" placeholder="Filter by title or channel" aria-label="Filter library" autocomplete="off" spellcheck="false"></div>
-          <label id="library-sort-wrap" class="library-sort" hidden><span>Sort</span><select id="library-sort" aria-label="Sort library"><option value="added">Recently added</option><option value="newest">Release date · newest</option><option value="oldest">Release date · oldest</option><option value="channel">Channel</option></select></label>
-        </div>
-        <section id="continue-panel" class="continue-panel" hidden><h3 class="section-title">Continue watching</h3><div id="continue-list" class="continue-row"></div></section>
-        <div id="library" class="library-list"></div>
-      </section>
-      <section id="settings-tab" class="tab-panel" hidden>
-        <div class="hero-heading"><div><p class="eyebrow">VIDEO PILOT</p><h1>Settings</h1><p class="hero-copy">Connection details and setup guidance.</p></div></div>
-        <article class="settings-card"><h2>iPhone host</h2><p>Keep Video Pilot open on the iPhone while the Tesla browser is connected. The live tunnel state is shown at the top of this page.</p><div class="setting-row"><span>Host authorization</span><strong id="settings-auth">Face ID per app session</strong></div><div class="setting-row"><span>YouTube account</span><strong id="settings-youtube">Not connected</strong></div><div class="setting-row"><span>Search</span><strong id="settings-search">Unavailable</strong></div><div class="setting-row"><span>Version</span><strong id="settings-version">—</strong></div><p>Connect or disconnect Google from Video Pilot → Settings on the iPhone. Google tokens never enter the Tesla browser.</p></article>
-        <article class="settings-card"><h2>Diagnostics</h2><p>Browser playback, buffering, resume, and tunnel errors are retained locally and copied to the iPhone when the tunnel is available. Export one combined log after reproducing a problem.</p><div class="setting-row"><span>Browser events waiting</span><strong id="diagnostics-pending">0</strong></div><div class="diagnostics-actions"><button id="export-diagnostics" class="secondary-action" type="button">Export web + iPhone log <span>↗</span></button><button id="copy-diagnostics" class="secondary-action" type="button">Show / copy log <span>⌘</span></button></div><textarea id="diagnostics-log" class="diagnostics-log" hidden readonly aria-label="Video Pilot diagnostics log"></textarea><p id="diagnostics-export-status" role="status"></p></article>
-        <article class="settings-card public-access-card"><h2>Address access</h2><p>Face ID protects host activation on the iPhone. Once hosting is active, anyone who obtains this address can view the library, queue downloads, and stream videos, so keep it private.</p><button class="secondary-action" data-go="youtube-tab">Back to home <span>→</span></button></article>
-      </section>
+        <button id="exit-fullscreen" type="button" hidden>Exit full screen</button>
+      </div>
     </div>
-  </main>
+  </section>
 </body>
 </html>

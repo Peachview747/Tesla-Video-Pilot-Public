@@ -1,11 +1,10 @@
 import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause} from './http-source.js';
-import {DiagnosticsJournal} from './diagnostics.js';
+import {DiagnosticsJournal, LiveStats} from './diagnostics.js';
 const $ = id => document.getElementById(id);
 let player = null, current = null, currentOffset = 0, seekTimer = null;
 let fullscreenFallback = false;
 let playback = null;
 let refreshing = false;
-let exploring = false, exploreAttemptAt = 0, exploreAccount = null;
 let seekGeneration = 0;
 let seekChain = Promise.resolve();
 // Tesla browsers can have a large system volume while the WebAudio output is
@@ -32,23 +31,24 @@ const playbackClient = (() => {
 })();
 const notice = message => { $('notice').textContent = message; };
 const themeKey = 'video-pilot-theme';
-function applyTheme(theme, persist = true) {
-  const value = theme === 'dark' ? 'dark' : 'light';
-  const root = document.documentElement;
-  if (!root) return;
-  root.dataset.theme = value;
-  const toggle = $('theme-toggle');
-  if (toggle) {
-    toggle.textContent = value === 'dark' ? 'Light mode' : 'Dark mode';
-    toggle.setAttribute('aria-pressed', value === 'dark' ? 'true' : 'false');
-  }
-  if (persist) { try { globalThis.localStorage?.setItem(themeKey, value); } catch {} }
+// Theme choice is 'system' (follow the browser/car), 'light' or 'dark'.
+let themeChoice = 'system';
+function resolveTheme(choice) {
+  if (choice === 'dark' || choice === 'light') return choice;
+  try { return globalThis.matchMedia?.('(prefers-color-scheme: dark)')?.matches ? 'dark' : 'light'; } catch { return 'light'; }
 }
-// No saved choice: follow the browser's light/dark preference.
+function applyTheme(choice) {
+  const root = document.documentElement;
+  if (root?.dataset) root.dataset.theme = resolveTheme(choice);
+}
 try {
   const saved = globalThis.localStorage?.getItem(themeKey);
-  applyTheme(saved || (globalThis.matchMedia?.('(prefers-color-scheme: dark)')?.matches ? 'dark' : 'light'), false);
-} catch { applyTheme('light'); }
+  themeChoice = saved === 'dark' || saved === 'light' ? saved : 'system';
+} catch {}
+applyTheme(themeChoice);
+try {
+  globalThis.matchMedia?.('(prefers-color-scheme: dark)')?.addEventListener?.('change', () => { if (themeChoice === 'system') applyTheme('system'); });
+} catch {}
 const resumeKey = video => 'video-pilot-resume:' + (video?.id || '');
 function savedResume(video) {
   try {
@@ -71,12 +71,12 @@ function saveResume(video = current, position = currentOffset) {
 function clearResume(video = current) {
   try { globalThis.localStorage?.removeItem(resumeKey(video)); } catch {}
 }
-async function api(path, body) {
+async function api(path, body, timeout = 12000) {
   const started = globalThis.performance?.now?.() ?? Date.now();
   let response;
   try {
     const result = await timedFetch(path, {method:body ? 'POST' : 'GET', credentials:'same-origin', cache:'no-store',
-      headers:body ? {'Content-Type':'application/json'} : {}, body:body ? JSON.stringify(body) : undefined}, 12000, r => r.text());
+      headers:body ? {'Content-Type':'application/json'} : {}, body:body ? JSON.stringify(body) : undefined}, timeout, r => r.text());
     response = result.response;
     const raw = result.body;
     let parsed;
@@ -85,15 +85,19 @@ async function api(path, body) {
       reportDiagnostic('apiError', {responseStatus:response.status,
         elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - started),
         error:response.ok ? 'unexpected-page' : 'invalid-json'});
-      throw new Error(response.ok
+      const failure = new Error(response.ok
         ? 'The host returned an unexpected page. Refresh the Tesla browser and keep Video Pilot open.'
         : `Connection to Video Pilot failed (${response.status}). Refresh to retry.`);
+      failure.status = response.status;
+      throw failure;
     }
     if (!response.ok) {
       reportDiagnostic('apiError', {responseStatus:response.status,
         elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - started),
         error:String(parsed.error || 'request-failed')});
-      throw new Error(parsed.error || `Request failed (${response.status}).`);
+      const failure = new Error(parsed.error || `Request failed (${response.status}).`);
+      failure.status = response.status;
+      throw failure;
     }
     return parsed;
   } catch (error) {
@@ -117,6 +121,8 @@ let diagnosticsFlushTimer = null;
 let diagnosticsFlushInFlight = null;
 let diagnosticsRetryDelay = 1000;
 const diagnosticLastTimes = new Map();
+// Live numbers for Settings → Diagnostics, fed by the same events.
+const liveStats = new LiveStats();
 function persistDiagnostics() {
   diagnosticsJournal.persist();
   const pending = $('diagnostics-pending');
@@ -137,6 +143,7 @@ function reportDiagnostic(event, fields = {}) {
     if (now - (diagnosticLastTimes.get(event) ?? -Infinity) < 1000) return;
     diagnosticLastTimes.set(event, now);
   }
+  try { liveStats.record(event, fields); } catch {}
   diagnosticsJournal.append(event, fields);
   persistDiagnostics();
   scheduleDiagnosticsFlush();
@@ -177,38 +184,61 @@ async function flushDiagnostics(keepalive = false) {
 globalThis.videoPilotDiagnostics = reportDiagnostic;
 scheduleDiagnosticsFlush(0);
 persistDiagnostics();
+// ---- Navigation ----
+// Persistent left rail (bottom bar on narrow screens). The channel page is a
+// sub-page: the rail keeps highlighting the section it was opened from.
+const NAV_TABS = ['home-tab', 'library-tab', 'queue-tab', 'settings-tab'];
+let currentTab = 'home-tab';
+let navParent = 'home-tab';
 function showTab(id) {
+  if (id === 'player-section') return;
+  currentTab = id;
+  if (NAV_TABS.includes(id)) navParent = id;
   document.querySelectorAll?.('.tab-panel').forEach(panel => { panel.hidden = panel.id !== id; });
-  document.querySelectorAll?.('.tab').forEach(tab => {
-    const active = tab.dataset.tab === id;
-    tab.classList.toggle('active', active);
-    tab.setAttribute?.('aria-selected', active ? 'true' : 'false');
+  document.querySelectorAll?.('.nav-item').forEach(item => {
+    const active = item.dataset.tab === navParent;
+    item.classList?.toggle?.('active', active);
+    if (active) item.setAttribute?.('aria-current', 'page'); else item.removeAttribute?.('aria-current');
   });
-  $('tab-menu').hidden = true; $('menu-toggle').setAttribute?.('aria-expanded', 'false');
+  if (NAV_TABS.includes(id)) prefs.set('vp-tab', id);
+  if (id === 'home-tab') maybeLoadFeed();
+  if (id === 'settings-tab') { renderSettings(); renderLiveDiagnostics(); }
+  if (id === 'queue-tab') void refreshQueueApi();
+  if (id === 'library-tab') rerenderLibrary();
 }
-function goTo(id) { showTab(id); window.scrollTo?.({top: 0, behavior: 'smooth'}); }
-function card(title, subtitle, action, thumbnail) {
-  const div = document.createElement('article'); div.className = 'card';
-  if (thumbnail) {
-    try {
-      const url = new URL(thumbnail);
-      if (url.protocol === 'https:' && url.hostname === 'i.ytimg.com') {
-        const media = document.createElement('div'); media.className = 'card-media';
-        const img = document.createElement('img'); img.src = url.href; img.alt = ''; img.loading = 'lazy'; media.append(img); div.append(media);
-      }
-    } catch {}
-  }
-  const body = document.createElement('div'); body.className = 'card-body';
-  const heading = document.createElement('h3'); heading.textContent = title; body.append(heading);
-  const text = document.createElement('p'); text.textContent = subtitle; body.append(text);
-  if (action) { const button = document.createElement('button'); button.textContent = action.label; button.onclick = action.run; body.append(button); }
-  div.append(body);
-  return div;
+function goTo(id) {
+  if (id === currentTab && id === 'home-tab' && searchState.query) clearSearch();
+  showTab(id); window.scrollTo?.({top:0, behavior:'smooth'});
 }
 const prefs = {
   get(key, fallback = null) { try { return globalThis.localStorage?.getItem(key) ?? fallback; } catch { return fallback; } },
   set(key, value) { try { globalThis.localStorage?.setItem(key, value); } catch {} },
 };
+// Only these image hosts are allowed by the page's CSP as well.
+const IMAGE_HOSTS = ['i.ytimg.com', 'yt3.ggpht.com', 'yt3.googleusercontent.com'];
+function safeImageURL(value) {
+  if (!value) return '';
+  try {
+    const url = new URL(String(value).replace(/^\/\//, 'https://'));
+    return url.protocol === 'https:' && IMAGE_HOSTS.includes(url.hostname) ? url.href : '';
+  } catch { return ''; }
+}
+function dataSaver() { return prefs.get('vp-data-saver') === 'on'; }
+// YouTube thumbnail for an ID: 120x90 (~4 KB) with Data saver, else 320x180.
+function youtubeThumb(youtubeID) {
+  if (!youtubeID) return '';
+  return `https://i.ytimg.com/vi/${encodeURIComponent(youtubeID)}/${dataSaver() ? 'default' : 'mqdefault'}.jpg`;
+}
+function messageCard(title, subtitle, action) {
+  const div = element('article', 'card message-card');
+  div.append(element('h3', '', title));
+  if (subtitle) div.append(element('p', '', subtitle));
+  if (action) {
+    const button = element('button', 'button quiet', action.label); button.type = 'button'; button.onclick = action.run;
+    const row = element('div', 'button-row'); row.append(button); div.append(row);
+  }
+  return div;
+}
 const LIBRARY_SORTS = ['added', 'newest', 'oldest', 'channel'];
 const LIBRARY_VIEWS = ['channels', 'all'];
 let librarySort = LIBRARY_SORTS.includes(prefs.get('vp-library-sort')) ? prefs.get('vp-library-sort') : 'added';
@@ -216,11 +246,8 @@ let libraryView = LIBRARY_VIEWS.includes(prefs.get('vp-library-view')) ? prefs.g
 let channelOrder = prefs.get('vp-channel-order') === 'newest' ? 'newest' : 'oldest';
 let libraryFilter = '';
 let librarySignature = '';
-const openChannels = new Set((() => {
-  try { const value = JSON.parse(prefs.get('vp-open-channels', '[]')); return Array.isArray(value) ? value.filter(item => typeof item === 'string') : []; }
-  catch { return []; }
-})());
 let lastLibrary = null;
+let lastStatus = null;
 const releaseTime = video => { const time = Date.parse(video.publishedAt || ''); return Number.isFinite(time) ? time : null; };
 function formatRelease(video) {
   const time = releaseTime(video);
@@ -252,7 +279,8 @@ function sortLibrary(videos, mode) {
 const watchedKey = video => 'video-pilot-watched:' + (video?.id || '');
 const isWatched = video => prefs.get(watchedKey(video)) === '1';
 const markWatched = video => prefs.set(watchedKey(video), '1');
-const channelName = video => (video.channel || '').trim() || 'Other videos';
+const OTHER_CHANNEL = 'Other videos';
+const channelName = video => (video.channel || '').trim() || OTHER_CHANNEL;
 function formatDuration(value) {
   const seconds = Math.round(finiteDuration(value));
   if (!seconds) return '';
@@ -274,22 +302,28 @@ function element(tag, className = '', text = '') {
   if (text) node.textContent = text;
   return node;
 }
-function thumbnailFor(video) {
-  return video.youtubeID ? `https://i.ytimg.com/vi/${encodeURIComponent(video.youtubeID)}/mqdefault.jpg` : '';
+function avatarNode(name, imageURL = '', large = false) {
+  const avatar = element('span', 'avatar' + (large ? ' avatar-large' : ''));
+  const url = safeImageURL(imageURL);
+  if (url) { const img = element('img'); img.src = url; img.alt = ''; img.loading = 'lazy'; avatar.append(img); }
+  else avatar.textContent = name === OTHER_CHANNEL ? '•' : (name || '?').slice(0, 1).toUpperCase();
+  avatar.style?.setProperty?.('--hue', String(channelHue(name || '?')));
+  return avatar;
 }
+function thumbnailFor(video) { return youtubeThumb(video.youtubeID); }
 // Thumbnail with duration badge and a watched-progress bar; tapping it plays.
-function videoThumb(video, onPlay) {
+function videoThumb(video, onPlay, {image = thumbnailFor(video), duration = formatDuration(video.duration),
+  fraction = isWatched(video) ? 1 : watchFraction(video), badge = ''} = {}) {
   const thumb = element(onPlay ? 'button' : 'div', 'thumb');
   if (onPlay) { thumb.type = 'button'; thumb.setAttribute('aria-label', `Play ${video.title}`); thumb.onclick = onPlay; }
-  const url = thumbnailFor(video);
+  const url = safeImageURL(image);
   if (url) { const img = element('img'); img.src = url; img.alt = ''; img.loading = 'lazy'; thumb.append(img); }
   else thumb.append(element('span', 'thumb-placeholder', '▶'));
-  const duration = formatDuration(video.duration);
   if (duration) thumb.append(element('span', 'duration-badge', duration));
-  const fraction = isWatched(video) ? 1 : watchFraction(video);
+  if (badge) thumb.append(element('span', 'state-badge' + (badge === 'In library' ? ' ready' : ''), badge));
   if (fraction > 0) {
     const bar = element('span', 'watch-progress'); const fill = element('i');
-    fill.style.width = `${Math.max(4, Math.round(fraction * 100))}%`; bar.append(fill); thumb.append(bar);
+    fill.style.width = `${Math.max(4, Math.round(Math.min(1, fraction) * 100))}%`; bar.append(fill); thumb.append(bar);
   }
   return thumb;
 }
@@ -309,7 +343,7 @@ function videoStatus(video) {
 }
 // Action button(s) for a library item. Network actions disable themselves
 // until they finish so a second tap on a bumpy road cannot fire twice.
-function actionButtons(action, extraClass = '') {
+function actionButtons(action, extraClass = 'card-action') {
   const make = (label, run, primary) => {
     const button = element('button', [extraClass, primary ? '' : 'quiet'].filter(Boolean).join(' '), label);
     button.type = 'button';
@@ -325,152 +359,139 @@ function actionButtons(action, extraClass = '') {
   if (action.remove) buttons.push(make('Remove', action.remove, false));
   return buttons;
 }
-function videoCard(video, preparingID, showChannel = true) {
-  const node = element('article', 'card video-card');
-  node.append(videoThumb(video, video.state === 'ready' ? () => play(video) : null));
+function channelButton(name, spec) {
+  const button = element('button', 'channel-link', name); button.type = 'button';
+  button.title = `Open ${name}`;
+  button.onclick = event => { event?.stopPropagation?.(); openChannel({name, ...spec}); };
+  return button;
+}
+// Channel lookup for a library item: the stored ID, else the channel of one
+// of its videos (exact), else a name search.
+function librarySpec(video) {
+  if (video.channelId) return {id:video.channelId};
+  if (video.youtubeID) return {video:video.youtubeID};
+  return {};
+}
+function upgradeButton(videos) {
+  const upgradable = videos.filter(isUpgradable);
+  if (!upgradable.length) return null;
+  const button = element('button', 'button quiet small', `Upgrade ${upgradable.length} to ${qualitySetting}`); button.type = 'button';
+  button.title = 'Download again at the current quality. The current copy keeps playing until the new one is ready.';
+  button.onclick = async () => {
+    button.disabled = true;
+    const ok = upgradable.length === (lastLibrary?.videos || []).filter(isUpgradable).length
+      ? await upgradeVideos({all:true}) : await upgradeEach(upgradable);
+    if (!ok) button.disabled = false;
+  };
+  return button;
+}
+function videoCard(video, preparingID, showChannel = true, number = 0) {
+  const node = element('article', 'card video-card' + (isWatched(video) ? ' is-watched' : ''));
+  node.append(videoThumb(video, video.state === 'ready' ? () => play(video) : null,
+    {badge:video.state === 'ready' ? '' : (video.state === 'preparing' ? 'Preparing' : 'Needs retry')}));
   const body = element('div', 'card-body');
-  body.append(element('h3', '', video.title));
-  const details = [showChannel ? video.channel : '', formatRelease(video)].filter(Boolean).join(' · ');
-  body.append(element('p', '', videoStatus(video) || details || 'Ready'));
-  const action = videoAction(video, preparingID);
-  const buttons = actionButtons(action);
-  if (buttons.length > 1) { const row = element('div', 'card-actions'); row.append(...buttons); body.append(row); }
-  else body.append(buttons[0]);
+  body.append(element('h3', '', number ? `#${number} · ${video.title}` : video.title));
+  const meta = element('div', 'card-meta');
+  if (showChannel && video.channel) meta.append(channelButton(video.channel, librarySpec(video)));
+  const resume = savedResume(video);
+  const details = videoStatus(video) || [formatRelease(video),
+    isWatched(video) ? 'Watched' : (resume ? `${Math.round(watchFraction(video) * 100)}% watched` : '')].filter(Boolean).join(' · ');
+  if (details) meta.append(element('span', '', details));
+  body.append(meta);
+  const row = element('div', 'card-actions'); row.append(...actionButtons(videoAction(video, preparingID)));
+  body.append(row);
   node.append(body);
   return node;
 }
-function episodeRow(video, number, preparingID) {
-  const row = element('div', 'episode' + (isWatched(video) ? ' is-watched' : ''));
-  row.append(videoThumb(video, video.state === 'ready' ? () => play(video) : null));
-  const text = element('div', 'episode-text');
-  text.append(element('span', 'episode-number', `#${number}`));
-  text.append(element('h4', '', video.title));
-  const resume = savedResume(video);
-  const meta = videoStatus(video) || [formatRelease(video), formatDuration(video.duration),
-    isWatched(video) ? 'Watched' : (resume ? `${Math.round(watchFraction(video) * 100)}% watched` : '')].filter(Boolean).join(' · ');
-  text.append(element('p', '', meta));
-  row.append(text);
-  const action = videoAction(video, preparingID);
-  const actions = element('div', 'episode-actions');
-  actions.append(...actionButtons(action, 'episode-action')); row.append(actions);
-  return row;
-}
-function saveOpenChannels() { prefs.set('vp-open-channels', JSON.stringify([...openChannels].slice(-40))); }
-function channelBlock(name, matching, preparingID, forceOpen, videos = matching) {
-  // "Sequential" order: oldest release first, numbered like episodes. Numbers,
-  // counts and Play next come from the whole channel even when filtered.
-  const sequence = sortLibrary(videos, 'oldest');
-  const numbered = new Map(sequence.map((video, index) => [video.id, index + 1]));
-  const visible = new Set(matching.map(video => video.id));
-  const shown = (channelOrder === 'newest' ? [...sequence].reverse() : sequence).filter(video => visible.has(video.id));
-  const open = forceOpen || openChannels.has(name);
-  const block = element('article', 'channel' + (open ? ' open' : ''));
-  const header = element('button', 'channel-header'); header.type = 'button';
-  header.setAttribute('aria-expanded', open ? 'true' : 'false');
-  const avatar = element('span', 'avatar', name === 'Other videos' ? '•' : name.slice(0, 1).toUpperCase());
-  avatar.style.setProperty('--hue', String(channelHue(name)));
-  const label = element('span', 'channel-text');
-  label.append(element('strong', '', name));
+// Library "Channels" view: one tile per channel; tapping opens the channel
+// page (library episodes + all recent uploads from YouTube).
+function channelTile(name, videos) {
+  const tile = element('button', 'channel-tile'); tile.type = 'button';
+  const head = element('span', 'channel-tile-head');
+  head.append(avatarNode(name));
+  const text = element('span', 'channel-tile-text');
+  text.append(element('strong', '', name));
   const latest = sortLibrary(videos, 'newest')[0];
   const ready = videos.filter(video => video.state === 'ready');
   const unwatched = ready.filter(video => !isWatched(video)).length;
-  label.append(element('small', '', [`${videos.length} video${videos.length === 1 ? '' : 's'}`,
+  text.append(element('small', '', [`${videos.length} video${videos.length === 1 ? '' : 's'}`,
     unwatched && unwatched < ready.length ? `${unwatched} unwatched` : '',
     formatRelease(latest) ? `latest ${formatRelease(latest)}` : ''].filter(Boolean).join(' · ')));
-  const strip = element('span', 'channel-strip');
+  head.append(text); tile.append(head);
+  const strip = element('span', 'channel-tile-strip');
   for (const video of sortLibrary(videos, 'newest').slice(0, 3)) {
-    const url = thumbnailFor(video);
-    if (url) { const img = element('img'); img.src = url; img.alt = ''; img.loading = 'lazy'; strip.append(img); }
+    const cell = element('span'); const url = thumbnailFor(video);
+    if (url) { const img = element('img'); img.src = url; img.alt = ''; img.loading = 'lazy'; cell.append(img); }
+    strip.append(cell);
   }
-  header.append(avatar, label, strip, element('span', 'chevron'));
-  const panel = element('div', 'channel-panel');
-  const inner = element('div', 'channel-inner');
-  const tools = element('div', 'channel-tools');
-  const next = sequence.find(video => video.state === 'ready' && !isWatched(video));
-  if (next) {
-    const resume = savedResume(next);
-    const playNext = element('button', 'play-next', `${resume ? 'Resume' : 'Play'} #${numbered.get(next.id)} · ${next.title}`);
-    playNext.type = 'button'; playNext.onclick = () => play(next); tools.append(playNext);
-  }
-  const order = element('button', 'order-toggle quiet', channelOrder === 'oldest' ? 'Oldest first ↓' : 'Newest first ↑');
-  order.type = 'button';
-  order.onclick = () => {
-    channelOrder = channelOrder === 'oldest' ? 'newest' : 'oldest'; prefs.set('vp-channel-order', channelOrder);
-    librarySignature = ''; if (lastLibrary) renderLibrary(lastLibrary.videos, lastLibrary.preparingID);
-  };
-  tools.append(order); inner.append(tools);
-  for (const video of shown) inner.append(episodeRow(video, numbered.get(video.id), preparingID));
-  panel.append(inner);
-  header.onclick = () => {
-    const nowOpen = !block.classList.contains('open');
-    block.classList.toggle('open', nowOpen);
-    header.setAttribute('aria-expanded', nowOpen ? 'true' : 'false');
-    if (nowOpen) openChannels.add(name); else openChannels.delete(name);
-    saveOpenChannels();
-  };
-  block.append(header, panel);
-  return block;
+  tile.append(strip);
+  const withID = videos.find(video => video.channelId);
+  const withVideo = sortLibrary(videos, 'newest').find(video => video.youtubeID);
+  tile.onclick = () => openChannel({name, ...(name === OTHER_CHANNEL ? {libraryOnly:true}
+    : withID ? {id:withID.channelId} : withVideo ? {video:withVideo.youtubeID} : {})});
+  return tile;
 }
 function renderContinue(videos) {
   const items = videos.filter(video => video.state === 'ready' && !isWatched(video) && savedResume(video) >= 10)
     .sort((a, b) => Number(prefs.get('video-pilot-resume-at:' + b.id, 0)) - Number(prefs.get('video-pilot-resume-at:' + a.id, 0)))
-    .slice(0, 8);
+    .slice(0, 10);
   $('continue-panel').hidden = !items.length || Boolean(libraryFilter);
   $('continue-list').replaceChildren(...items.map(video => {
-    const tile = element('article', 'continue-tile');
+    const tile = element('article', 'card');
     tile.append(videoThumb(video, () => play(video)));
-    const text = element('div', 'continue-text');
-    text.append(element('strong', '', video.title));
-    text.append(element('small', '', [video.channel, `${formatTime(savedResume(video))} of ${formatDuration(video.duration) || '—'}`].filter(Boolean).join(' · ')));
-    tile.append(text);
+    const body = element('div', 'card-body');
+    body.append(element('h3', '', video.title));
+    body.append(element('p', 'card-note', [video.channel, `${formatTime(savedResume(video))} of ${formatDuration(video.duration) || '—'}`].filter(Boolean).join(' · ')));
+    tile.append(body);
     return tile;
   }));
 }
-function renderLibrary(videos, preparingID) {
-  lastLibrary = {videos, preparingID};
-  const signature = JSON.stringify([videos.map(video => [video.id, video.state, video.title, video.message, video.channel,
-    video.publishedAt, video.duration, savedResume(video), isWatched(video)]), preparingID, librarySort, libraryView,
-    channelOrder, libraryFilter]);
-  if (signature === librarySignature) return;
-  librarySignature = signature;
-  if ($('library-sort').value !== librarySort) $('library-sort').value = librarySort;
-  $('library-sort-wrap').hidden = libraryView !== 'all';
-  for (const view of LIBRARY_VIEWS) $(`view-${view}`).setAttribute?.('aria-selected', view === libraryView ? 'true' : 'false');
-  const channels = new Set(videos.map(channelName));
-  $('library-count').textContent = videos.length
-    ? `${videos.length} video${videos.length === 1 ? '' : 's'} · ${channels.size} channel${channels.size === 1 ? '' : 's'}` : '';
-  renderContinue(videos);
-  const query = libraryFilter.toLowerCase();
-  const filtered = query ? videos.filter(video => `${video.title} ${video.channel || ''}`.toLowerCase().includes(query)) : videos;
-  const library = $('library'); library.replaceChildren();
-  library.className = libraryView === 'all' ? 'grid library-list' : 'library-list channels-list';
-  if (!videos.length) { library.append(card('Your library is empty', 'Search for a video on the Home tab and add it here.')); return; }
-  if (!filtered.length) { library.append(card('No matches', `Nothing in your library matches “${libraryFilter}”.`)); return; }
-  if (libraryView === 'all') {
-    let group = null;
-    for (const video of sortLibrary(filtered, librarySort)) {
-      if (librarySort === 'channel' && channelName(video) !== group) {
-        group = channelName(video); library.append(element('h3', 'library-group', group));
-      }
-      library.append(videoCard(video, preparingID, librarySort !== 'channel'));
-    }
-    return;
-  }
+function groupByChannel(videos) {
   const groups = new Map();
-  for (const video of filtered) {
+  for (const video of videos) {
     const name = channelName(video);
     if (!groups.has(name)) groups.set(name, []);
     groups.get(name).push(video);
   }
-  const names = [...groups.keys()].sort((a, b) => (a === 'Other videos') - (b === 'Other videos')
-    || a.localeCompare(b, undefined, {sensitivity:'base'}));
-  const everyChannel = new Map();
-  for (const video of videos) {
-    const name = channelName(video);
-    if (!everyChannel.has(name)) everyChannel.set(name, []);
-    everyChannel.get(name).push(video);
+  return groups;
+}
+function renderLibrary(videos, preparingID) {
+  lastLibrary = {videos, preparingID};
+  if (currentTab !== 'library-tab' && librarySignature) return;
+  const signature = JSON.stringify([videos.map(video => [video.id, video.state, video.title, video.message, video.channel,
+    video.publishedAt, video.duration, video.height, savedResume(video), isWatched(video)]), preparingID, librarySort, libraryView,
+    channelOrder, libraryFilter, qualitySetting, dataSaver()]);
+  if (signature === librarySignature) return;
+  librarySignature = signature;
+  if ($('library-sort').value !== librarySort) $('library-sort').value = librarySort;
+  $('library-sort-wrap').hidden = libraryView !== 'all' || Boolean(libraryFilter);
+  for (const view of LIBRARY_VIEWS) $(`view-${view}`).setAttribute?.('aria-selected', view === libraryView ? 'true' : 'false');
+  const groups = groupByChannel(videos);
+  $('library-count').textContent = videos.length
+    ? `${videos.length} video${videos.length === 1 ? '' : 's'} · ${groups.size} channel${groups.size === 1 ? '' : 's'}` : '';
+  renderContinue(videos);
+  const upgrade = upgradeButton(videos);
+  $('library-upgrade').replaceChildren(...(upgrade ? [upgrade] : []));
+  const query = libraryFilter.toLowerCase();
+  const filtered = query ? videos.filter(video => `${video.title} ${video.channel || ''}`.toLowerCase().includes(query)) : videos;
+  const library = $('library'); library.replaceChildren();
+  library.className = libraryView === 'channels' && !query ? 'channel-grid' : 'video-grid';
+  if (!videos.length) { library.append(messageCard('Your library is empty', 'Search on Home and tap Add to library. Videos you add download to the iPhone and play here.', {label:'Go to Home', run:() => goTo('home-tab')})); return; }
+  if (!filtered.length) { library.append(messageCard('No matches', `Nothing in your library matches “${libraryFilter}”.`)); return; }
+  if (libraryView === 'all' || query) {
+    let group = null;
+    const mode = query ? 'newest' : librarySort;
+    for (const video of sortLibrary(filtered, mode)) {
+      if (mode === 'channel' && channelName(video) !== group) {
+        group = channelName(video); library.append(element('h3', 'library-group', group));
+      }
+      library.append(videoCard(video, preparingID, mode !== 'channel'));
+    }
+    return;
   }
-  for (const name of names) library.append(channelBlock(name, groups.get(name), preparingID, Boolean(query), everyChannel.get(name)));
+  const names = [...groups.keys()].sort((a, b) => (a === OTHER_CHANNEL) - (b === OTHER_CHANNEL)
+    || a.localeCompare(b, undefined, {sensitivity:'base'}));
+  for (const name of names) library.append(channelTile(name, groups.get(name)));
 }
 function rerenderLibrary() { librarySignature = ''; if (lastLibrary) renderLibrary(lastLibrary.videos, lastLibrary.preparingID); }
 $('library-sort').onchange = event => {
@@ -481,77 +502,273 @@ for (const view of LIBRARY_VIEWS) $(`view-${view}`).onclick = () => {
   libraryView = view; prefs.set('vp-library-view', view); rerenderLibrary();
 };
 $('library-filter').oninput = event => { libraryFilter = String(event.target.value || '').trim(); rerenderLibrary(); };
-let queueSignature = '', exploreFailed = false;
-let refreshQueued = false, refreshError = '';
-function renderQueue(videos, activeID = '') {
-  const isActive = video => video.id?.toLowerCase() === activeID?.toLowerCase();
-  // The iPhone prepares the oldest queued item next; number them that way.
-  const queued = videos.filter(video => video.state === 'preparing')
-    .sort((a, b) => isActive(b) - isActive(a) || (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
-  const signature = JSON.stringify([queued.map(video => [video.id, video.title, video.message]), activeID]);
-  if (signature === queueSignature) return;
-  queueSignature = signature;
-  const panel = $('queue-panel');
-  panel.hidden = !queued.length;
-  $('queue-badge').textContent = `${queued.length} queued`;
-  $('queue-summary').textContent = queued.length ? `${queued.length} video${queued.length === 1 ? '' : 's'} in progress` : '';
-  const list = $('queue-list'); list.replaceChildren();
-  queued.forEach((video, index) => {
-    const active = video.id?.toLowerCase() === activeID?.toLowerCase();
-    const subtitle = active ? (video.message || 'Preparing now') : (video.message || 'Waiting for preparation');
-    const action = {label:active ? 'Cancel and remove' : 'Remove', run:() => removeVideo(video.id)};
-    list.append(card(`${index + 1}. ${video.title}`, subtitle, action,
-      video.youtubeID ? `https://i.ytimg.com/vi/${encodeURIComponent(video.youtubeID)}/mqdefault.jpg` : null));
+
+// ---- Channel page ----
+const channelState = {spec:null, channel:null, videos:[], continuation:null, loading:false, seq:0, returnTo:null, librarySignature:''};
+function channelParams(spec, refresh = false) {
+  const params = new URLSearchParams();
+  if (spec.id) params.set('id', spec.id);
+  else if (spec.video) params.set('video', spec.video);
+  else if (spec.name) params.set('name', spec.name);
+  else return null;
+  if (refresh) params.set('refresh', '1');
+  return params;
+}
+function channelLibraryVideos() {
+  const videos = lastLibrary?.videos || [];
+  const spec = channelState.spec, channel = channelState.channel;
+  if (!spec) return [];
+  const names = new Set([spec.name, channel?.name].filter(Boolean).map(name => name.trim().toLowerCase()));
+  return videos.filter(video => {
+    if (spec.libraryOnly) return !(video.channel || '').trim();
+    if (channel?.id && video.channelId) return video.channelId === channel.id;
+    if (spec.id && video.channelId) return video.channelId === spec.id;
+    return names.has(channelName(video).toLowerCase());
   });
 }
+function renderChannelLibrary(force = false) {
+  if (!channelState.spec) return;
+  const videos = channelLibraryVideos();
+  const preparingID = lastLibrary?.preparingID;
+  const signature = JSON.stringify([videos.map(video => [video.id, video.state, video.message, savedResume(video), isWatched(video)]), channelOrder, preparingID]);
+  if (!force && signature === channelState.librarySignature) return;
+  channelState.librarySignature = signature;
+  $('channel-library').hidden = !videos.length;
+  $('channel-library-title').textContent = `In your library · ${videos.length}`;
+  // "Sequential" order: oldest release first, numbered like episodes.
+  const sequence = sortLibrary(videos, 'oldest');
+  const numbered = new Map(sequence.map((video, index) => [video.id, index + 1]));
+  const shown = channelOrder === 'newest' ? [...sequence].reverse() : sequence;
+  const tools = [];
+  const upgrade = upgradeButton(videos);
+  if (upgrade) tools.push(upgrade);
+  const next = sequence.find(video => video.state === 'ready' && !isWatched(video));
+  if (next) {
+    const playNext = element('button', 'play-next', `${savedResume(next) ? 'Resume' : 'Play'} #${numbered.get(next.id)}`);
+    playNext.type = 'button'; playNext.title = next.title; playNext.onclick = () => play(next); tools.push(playNext);
+  }
+  const order = element('button', 'button quiet small', channelOrder === 'oldest' ? 'Oldest first' : 'Newest first');
+  order.type = 'button';
+  order.onclick = () => { channelOrder = channelOrder === 'oldest' ? 'newest' : 'oldest'; prefs.set('vp-channel-order', channelOrder); renderChannelLibrary(true); };
+  tools.push(order);
+  $('channel-library-tools').replaceChildren(...tools);
+  $('channel-library-list').replaceChildren(...shown.map(video => videoCard(video, preparingID, false, numbered.get(video.id))));
+}
+function renderChannelHeader() {
+  const spec = channelState.spec || {}, channel = channelState.channel;
+  const name = channel?.name || spec.name || 'Channel';
+  $('channel-name').textContent = name;
+  $('channel-meta').textContent = [channel?.handle, channel?.subscribers].filter(Boolean).join(' · ');
+  const avatar = avatarNode(name, channel?.avatar, true);
+  avatar.id = 'channel-avatar';
+  $('channel-avatar').replaceWith?.(avatar);
+}
+function openChannel(spec) {
+  if (!spec) return;
+  if (currentTab !== 'channel-tab') channelState.returnTo = {tab:currentTab, y:globalThis.scrollY || 0};
+  const seq = ++channelState.seq;
+  Object.assign(channelState, {spec, channel:null, videos:[], continuation:null, loading:false, librarySignature:''});
+  hideSuggestions();
+  const back = channelState.returnTo?.tab;
+  $('channel-back-label').textContent = back === 'library-tab' ? 'Library' : (back === 'home-tab' && searchState.query ? 'Search' : 'Back');
+  renderChannelHeader();
+  $('channel-videos').replaceChildren();
+  $('channel-more').hidden = true;
+  showTab('channel-tab'); window.scrollTo?.({top:0});
+  renderChannelLibrary(true);
+  void loadChannel(seq);
+}
+async function loadChannel(seq, {append = false, refresh = false} = {}) {
+  const spec = channelState.spec;
+  const params = append ? new URLSearchParams({continuation:channelState.continuation || ''}) : channelParams(spec, refresh);
+  if (!params || spec.libraryOnly) {
+    $('channel-status').textContent = spec.libraryOnly ? 'Imported and unlabelled videos.' : 'This channel cannot be looked up.';
+    return;
+  }
+  channelState.loading = true;
+  $('channel-more').disabled = true; $('channel-more').textContent = 'Loading…';
+  if (!append) {
+    $('channel-status').textContent = 'Loading uploads…';
+    $('channel-videos').replaceChildren(...Array.from({length:8}, () => element('div', 'card skeleton')));
+  }
+  try {
+    const page = await api('/api/channel?' + params.toString(), null, 30000);
+    if (seq !== channelState.seq) return;
+    if (page.channel) { channelState.channel = page.channel; renderChannelHeader(); renderChannelLibrary(true); }
+    const known = new Set(channelState.videos.map(video => video.id));
+    const fresh = (Array.isArray(page.videos) ? page.videos : []).filter(video => video?.id && !known.has(video.id));
+    channelState.videos.push(...fresh);
+    channelState.continuation = page.continuation || null;
+    if (!append) $('channel-videos').replaceChildren();
+    const name = channelState.channel?.name || spec.name;
+    $('channel-videos').append(...fresh.map(video => youtubeCard({channel:name, ...video}, {showChannel:false})));
+    $('channel-status').textContent = channelState.videos.length ? `${channelState.videos.length} newest` : 'No uploads found.';
+  } catch (error) {
+    if (seq !== channelState.seq) return;
+    if (!append) $('channel-videos').replaceChildren(messageCard('Could not load this channel', error.message,
+      {label:'Try again', run:() => void loadChannel(channelState.seq, {refresh:true})}));
+    $('channel-status').textContent = '';
+  } finally {
+    if (seq === channelState.seq) {
+      channelState.loading = false;
+      $('channel-more').hidden = !channelState.continuation;
+      $('channel-more').disabled = false; $('channel-more').textContent = 'Load older videos';
+    }
+  }
+}
+$('channel-more').onclick = () => { if (!channelState.loading && channelState.continuation) void loadChannel(channelState.seq, {append:true}); };
+$('channel-refresh').onclick = () => {
+  if (!channelState.spec) return;
+  const seq = ++channelState.seq; channelState.videos = []; channelState.continuation = null;
+  void loadChannel(seq, {refresh:true});
+};
+$('channel-back').onclick = () => {
+  const back = channelState.returnTo || {tab:'home-tab', y:0};
+  channelState.returnTo = null; channelState.seq++;
+  showTab(back.tab); globalThis.scrollTo?.(0, back.y);
+};
+
+// ---- Queue / downloads ----
+let queueSignature = '';
+let refreshQueued = false, refreshError = '';
+let queueApi = null; // null = untested, false = phone has no /api/queue
+let queueItems = null;
+const QUEUE_STAGES = {queued:'Waiting', downloading:'Downloading', transcoding:'Preparing for playback', ready:'Ready', failed:'Failed', paused:'Paused'};
+function formatBytesPerSecond(value) {
+  const bps = Number(value);
+  if (!Number.isFinite(bps) || bps <= 0) return '';
+  return bps >= 1e6 ? `${(bps / 1e6).toFixed(1)} MB/s` : `${Math.round(bps / 1e3)} KB/s`;
+}
+function formatEta(value) {
+  const seconds = Math.ceil(Number(value));
+  if (!Number.isFinite(seconds) || seconds < 0) return '';
+  return seconds < 60 ? `${seconds}s left` : `${Math.ceil(seconds / 60)} min left`;
+}
+// Normalise the queue: the phone's /api/queue when available, otherwise the
+// library's preparing items in the order the phone prepares them.
+function queueEntries(videos, activeID = '') {
+  if (Array.isArray(queueItems)) return queueItems.filter(item => item && item.stage !== 'ready' && item.stage !== 'failed').map(item => ({
+    id:item.id, title:item.title || 'Video', youtubeID:item.videoId, thumbnail:item.thumbnail,
+    active:item.stage === 'downloading' || item.stage === 'transcoding',
+    progress:Number.isFinite(Number(item.progress)) ? Number(item.progress) : null,
+    detail:[QUEUE_STAGES[item.stage] || item.stage, item.quality, item.upgrade ? 'upgrade' : '',
+      formatBytesPerSecond(item.speedBps), formatEta(item.etaSec)].filter(Boolean).join(' · '), api:true}));
+  const isActive = video => video.id?.toLowerCase() === activeID?.toLowerCase();
+  return videos.filter(video => video.state === 'preparing')
+    .sort((a, b) => isActive(b) - isActive(a) || (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0))
+    .map(video => ({id:video.id, title:video.title, youtubeID:video.youtubeID, active:isActive(video), progress:null,
+      detail:video.message || (isActive(video) ? 'Preparing now' : 'Waiting'), api:false}));
+}
+function queueRow(entry, index) {
+  const row = element('div', 'queue-item' + (entry.active ? ' active' : ''));
+  row.append(element('span', 'queue-number', String(index + 1)));
+  row.append(videoThumb({title:entry.title}, null, {image:entry.thumbnail || youtubeThumb(entry.youtubeID), duration:'', fraction:0}));
+  const text = element('div', 'queue-text');
+  text.append(element('strong', '', entry.title));
+  if (entry.active && lastStatus?.busy && !entry.api) {
+    const fraction = Number(lastStatus.preparationProgress);
+    if (Number.isFinite(fraction)) entry.progress = fraction;
+  }
+  if (entry.progress !== null) { const bar = element('progress'); bar.max = 1; bar.value = Math.max(0, Math.min(1, entry.progress)); text.append(bar); }
+  text.append(element('small', '', entry.detail));
+  row.append(text);
+  const actions = element('div', 'queue-actions');
+  if (entry.api && index > 0 && !entry.active) {
+    const top = element('button', 'button quiet small', 'Move to top'); top.type = 'button';
+    top.onclick = async () => { top.disabled = true; await queueCommand('/api/queue/move', {id:entry.id, to:0}); };
+    actions.append(top);
+  }
+  const cancel = element('button', 'button quiet small', entry.active ? 'Cancel' : 'Remove'); cancel.type = 'button';
+  cancel.onclick = async () => {
+    cancel.disabled = true;
+    const ok = entry.api ? await queueCommand('/api/queue/cancel', {id:entry.id}) : await removeVideo(entry.id);
+    if (ok === false) cancel.disabled = false;
+  };
+  actions.append(cancel); row.append(actions);
+  return row;
+}
+async function queueCommand(path, body) {
+  try { await api(path, body); await refreshQueueApi(); await refresh(true); return true; }
+  catch (error) { notice(error.message); return false; }
+}
+async function refreshQueueApi() {
+  if (queueApi === false) return;
+  try {
+    const result = await api('/api/queue');
+    queueApi = true; queueItems = Array.isArray(result?.items) ? result.items : [];
+  } catch (error) {
+    if (error.status === 404) { queueApi = false; queueItems = null; }
+  }
+  queueSignature = '';
+  if (lastLibrary) renderQueue(lastLibrary.videos, lastLibrary.preparingID);
+}
+function renderQueue(videos, activeID = '') {
+  const entries = queueEntries(videos, activeID);
+  const failed = videos.filter(video => video.state === 'failed' || video.state === 'paused');
+  const count = entries.length;
+  $('nav-queue-badge').hidden = !count; $('nav-queue-badge').textContent = String(count);
+  $('queue-badge').textContent = `${count} queued`;
+  const signature = JSON.stringify([entries, failed.map(video => [video.id, video.state, video.message]),
+    lastStatus?.busy ? Math.floor((Number(lastStatus.preparationProgress) || 0) * 100) : -1]);
+  if (signature === queueSignature) return;
+  queueSignature = signature;
+  $('queue-summary').textContent = count ? `${count} video${count === 1 ? '' : 's'} downloading or waiting` : 'Nothing downloading right now.';
+  $('queue-list').replaceChildren(...(count ? entries.map(queueRow)
+    : [messageCard('All caught up', 'Videos you add are downloaded and converted on the iPhone, then appear in your library.')]));
+  $('failed-panel').hidden = !failed.length;
+  $('failed-list').replaceChildren(...failed.map((video, index) => {
+    const row = queueRow({id:video.id, title:video.title, youtubeID:video.youtubeID, active:false, progress:null,
+      detail:video.message || (video.state === 'paused' ? 'Paused' : 'Failed'), api:false}, index);
+    const retry = element('button', 'button small', 'Retry'); retry.type = 'button';
+    retry.onclick = async () => { retry.disabled = true; if (!await retryVideo(video.id)) retry.disabled = false; };
+    row.lastChild.prepend(retry);
+    return row;
+  }));
+}
+$('retry-all').onclick = () => void retryAll();
+async function retryAll() {
+  const failed = (lastLibrary?.videos || []).filter(video => video.state === 'failed' || video.state === 'paused');
+  for (const video of failed) { try { await api('/api/library/retry', {id:video.id}); } catch {} }
+  if (failed.length) toast(`Retrying ${failed.length} video${failed.length === 1 ? '' : 's'}.`);
+  await refresh(true);
+  return failed.length;
+}
+
+// ---- Polling ----
 async function refresh(force = false) {
   // A user action must see its own change, so queue one more pass instead of
-  // dropping the request when the 2-second poll is already in flight.
+  // dropping the request when the poll is already in flight.
   if (refreshing) { if (force) refreshQueued = true; return; }
-  refreshing = true;
+  refreshing = true; lastPollAt = Date.now();
   try {
     const videos = await api('/api/library');
-    $('host-ui').hidden = false;
-    $('connection').textContent = 'Connected to iPhone';
-    $('connection').dataset.state = 'online';
     const statusStarted = globalThis.performance?.now?.() ?? Date.now();
     const status = await api('/api/status');
     reportDiagnostic('browserRTT', {elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - statusStarted)});
-    $('dashboard-state').textContent = statusLabel(status);
-    $('dashboard-state').dataset.state = status.tunnel === 'connected' ? 'online' : 'waiting';
-    $('dashboard-connection').textContent = status.tunnel === 'connected' ? 'Connected' : (status.tunnel || 'Waiting');
-    $('dashboard-download').textContent = `${(Number(status.downloadMbps) || 0).toFixed(2)} Mb/s`;
-    $('dashboard-upload').textContent = `${(Number(status.uploadMbps) || 0).toFixed(2)} Mb/s`;
-    $('dashboard-queue').textContent = String(Number(status.queuedCount) || 0);
-    $('settings-auth').textContent = status.authentication === 'faceID-on-start' ? 'Face ID per app session' : 'App authorization';
-    $('settings-youtube').textContent = status.youtubeSignedIn ? 'Google connected' : 'Sign in on iPhone';
-    $('settings-search').textContent = status.youtubeSearch ? 'Enabled' : 'Add API key on iPhone';
-    $('settings-version').textContent = status.version
-      ? `v${status.version}${status.build ? ` · build ${status.build}` : ''}` : '—';
+    lastStatus = status;
+    if ($('host-ui').hidden) {
+      $('host-ui').hidden = false; $('connecting-panel').hidden = true;
+      showTab(NAV_TABS.includes(prefs.get('vp-tab')) ? prefs.get('vp-tab') : 'home-tab');
+      void loadServerSettings();
+    }
+    setConnection(status.tunnel === 'connected' || !status.tunnel ? 'online' : 'waiting',
+      status.tunnel === 'connected' || !status.tunnel ? 'Connected' : String(status.tunnel));
     if (refreshError && $('notice').textContent === refreshError) notice('');
     refreshError = '';
     if (!searchChromeReady) { searchChromeReady = true; setSearchChrome(); }
-    // While a video plays, rebuilding hidden library DOM every poll competes
-    // with the decoder on the main thread; render once the player closes.
+    // While a video plays, rebuilding hidden DOM every poll competes with the
+    // decoder on the main thread; render once the player closes.
     if ($('player-section').hidden) {
       renderLibrary(videos, status.preparingID);
       updateResultButtons();
       renderQueue(videos, status.preparingID);
+      if (currentTab === 'channel-tab') renderChannelLibrary();
+      if (currentTab === 'settings-tab') renderSettings();
+      if (currentTab === 'queue-tab' && queueApi) void refreshQueueApi();
     } else lastLibrary = {videos, preparingID:status.preparingID};
     updatePreparation(status, videos);
-    const down = Number(status.downloadMbps) || 0, up = Number(status.uploadMbps) || 0;
-    $('traffic-status').textContent = `Receiving ${down.toFixed(2)} Mb/s · Sending ${up.toFixed(2)} Mb/s`;
-    $('explore-panel').hidden = !status.youtubeExplore;
-    $('explore-title').textContent = status.youtubeSignedIn ? 'From your subscriptions' : 'Trending now';
-    $('search-hint').textContent = searchState.results.length ? '' : 'Search all of YouTube, or paste a link to add a video directly.';
-    $('preparation-detail').dataset.queue = status.queuedCount ? `${status.queuedCount} more queued` : '';
-    if (exploreAccount !== Boolean(status.youtubeSignedIn)) {
-      exploreAccount = Boolean(status.youtubeSignedIn);
-      $('explore-results').replaceChildren(); exploreAttemptAt = 0;
-    }
-    if (status.youtubeExplore && (!$('explore-results').children.length || exploreFailed) && Date.now() - exploreAttemptAt > 60000) void loadExplore();
   } catch (error) {
-    $('connection').textContent = 'Connection lost'; $('connection').dataset.state = 'offline';
+    setConnection('offline', 'Offline');
     refreshError = error.message || 'Open Video Pilot on the iPhone and start hosting.';
     notice(refreshError);
   } finally {
@@ -559,26 +776,15 @@ async function refresh(force = false) {
     if (refreshQueued) { refreshQueued = false; void refresh(); }
   }
 }
-function statusLabel(status) {
-  if (status.tunnel === 'connected') return status.busy ? 'Preparing' : 'Ready';
-  return status.tunnel || 'Waiting';
-}
-async function loadExplore() {
-  if (exploring) return;
-  exploring = true; exploreAttemptAt = Date.now();
-  try {
-    const results = await api('/api/explore');
-    $('explore-results').replaceChildren(...results.map(resultCard)); exploreFailed = false;
-  } catch (error) {
-    exploreFailed = true;
-    $('explore-results').replaceChildren(card('Feed unavailable', error.message || 'Try Refresh in a moment.'));
-  }
-  finally { exploring = false; }
+function setConnection(state, text) {
+  const node = $('connection');
+  if (node.dataset) node.dataset.state = state;
+  $('connection-text').textContent = text;
 }
 function updatePreparation(status, videos) {
-  $('preparation-panel').hidden = !status.busy;
+  $('preparation-panel').hidden = !status.busy || currentTab === 'settings-tab';
   if (!status.busy) return;
-  const titles = {resolving:'Finding your video', importing:'Importing video', downloading:'Downloading video',
+  const titles = {resolving:'Finding your video', importing:'Importing video', downloading:'Downloading',
     waitingForApp:'Download complete', processing:'Preparing for playback', finalizing:'Adding to your library'};
   $('preparation-title').textContent = titles[status.preparationStage] || 'Preparing video';
   const video = videos.find(item => item.id?.toLowerCase() === status.preparingID?.toLowerCase());
@@ -591,7 +797,7 @@ function updatePreparation(status, videos) {
   } else {
     $('preparation-progress').removeAttribute('value'); $('preparation-percent').textContent = '';
   }
-  let detail = 'Your video will appear below when it is ready.';
+  let detail = 'It appears in your library when it is ready.';
   if (status.preparationStage === 'waitingForApp') detail = 'Open Video Pilot on the iPhone to finish processing.';
   if (status.preparationStage === 'processing') {
     const speed = status.processingSpeed, remaining = status.preparationSecondsRemaining;
@@ -610,17 +816,20 @@ function toast(message) {
   $('toast').textContent = message; $('toast').hidden = false;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 3200);
 }
-async function queueVideo(url) {
+async function queueVideo(url, extra = {}) {
   try {
-    await api('/api/youtube', {url}); notice('');
-    toast('Added. Your iPhone is preparing it; it appears in the library when ready.');
+    const body = {url};
+    if (extra.channelId) body.channelId = extra.channelId;
+    if (extra.channel) body.channel = extra.channel;
+    await api('/api/youtube', body); notice('');
+    toast('Added. Your iPhone is downloading it; it appears in the library when ready.');
     await refresh(true); return true;
   } catch (error) { notice(error.message); return false; }
 }
 async function removeVideo(id) {
   try {
     const result = await api('/api/library/remove', {id});
-    toast(result.pending ? 'Cancelling preparation and removing video…' : 'Video removed.');
+    toast(result.pending ? 'Cancelling and removing video…' : 'Video removed.');
     await refresh(true); return true;
   } catch (error) { notice(error.message); return false; }
 }
@@ -631,7 +840,41 @@ async function retryVideo(id) {
     await refresh(true); return true;
   } catch (error) { notice(error.message); return false; }
 }
-// ---- Search ----
+
+// ---- Quality (phone /api/settings; hidden when the phone lacks it) ----
+let qualitySetting = null;
+const qualityHeight = quality => Number(String(quality || '').replace(/\D/g, '')) || 0;
+function isUpgradable(video) {
+  if (!qualitySetting || video.youtubeID == null) return false;
+  const target = qualityHeight(qualitySetting);
+  const height = Number(video.height) || qualityHeight(video.quality);
+  return target > 0 && height < target;
+}
+async function loadServerSettings() {
+  try {
+    const settings = await api('/api/settings');
+    qualitySetting = typeof settings?.quality === 'string' ? settings.quality : null;
+  } catch { qualitySetting = null; }
+  $('quality-setting').hidden = !qualitySetting;
+  syncChoice('data-quality', qualitySetting);
+  rerenderLibrary();
+}
+async function upgradeEach(videos) {
+  let queued = 0;
+  for (const video of videos) { try { const result = await api('/api/library/upgrade', {id:video.id}); queued += Number(result?.queued) || 0; } catch {} }
+  toast(`Upgrading ${queued} video${queued === 1 ? '' : 's'}. The current copy keeps playing until the new one is ready.`);
+  await refresh(true);
+  return queued > 0;
+}
+async function upgradeVideos(body) {
+  try {
+    const result = await api('/api/library/upgrade', body);
+    toast(`Upgrading ${Number(result?.queued) || 0} video${Number(result?.queued) === 1 ? '' : 's'}. The current copy keeps playing until the new one is ready.`);
+    await refresh(true); return true;
+  } catch (error) { notice(error.message); return false; }
+}
+
+// ---- YouTube video cards (search, feed, channel pages) ----
 const SEARCH_FILTERS = ['any', 'short', 'medium', 'long', 'week', 'newest'];
 const searchState = {query:'', filter:'any', continuation:null, results:[], seq:0, loading:false};
 const resultButtons = new Map();
@@ -654,26 +897,40 @@ function linkedVideoID(text) {
   return /^[\w-]{11}$/.test(value) && /[A-Z]/.test(value) && /[a-z]/.test(value) && /[\d_-]/.test(value) ? value : null;
 }
 function libraryEntry(youtubeID) { return lastLibrary?.videos.find(video => video.youtubeID === youtubeID) || null; }
-// Search and feed cards can show the same video; every button for an ID
-// follows the library state for that ID.
+function libraryItem(id) { return lastLibrary?.videos.find(video => video.id?.toLowerCase() === String(id || '').toLowerCase()) || null; }
+// Play a library item, starting from the phone's remembered position when
+// this browser has none of its own (e.g. watched from another browser).
+function playFromLibrary(entry, phonePosition) {
+  const position = Number(phonePosition);
+  if (!savedResume(entry) && Number.isFinite(position) && position >= 10 && resumeEnabled()) play(entry, position);
+  else play(entry);
+}
+// Search, feed and channel cards can show the same video; every button for
+// an ID follows the library state for that ID.
 const addingFromSearch = new Set();
+const cardContext = new Map();
 function styleResultButton(button, id) {
   const entry = libraryEntry(id);
   if (entry) queuedFromSearch.delete(id);
-  button.disabled = false; button.className = ''; button.onclick = null;
-  if (addingFromSearch.has(id)) { button.textContent = 'Adding…'; button.className = 'quiet'; button.disabled = true; return; }
-  if (entry?.state === 'ready') { button.textContent = savedResume(entry) ? 'Resume in library' : 'Play from library'; button.onclick = () => play(entry); return; }
-  if (entry?.state === 'preparing') { button.textContent = 'Preparing on iPhone…'; button.className = 'quiet'; button.disabled = true; return; }
-  if (queuedFromSearch.has(id)) { button.textContent = 'Added ✓'; button.className = 'quiet'; button.disabled = true; return; }
+  const context = cardContext.get(id) || {};
+  button.disabled = false; button.className = 'card-action'; button.onclick = null;
+  if (addingFromSearch.has(id)) { button.textContent = 'Adding…'; button.className = 'card-action quiet'; button.disabled = true; return; }
+  if (entry?.state === 'ready') {
+    const resume = savedResume(entry) || (Number(context.position) >= 10 ? Number(context.position) : 0);
+    button.textContent = resume ? `Resume · ${formatTime(resume)}` : (isWatched(entry) ? 'Watch again' : 'Play');
+    button.onclick = () => playFromLibrary(entry, context.position); return;
+  }
+  if (entry?.state === 'preparing') { button.textContent = 'Downloading to iPhone…'; button.className = 'card-action quiet'; button.disabled = true; return; }
+  if (queuedFromSearch.has(id)) { button.textContent = 'Added ✓'; button.className = 'card-action quiet'; button.disabled = true; return; }
   if (entry && (entry.state === 'failed' || entry.state === 'paused')) {
     button.textContent = 'Retry download';
     button.onclick = async () => { addingFromSearch.add(id); updateResultButton(id); await retryVideo(entry.id); addingFromSearch.delete(id); updateResultButton(id); };
     return;
   }
-  button.textContent = 'Add to library';
+  button.textContent = '+ Add to library'; button.className = 'card-action quiet';
   button.onclick = async () => {
     addingFromSearch.add(id); updateResultButton(id);
-    const added = await queueVideo(id);
+    const added = await queueVideo(id, context);
     addingFromSearch.delete(id);
     if (added) queuedFromSearch.add(id);
     updateResultButton(id);
@@ -689,45 +946,146 @@ function updateResultButton(id) {
   if (!buttons.size) resultButtons.delete(id);
 }
 function updateResultButtons() { for (const id of [...resultButtons.keys()]) updateResultButton(id); }
-function resultCard(video) {
+function feedThumbnail(video) {
+  if (video.youtube === false) return '';
+  // Phone-provided thumbnails are mqdefault; Data saver swaps in the 120 px one.
+  return dataSaver() || !video.thumbnail ? youtubeThumb(video.id) : video.thumbnail;
+}
+// One card for any YouTube video object ({id,title,channel?,channelId?,
+// thumbnail?,duration?,published?,views?,youtube?,libraryId?,progress?,position?}).
+function youtubeCard(video, {showChannel = true, badge = true} = {}) {
   const node = element('article', 'card result-card');
-  const button = element('button'); button.type = 'button';
-  // Tapping the thumbnail does what the card's button does (play or add).
-  node.append(videoThumb({title:video.title, youtubeID:video.id, duration:0}, () => { if (!button.disabled) button.click(); }));
-  if (video.duration) node.firstChild.append(element('span', 'duration-badge', video.duration));
+  const local = video.youtube === false;
+  const entry = local ? libraryItem(video.libraryId || video.id) : null;
+  const progress = Number(video.progress);
+  const fraction = Number.isFinite(progress) && progress > 0 ? progress : (entry ? watchFraction(entry) : 0);
+  const button = element('button', 'card-action'); button.type = 'button';
+  node.append(videoThumb({title:video.title}, () => { if (!button.disabled) button.click(); },
+    {image:local ? '' : feedThumbnail(video), duration:typeof video.duration === 'string' ? video.duration : formatDuration(video.duration),
+      fraction, badge:badge && !local && libraryEntry(video.id)?.state === 'ready' ? 'In library' : ''}));
   const body = element('div', 'card-body');
-  body.append(element('h3', '', video.title));
-  const meta = element('p', 'result-meta');
-  if (video.channel) {
-    const channel = element('button', 'channel-link', video.channel); channel.type = 'button';
-    channel.title = `More from ${video.channel}`;
-    channel.onclick = () => { $('query').value = video.channel; void runSearch(video.channel); };
-    meta.append(channel);
-  }
+  body.append(element('h3', '', video.title || 'Video'));
+  const meta = element('div', 'card-meta');
+  if (showChannel && video.channel) meta.append(channelButton(video.channel, video.channelId ? {id:video.channelId} : (local ? {name:video.channel} : {video:video.id})));
   const extra = [video.views, video.published].filter(Boolean).join(' · ');
-  if (extra) meta.append(element('span', '', (video.channel ? ' · ' : '') + extra));
-  body.append(meta);
-  body.append(button);
+  if (extra) meta.append(element('span', '', extra));
+  if (meta.childNodes?.length !== 0) body.append(meta);
+  const actions = element('div', 'card-actions'); actions.append(button); body.append(actions);
   node.append(body);
+  if (local) {
+    if (entry?.state === 'ready') {
+      const resume = savedResume(entry) || (Number(video.position) >= 10 ? Number(video.position) : 0);
+      button.textContent = resume ? `Resume · ${formatTime(resume)}` : 'Play';
+      button.onclick = () => playFromLibrary(entry, video.position);
+    } else { button.textContent = entry ? 'Not ready yet' : 'Not in library'; button.className = 'card-action quiet'; button.disabled = true; }
+    return node;
+  }
+  const known = cardContext.get(video.id) || {};
+  cardContext.set(video.id, {channelId:video.channelId || known.channelId, channel:video.channel || known.channel,
+    position:Number.isFinite(Number(video.position)) ? Number(video.position) : known.position});
   if (!resultButtons.has(video.id)) resultButtons.set(video.id, new Set());
   resultButtons.get(video.id).add(button); styleResultButton(button, video.id);
   return node;
 }
+// Kept for older call sites: search results use the same card.
+function resultCard(video) { return youtubeCard(video); }
+
+// ---- Home feed ("For you") ----
+const feedState = {rows:null, loadedAt:0, loading:false, failed:false, seq:0};
+const FEED_MAX_AGE = 10 * 60 * 1000;
+// Normalise /api/foryou: drop empty rows and rows of unknown shape, cap row length.
+function feedRows(result) {
+  const rows = Array.isArray(result?.rows) ? result.rows : [];
+  return rows.map(row => ({title:String(row?.title || ''), kind:String(row?.kind || ''), subtitle:row?.subtitle ? String(row.subtitle) : '',
+    videos:(Array.isArray(row?.videos) ? row.videos : []).filter(video => video && video.id && video.title).slice(0, 30)}))
+    .filter(row => row.title && row.videos.length);
+}
+function maybeLoadFeed() {
+  if (!lastStatus) return;
+  if (!feedState.rows || feedState.failed || Date.now() - feedState.loadedAt > FEED_MAX_AGE) void loadFeed();
+}
+async function loadFeed(refresh = false) {
+  if (feedState.loading && !refresh) return;
+  const seq = ++feedState.seq;
+  feedState.loading = true;
+  $('feed-status').textContent = refresh ? 'Refreshing…' : (feedState.rows ? '' : 'Loading your feed…');
+  if (!feedState.rows) $('feed').replaceChildren(feedSkeleton());
+  try {
+    const result = await api('/api/foryou' + (refresh ? '?refresh=1' : ''), null, 30000);
+    if (seq !== feedState.seq) return;
+    let rows = feedRows(result);
+    // A brand-new install has no history yet: fall back to Trending.
+    if (!rows.length && lastStatus?.youtubeExplore && !lastStatus?.youtubeSignedIn) {
+      try {
+        const trending = await api('/api/explore', null, 20000);
+        rows = feedRows({rows:[{title:'Trending now', kind:'trending', videos:Array.isArray(trending) ? trending : []}]});
+      } catch {}
+    }
+    feedState.rows = rows; feedState.loadedAt = Date.now(); feedState.failed = false;
+    renderFeed(rows, Array.isArray(result?.errors) ? result.errors.filter(item => typeof item === 'string') : []);
+    $('feed-status').textContent = '';
+  } catch (error) {
+    if (seq !== feedState.seq) return;
+    feedState.failed = true; feedState.loadedAt = Date.now();
+    $('feed-status').textContent = '';
+    if (!feedState.rows?.length) $('feed').replaceChildren(messageCard('Your feed did not load', error.message || 'Try again in a moment.',
+      {label:'Try again', run:() => void loadFeed(true)}));
+  } finally { if (seq === feedState.seq) feedState.loading = false; }
+}
+function feedSkeleton() {
+  const section = element('section', 'row-section');
+  const row = element('div', 'row-scroller');
+  row.append(...Array.from({length:5}, () => element('div', 'card skeleton')));
+  section.append(row);
+  return section;
+}
+function renderFeed(rows, errors = []) {
+  const nodes = rows.map(row => {
+    const section = element('section', 'row-section');
+    const header = element('div', 'section-header');
+    header.append(element('h2', '', row.title));
+    if (row.subtitle) header.append(element('span', 'subtitle', row.subtitle));
+    section.append(header);
+    const scroller = element('div', 'row-scroller');
+    scroller.append(...row.videos.map(video => youtubeCard(video, {badge:row.kind !== 'continue'})));
+    section.append(scroller);
+    return section;
+  });
+  if (!nodes.length) {
+    const empty = element('div', 'feed-empty');
+    empty.append(element('strong', '', 'Your feed fills in as you watch'));
+    empty.append(element('span', '', 'Search for something above. Videos you watch shape what shows up here: continue watching, more like what you watched, and new uploads from those channels.'));
+    nodes.push(empty);
+  }
+  if (errors.length) nodes.push(element('p', 'muted small-text', errors.join(' ')));
+  $('feed').replaceChildren(...nodes);
+}
+$('feed-refresh').onclick = () => void loadFeed(true);
+
+// ---- Search ----
 function setSearchChrome() {
   const hasQuery = Boolean($('query').value);
   $('query-clear').hidden = !hasQuery;
-  $('search-start').hidden = Boolean(searchState.query) && searchState.results.length > 0;
+  const searching = Boolean(searchState.query);
+  $('search-view').hidden = !searching;
+  $('feed-view').hidden = searching;
   $('load-more').hidden = !searchState.continuation || !searchState.results.length;
   $('load-more').disabled = searchState.loading;
   $('load-more').textContent = searchState.loading ? 'Loading…' : 'Load more results';
   $('search-submit').disabled = searchState.loading && !searchState.results.length;
   const recent = recentSearches();
   $('recent-searches').hidden = !recent.length;
-  $('recent-searches').replaceChildren(...(recent.length ? [element('span', 'chip-label', 'Recent'), ...recent.map(query => {
+  $('recent-searches').replaceChildren(...(recent.length ? [element('span', 'chip-label', 'Recent'), ...recent.slice(0, 5).map(query => {
     const chip = element('button', 'chip', query); chip.type = 'button';
     chip.onclick = () => { $('query').value = query; void runSearch(query); };
     return chip;
   }), Object.assign(element('button', 'chip chip-clear', 'Clear'), {type:'button', onclick:() => { prefs.set(RECENT_KEY, '[]'); setSearchChrome(); }})] : []));
+}
+function clearSearch() {
+  searchState.seq++;
+  Object.assign(searchState, {query:'', continuation:null, results:[], loading:false});
+  $('query').value = ''; $('results').replaceChildren(); hideSuggestions(); setSearchChrome();
+  maybeLoadFeed();
 }
 function hideSuggestions() { clearTimeout(suggestTimer); suggestSeq++; $('suggestions').hidden = true; $('suggestions').replaceChildren(); }
 function showSuggestions(items) {
@@ -744,6 +1102,7 @@ async function runSearch(rawQuery, append = false) {
   const query = String(rawQuery || '').trim();
   if (!query) return;
   hideSuggestions();
+  if (currentTab !== 'home-tab') showTab('home-tab');
   // A typed or pasted YouTube link adds that video. Send the clean ID: the
   // phone only accepts full https links, and drivers type 'youtu.be/…'.
   const linked = linkedVideoID(query);
@@ -757,15 +1116,15 @@ async function runSearch(rawQuery, append = false) {
     Object.assign(searchState, {query, continuation:null, results:[]});
     rememberSearch(query);
     $('query').blur?.();
-    $('results').replaceChildren(...Array.from({length:6}, () => element('div', 'card skeleton')));
-    $('search-summary').hidden = false; $('search-summary').textContent = `Searching for “${query}”…`;
-    $('search-hint').textContent = '';
+    $('results').replaceChildren(...Array.from({length:8}, () => element('div', 'card skeleton')));
+    $('search-summary').textContent = `Searching for “${query}”…`;
+    window.scrollTo?.({top:0});
   }
   setSearchChrome();
   try {
     const params = new URLSearchParams({q:searchState.query, filter:searchState.filter});
     if (append && searchState.continuation) params.set('continuation', searchState.continuation);
-    const page = await api('/api/search?' + params.toString());
+    const page = await api('/api/search?' + params.toString(), null, 20000);
     if (seq !== searchState.seq) return;
     const results = Array.isArray(page) ? page : (page.results || []);
     searchState.continuation = Array.isArray(page) ? null : (page.continuation || null);
@@ -774,10 +1133,10 @@ async function runSearch(rawQuery, append = false) {
     const fresh = results.filter(video => video?.id && !known.has(video.id));
     searchState.results.push(...fresh);
     if (!append) $('results').replaceChildren();
-    $('results').append(...fresh.map(resultCard));
+    $('results').append(...fresh.map(video => youtubeCard(video)));
     const filterLabel = document.querySelector?.(`[data-filter="${searchState.filter}"]`)?.textContent;
     $('search-summary').textContent = searchState.results.length
-      ? `${searchState.results.length} videos for “${searchState.query}”${searchState.filter !== 'any' && filterLabel ? ` · ${filterLabel}` : ''}`
+      ? `“${searchState.query}”${searchState.filter !== 'any' && filterLabel ? ` · ${filterLabel}` : ''}`
       : `No videos found for “${searchState.query}”. Try different words or another filter.`;
   } catch (error) {
     if (seq !== searchState.seq) return;
@@ -788,6 +1147,7 @@ async function runSearch(rawQuery, append = false) {
   }
 }
 $('search-form').onsubmit = event => { event.preventDefault(); void runSearch($('query').value); };
+$('search-back').onclick = () => clearSearch();
 $('query').oninput = () => {
   setSearchChrome();
   const value = $('query').value.trim();
@@ -811,7 +1171,10 @@ $('query').oninput = () => {
 };
 $('query').onkeydown = event => { if (event.key === 'Escape') hideSuggestions(); };
 $('query').onblur = () => { clearTimeout(suggestHide); suggestHide = setTimeout(hideSuggestions, 150); };
-$('query-clear').onclick = () => { $('query').value = ''; hideSuggestions(); setSearchChrome(); $('query').focus?.(); };
+$('query-clear').onclick = () => {
+  if (searchState.query) { clearSearch(); return; }
+  $('query').value = ''; hideSuggestions(); setSearchChrome(); $('query').focus?.();
+};
 $('load-more').onclick = () => { if (!searchState.loading) void runSearch(searchState.query, true); };
 document.querySelectorAll?.('[data-filter]').forEach(button => button.onclick = () => {
   searchState.filter = SEARCH_FILTERS.includes(button.dataset.filter) ? button.dataset.filter : 'any';
@@ -821,8 +1184,132 @@ document.querySelectorAll?.('[data-filter]').forEach(button => button.onclick = 
 document.querySelectorAll?.('[data-query]').forEach(button => button.onclick = () => {
   $('query').value = button.dataset.query || ''; void runSearch($('query').value);
 });
-document.querySelectorAll?.('[data-go]').forEach(button => button.onclick = () => goTo(button.dataset.go));
-$('explore-refresh').onclick = () => { void loadExplore(); };
+document.querySelectorAll?.('[data-tab]').forEach(button => button.onclick = () => goTo(button.dataset.tab));
+
+// ---- Settings ----
+function resumeEnabled() { return prefs.get('vp-pref-resume') !== 'off'; }
+function fullscreenOnPlay() { return prefs.get('vp-pref-fullscreen') === 'on'; }
+const BUFFER_PROFILES = {normal:[12, 6], large:[30, 15]};
+function applyBufferProfile() {
+  const [high, low] = BUFFER_PROFILES[prefs.get('vp-buffer')] || BUFFER_PROFILES.normal;
+  try { if (JSMpegHttpSource) { JSMpegHttpSource.highWaterHeadroom = high; JSMpegHttpSource.lowWaterHeadroom = low; } } catch {}
+}
+applyBufferProfile();
+function pollInterval() { return dataSaver() ? 5000 : 2000; }
+function syncChoice(attribute, value) {
+  document.querySelectorAll?.(`[${attribute}]`).forEach(button => button.setAttribute('aria-pressed', button.getAttribute(attribute) === value ? 'true' : 'false'));
+}
+function applyTextSize(size) {
+  const root = document.documentElement;
+  if (root?.dataset) root.dataset.textSize = size === 'large' ? 'large' : 'normal';
+}
+applyTextSize(prefs.get('vp-text-size'));
+function setupSettings() {
+  document.querySelectorAll?.('[data-theme-choice]').forEach(button => button.onclick = () => {
+    themeChoice = button.dataset.themeChoice; prefs.set(themeKey, themeChoice); applyTheme(themeChoice); syncChoice('data-theme-choice', themeChoice);
+  });
+  document.querySelectorAll?.('[data-text-size]').forEach(button => button.onclick = () => {
+    prefs.set('vp-text-size', button.dataset.textSize); applyTextSize(button.dataset.textSize); syncChoice('data-text-size', button.dataset.textSize);
+  });
+  document.querySelectorAll?.('[data-buffer]').forEach(button => button.onclick = () => {
+    prefs.set('vp-buffer', button.dataset.buffer); applyBufferProfile(); syncChoice('data-buffer', button.dataset.buffer);
+    toast('Applies from the next video or seek.');
+  });
+  document.querySelectorAll?.('[data-quality]').forEach(button => button.onclick = async () => {
+    const quality = button.dataset.quality, previous = qualitySetting;
+    syncChoice('data-quality', quality);
+    try { await api('/api/settings', {quality}); qualitySetting = quality; toast(`New downloads use ${quality}.`); rerenderLibrary(); }
+    catch (error) { syncChoice('data-quality', previous); notice(error.message); }
+  });
+  syncChoice('data-theme-choice', themeChoice);
+  syncChoice('data-text-size', prefs.get('vp-text-size') === 'large' ? 'large' : 'normal');
+  syncChoice('data-buffer', prefs.get('vp-buffer') === 'large' ? 'large' : 'normal');
+  const toggle = (id, key, onValue, apply) => {
+    const input = $(id); if (!input) return;
+    input.checked = key === 'vp-pref-resume' ? resumeEnabled() : prefs.get(key) === onValue;
+    input.onchange = () => { prefs.set(key, input.checked ? 'on' : 'off'); apply?.(input.checked); renderSettings(); };
+  };
+  toggle('pref-resume', 'vp-pref-resume', 'on');
+  toggle('pref-fullscreen', 'vp-pref-fullscreen', 'on');
+  toggle('pref-datasaver', 'vp-data-saver', 'on', () => { rerenderLibrary(); feedState.loadedAt = 0; });
+  const boost = $('pref-boost');
+  if (boost) { boost.checked = audioBoost; boost.onchange = () => { audioBoost = boost.checked; try { globalThis.localStorage?.setItem(audioBoostKey, audioBoost ? 'on' : 'off'); } catch {} applyAudioState(); }; }
+  $('lib-retry-failed').onclick = async () => {
+    const count = await retryAll();
+    $('lib-action-status').textContent = count ? `Retrying ${count} video${count === 1 ? '' : 's'}.` : 'Nothing to retry.';
+  };
+  $('lib-remove-watched').onclick = async () => {
+    const watched = (lastLibrary?.videos || []).filter(video => video.state === 'ready' && isWatched(video));
+    if (!watched.length) { $('lib-action-status').textContent = 'No watched videos to remove.'; return; }
+    if (globalThis.confirm && !globalThis.confirm(`Remove ${watched.length} watched video${watched.length === 1 ? '' : 's'} from the iPhone?`)) return;
+    let removed = 0;
+    for (const video of watched) { try { await api('/api/library/remove', {id:video.id}); removed++; } catch {} }
+    $('lib-action-status').textContent = `Removed ${removed} watched video${removed === 1 ? '' : 's'}.`;
+    await refresh(true);
+  };
+  $('lib-clear-history').onclick = async () => {
+    if (globalThis.confirm && !globalThis.confirm('Clear watch history? Your feed starts over; videos stay in the library.')) return;
+    try {
+      await api('/api/history/clear', {});
+      $('lib-action-status').textContent = 'Watch history cleared.';
+      feedState.rows = null; feedState.loadedAt = 0;
+    } catch (error) { $('lib-action-status').textContent = error.status === 404 ? 'This iPhone build has no watch history yet.' : error.message; }
+  };
+}
+const mbps = value => { const n = Number(value); return Number.isFinite(n) ? `${n.toFixed(n >= 10 ? 0 : 1)} Mb/s` : '—'; };
+function formatBytes(value) {
+  const bytes = Number(value) || 0;
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(2)} GB`;
+  if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
+  return bytes ? `${Math.round(bytes / 1e3)} KB` : '0 KB';
+}
+// Library numbers for the Settings card (pure; tested).
+function libraryStats(videos) {
+  const list = Array.isArray(videos) ? videos : [];
+  const seconds = list.reduce((sum, video) => sum + (video.state === 'ready' ? finiteDuration(video.duration) : 0), 0);
+  return {total:list.length, ready:list.filter(video => video.state === 'ready').length,
+    preparing:list.filter(video => video.state === 'preparing').length,
+    failed:list.filter(video => video.state === 'failed' || video.state === 'paused').length,
+    watched:list.filter(video => video.state === 'ready' && isWatched(video)).length,
+    channels:new Set(list.map(channelName)).size, hours:seconds / 3600};
+}
+function renderSettings() {
+  const status = lastStatus || {};
+  const stats = libraryStats(lastLibrary?.videos);
+  $('lib-total').textContent = String(stats.total); $('lib-ready').textContent = String(stats.ready);
+  $('lib-channels').textContent = String(stats.channels); $('lib-hours').textContent = stats.hours >= 10 ? String(Math.round(stats.hours)) : stats.hours.toFixed(1);
+  $('lib-preparing').textContent = String(stats.preparing); $('lib-failed').textContent = String(stats.failed); $('lib-watched').textContent = String(stats.watched);
+  $('conn-tunnel').textContent = status.tunnel === 'connected' ? 'Connected' : (status.tunnel || '—');
+  $('conn-down').textContent = mbps(status.downloadMbps); $('conn-up').textContent = mbps(status.uploadMbps);
+  $('conn-streams').textContent = String(Number(status.activeStreams) || 0);
+  $('settings-auth').textContent = status.authentication === 'faceID-on-start' ? 'Face ID per app session' : 'App authorization';
+  $('settings-youtube').textContent = status.youtubeSignedIn ? 'Google connected' : 'Not signed in';
+  $('settings-search').textContent = status.youtubeSearch ? 'Enabled' : 'Unavailable';
+  const version = status.version ? `${status.version}${status.build ? ` (build ${status.build})` : ''}` : '—';
+  $('settings-version').textContent = version;
+  $('settings-version-line').textContent = status.version ? `Video Pilot ${version}` : 'Video Pilot';
+  $('stat-poll').textContent = `every ${pollInterval() / 1000} s`;
+  $('stat-thumbs').textContent = dataSaver() ? 'Small (120 px)' : 'Standard (320 px)';
+  const prep = status.lastPreparation;
+  $('diag-prep-download').textContent = prep ? [mbps(prep.downloadMbps), prep.downloadSeconds != null ? `${prep.downloadSeconds} s` : ''].filter(Boolean).join(' · ') : '—';
+  $('diag-prep-processing').textContent = prep ? [prep.processingSpeed ? `${Number(prep.processingSpeed).toFixed(1)}× real time` : '', prep.processingSeconds != null ? `${prep.processingSeconds} s` : ''].filter(Boolean).join(' · ') || '—' : '—';
+  $('diag-prep-hw').textContent = prep && prep.hardwareDecode != null ? (prep.hardwareDecode ? 'Yes' : 'No (software)') : '—';
+  $('diag-prep-bitrate').textContent = prep?.outputKbps ? `${Math.round(prep.outputKbps)} kb/s${prep.quality ? ` · ${prep.quality}` : ''}` : '—';
+}
+function renderLiveDiagnostics() {
+  const headroom = player?.source?.headroom;
+  const live = liveStats.snapshot(player && Number.isFinite(headroom) ? headroom : null);
+  const setTile = (id, text, state = '') => { const node = $(id); node.textContent = text; if (node.classList) { node.classList.toggle('is-bad', state === 'bad'); node.classList.toggle('is-good', state === 'good'); } };
+  setTile('diag-buffer', live.bufferSeconds === null ? '—' : `${live.bufferSeconds.toFixed(1)} s`,
+    live.bufferSeconds === null ? '' : (live.bufferSeconds < 3 ? 'bad' : 'good'));
+  setTile('diag-throughput', live.throughputMbps === null ? '—' : mbps(live.throughputMbps));
+  setTile('diag-stalls', String(live.stalls), live.stalls ? 'bad' : '');
+  setTile('diag-reconnects', String(live.reconnects), live.reconnects ? 'bad' : '');
+  $('diag-received').textContent = live.receivedBytes ? formatBytes(live.receivedBytes) : '—';
+  $('diag-first-frame').textContent = live.firstFrameMs === null ? '—' : `${(live.firstFrameMs / 1000).toFixed(1)} s`;
+  $('diag-api-errors').textContent = String(live.apiErrors);
+  $('conn-rtt').textContent = live.rttMs === null ? '—' : `${Math.round(live.rttMs)} ms`;
+}
 function formatTime(value) {
   const seconds = Math.max(0, Math.floor(Number(value) || 0));
   if (seconds >= 3600) {
@@ -1001,7 +1488,7 @@ function boundDecoderBuffers() {
 function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
   current = video;
   const duration = finiteDuration(video.duration);
-  const storedResume = seek === null ? savedResume(video) : 0;
+  const storedResume = seek === null && resumeEnabled() ? savedResume(video) : 0;
   currentOffset = Math.max(0, Number(seek ?? storedResume) || 0);
   if (duration) currentOffset = Math.min(currentOffset, duration);
   if (storedResume > 0) reportDiagnostic('resumeLoaded', {positionSeconds:currentOffset});
@@ -1196,6 +1683,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
         $('playback-status').textContent = 'Finished'; $('pause').textContent = 'Play';
         clearResume(video);
         markWatched(video);
+        reportHistory(video, session.position, true);
         reportDiagnostic('playerEnded', {positionSeconds:session.position || 0, durationSeconds:session.duration || 0});
       }
     });
@@ -1206,22 +1694,48 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
     // black canvas with an endless spinner.
     armRecovery();
     unlockAudio();
-    showTab('player-section');
-    $('player-section').scrollIntoView({behavior:'smooth',block:'start'});
+    document.body?.classList?.add?.('is-playing');
   } catch (error) { session.failed = true; $('playback-status').textContent = error.message; }
+}
+// Watch history on the phone drives Continue watching and the For you feed.
+// Library items only (their id is the library UUID); sent every 15 s while
+// playing and on pause, seek, close and end.
+const LIBRARY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const HISTORY_INTERVAL_MS = 15000;
+let lastHistoryAt = 0;
+function historyPayload(video, position, finished = false, duration = 0) {
+  if (!video || !LIBRARY_UUID.test(String(video.id || ''))) return null;
+  const seconds = Math.max(0, Math.round((Number(position) || 0) * 10) / 10);
+  if (!finished && seconds < 1) return null;
+  const body = {id:video.id, position:seconds};
+  const total = finiteDuration(duration) || finiteDuration(video.duration);
+  if (total) body.duration = Math.round(total * 10) / 10;
+  if (finished) body.finished = true;
+  return body;
+}
+function reportHistory(video = current, position = currentOffset, finished = false) {
+  const body = historyPayload(video, position, finished, playback?.duration);
+  if (!body) return;
+  lastHistoryAt = Date.now();
+  api('/api/history', body).catch(() => {});
 }
 let playerReturn = null;
 function play(video, seek = null) {
-  if ($('player-section').hidden) {
-    const panels = [...(document.querySelectorAll?.('.tab-panel') || [])];
-    playerReturn = {tab:panels.find(panel => !panel.hidden && panel.id !== 'player-section')?.id || 'youtube-tab', y:globalThis.scrollY || 0};
-  }
+  if ($('player-section').hidden) playerReturn = {tab:currentTab, y:globalThis.scrollY || 0};
   invalidateSeeks();
+  lastHistoryAt = Date.now();
   // Opening the first video can stay synchronous for a responsive button. A
   // replacement is serialized behind decoder teardown so an old read loop can
   // never write into the new decoder while a seek is in flight.
-  if (!player && !playback) { startPlayer(video, seek); return; }
+  if (!player && !playback) {
+    liveStats.resetVideo();
+    startPlayer(video, seek);
+    if (fullscreenOnPlay()) void enterFullscreen();
+    return;
+  }
   const generation = seekGeneration;
+  if (playback && !playback.ended && current && current !== video) reportHistory();
+  liveStats.resetVideo();
   seekChain = seekChain.then(async () => {
     await closePlayer();
     if (generation === seekGeneration) startPlayer(video, seek);
@@ -1243,6 +1757,7 @@ $('pause').onclick = () => {
     if (playback) { playback.paused = true; playback.pausedAt = Date.now(); }
     player.pause(); player.source?.pauseReading(); $('pause').textContent = 'Play';
     if (!playback?.failed && !playback?.ended) $('playback-status').textContent = 'Paused';
+    reportHistory();
   } else {
     // The iPhone releases a relay stream nobody has read for 45 s, so after a
     // long pause reopen at the same position instead of resuming a dead stream.
@@ -1259,12 +1774,18 @@ $('back10').onclick = () => { if (current) requestSeek(Math.max(0, currentOffset
 $('forward10').onclick = () => { if (current) requestSeek(Math.min(current.duration || Infinity, currentOffset + 10)); };
 $('close').onclick = () => {
   invalidateSeeks();
+  if (playback && !playback.ended) reportHistory();
   void closePlayer().then(() => {
-    const back = playerReturn || {tab:'youtube-tab', y:0};
+    document.body?.classList?.remove?.('is-playing');
+    const back = playerReturn || {tab:currentTab, y:0};
     playerReturn = null;
-    showTab(back.tab); globalThis.scrollTo?.(0, back.y);
+    if (back.tab !== currentTab) showTab(back.tab);
+    globalThis.scrollTo?.(0, back.y);
     rerenderLibrary(); updateResultButtons(); queueSignature = '';
     if (lastLibrary) renderQueue(lastLibrary.videos, lastLibrary.preparingID);
+    if (currentTab === 'channel-tab') renderChannelLibrary(true);
+    // What was just watched reshapes Continue watching; refresh quietly.
+    if (lastStatus && feedState.rows) setTimeout(() => { if (!feedState.loading) void loadFeed(); }, 1500);
   });
 };
 $('mute').onclick = () => {
@@ -1310,6 +1831,7 @@ function requestSeek(offset) {
   // replacement stream fails or the page disappears during the handoff,
   // Resume should reopen at the requested point, not the stale old position.
   saveResume(video, target);
+  if (Date.now() - lastHistoryAt > 3000) reportHistory(video, target);
   seekTimer = setTimeout(() => {
     seekTimer = null;
     seekChain = seekChain.then(async () => {
@@ -1327,14 +1849,6 @@ function requestSeek(offset) {
   }, 350);
 }
 $('timeline').onchange = event => requestSeek(Number(event.target.value));
-document.querySelectorAll?.('.tab').forEach(tab => tab.onclick = () => showTab(tab.dataset.tab));
-$('menu-toggle').onclick = () => {
-  const menu = $('tab-menu'), open = menu.hidden;
-  menu.hidden = !open; $('menu-toggle').setAttribute('aria-expanded', open ? 'true' : 'false');
-};
-if ($('theme-toggle')) $('theme-toggle').onclick = () => {
-  applyTheme(document.documentElement?.dataset.theme === 'dark' ? 'light' : 'dark');
-};
 function downloadDiagnosticsText(text, name) {
   const blob = new Blob([text], {type:'application/x-ndjson'});
   const url = URL.createObjectURL(blob);
@@ -1405,15 +1919,6 @@ if ($('copy-diagnostics')) $('copy-diagnostics').onclick = async () => {
     status.textContent = 'Diagnostics shown and copied. Paste them into your support message.';
   } catch { status.textContent = 'Diagnostics shown below; press and hold the text to copy it.'; }
 };
-document.addEventListener?.('click', event => {
-  const menu = $('tab-menu'), toggle = $('menu-toggle');
-  if (menu.hidden || event.target === toggle || toggle.contains?.(event.target) || menu.contains?.(event.target)) return;
-  menu.hidden = true; toggle.setAttribute('aria-expanded', 'false');
-});
-document.addEventListener?.('keydown', event => {
-  if (event.key !== 'Escape') return;
-  $('tab-menu').hidden = true; $('menu-toggle').setAttribute('aria-expanded', 'false');
-});
 setInterval(() => {
   if (!player || !playback || playback.paused || playback.failed || playback.ended) return;
   const localTime = Number(player.currentTime ?? player.video?.currentTime ?? 0) || 0;
@@ -1427,8 +1932,16 @@ setInterval(() => {
   currentOffset = playback.position;
   updateTimeline(currentOffset, duration);
   saveResume();
+  if (playback.decoded && Date.now() - lastHistoryAt >= HISTORY_INTERVAL_MS) reportHistory();
 }, 500);
+setupSettings();
 reportDiagnostic('pageLoaded');
-window.addEventListener('pagehide', () => { saveResume(); invalidateSeeks(); reportDiagnostic('pageHidden'); reportDiagnostic('playerClosed'); void flushDiagnostics(true); void closePlayer(); });
+window.addEventListener('pagehide', () => { saveResume(); if (playback && !playback.ended) reportHistory(); invalidateSeeks(); reportDiagnostic('pageHidden'); reportDiagnostic('playerClosed'); void flushDiagnostics(true); void closePlayer(); });
+let lastPollAt = 0;
 void refresh();
-setInterval(() => { void refresh(); }, 2000);
+// One 1 s heartbeat: polls the phone at the Data saver-dependent interval
+// and keeps the Settings diagnostics live while that page is open.
+setInterval(() => {
+  if (Date.now() - lastPollAt >= pollInterval() - 50) void refresh();
+  if (currentTab === 'settings-tab') renderLiveDiagnostics();
+}, 1000);

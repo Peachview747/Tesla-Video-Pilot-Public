@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause} from '../http-source.js';
-import {DiagnosticsJournal} from '../diagnostics.js';
+import {DiagnosticsJournal, LiveStats} from '../diagnostics.js';
 
 // Run the shipped UI against small DOM/player doubles. Decoder callbacks are
 // driven separately from network establishment, just as in recorded JSMpeg.
@@ -38,7 +38,7 @@ function setup({recoveryDelay} = {}) {
   const context = vm.createContext({
     JSMpegHttpSource,
     installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause,
-    DiagnosticsJournal,
+    DiagnosticsJournal, LiveStats,
     document:{getElementById:element},
     window:{JSMpeg:{Player}, addEventListener() {}},
     // The library refresh is outside these focused playback tests.
