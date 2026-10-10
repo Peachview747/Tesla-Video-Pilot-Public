@@ -755,6 +755,7 @@ import Network
         if request.path == "/api/status", request.method == "GET" {
             let progressValue: Any
             if let progress = preparation?.fraction { progressValue = progress } else { progressValue = NSNull() }
+            let lastPreparation: Any = PreparationStats.last.map { $0.json as Any } ?? NSNull()
             return .json(["hosting": running, "busy": busy, "publicAccess": true, "authentication": "faceID-on-start",
                           "youtubeSearch": true, "youtubeExplore": !searchKey.isEmpty || youtubeSignedIn,
                           "youtubeSignedIn": youtubeSignedIn,
@@ -767,7 +768,8 @@ import Network
                           "preparationSecondsRemaining": preparation?.secondsRemaining.map { $0 as Any } ?? NSNull(),
                           "preparingID": preparingID?.uuidString ?? "",
                           "diagnosticsEnabled": diagnosticsLogger.enabled,
-                          "diagnosticsEventCount": diagnosticsLogger.eventCount])
+                          "diagnosticsEventCount": diagnosticsLogger.eventCount,
+                          "lastPreparation": lastPreparation])
         }
         if request.path == "/api/diagnostics/export", request.method == "GET" {
             guard let data = diagnosticsLogger.exportData() else {

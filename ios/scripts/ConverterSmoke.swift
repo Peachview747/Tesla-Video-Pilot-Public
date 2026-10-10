@@ -74,7 +74,7 @@ import MK8Core
                 })
         }
         do {
-            try await task.value
+            _ = try await task.value
             throw NSError(domain: "MK8ConverterCheck", code: 8, userInfo: [NSLocalizedDescriptionKey: "Expiration was swallowed."])
         } catch is CancellationError { }
         guard await expired.hardware == [true] else {

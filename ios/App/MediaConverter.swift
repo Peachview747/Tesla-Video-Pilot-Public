@@ -16,9 +16,19 @@ enum MediaConverter {
         }
     }
 
+    /// What the successful attempt used, for pipeline timing diagnostics.
+    struct Report: Sendable {
+        let hardwareDecode: Bool
+        /// Wall time of the successful encode.
+        let seconds: Double
+        /// Time lost to a failed VideoToolbox attempt before the CPU retry.
+        let failedHardwareSeconds: Double?
+    }
+
+    @discardableResult
     static func convert(video: URL, audio: URL?, output: URL, duration: Double?,
                         quality: MediaQuality, progress: @escaping Progress,
-                        runner: Runner? = nil) async throws {
+                        runner: Runner? = nil) async throws -> Report {
         guard video.standardizedFileURL != output.standardizedFileURL,
               audio?.standardizedFileURL != output.standardizedFileURL else {
             throw Failure(code: -1, log: "The converted video must be saved separately from its source.")
@@ -31,8 +41,10 @@ enum MediaConverter {
         }
         let execute = runner ?? run
         var hardwareFailure: Failure?
+        var failedHardwareSeconds: Double?
         for hardware in [true, false] {
             try Task.checkCancellation()
+            let attemptStarted = ProcessInfo.processInfo.systemUptime
             if FileManager.default.fileExists(atPath: output.path) {
                 try FileManager.default.removeItem(at: output)
             }
@@ -45,7 +57,9 @@ enum MediaConverter {
                 let size = (try? FileManager.default.attributesOfItem(atPath: output.path)[.size] as? NSNumber)?.int64Value ?? 0
                 guard size > 0 else { throw Failure(code: -1, log: "The converter did not produce a video.") }
                 completed = true
-                return
+                return Report(hardwareDecode: hardware,
+                              seconds: ProcessInfo.processInfo.systemUptime - attemptStarted,
+                              failedHardwareSeconds: failedHardwareSeconds)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -54,11 +68,16 @@ enum MediaConverter {
                 // retained source with the same output format on the CPU.
                 try Task.checkCancellation()
                 let failure = error as? Failure ?? Failure(code: -1, log: error.localizedDescription)
-                if hardware { hardwareFailure = failure; continue }
+                if hardware {
+                    hardwareFailure = failure
+                    failedHardwareSeconds = ProcessInfo.processInfo.systemUptime - attemptStarted
+                    continue
+                }
                 let context = hardwareFailure.map { "VideoToolbox attempt:\n\($0.log)\n\nSoftware attempt:\n" } ?? ""
                 throw Failure(code: failure.code, log: context + failure.log)
             }
         }
+        throw Failure(code: -1, log: "The converter did not run.")
     }
 
     private static func run(_ arguments: [String], duration: Double?, progress: @escaping Progress) async throws {
