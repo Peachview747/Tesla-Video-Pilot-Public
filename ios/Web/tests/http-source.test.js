@@ -230,3 +230,19 @@ test('reports a truncated tunnel stream instead of marking playback complete', a
     assert.match(fixture.events[1], /interrupted/);
   } finally { fixture.restore(); }
 });
+
+test('stats report delivered bytes, expected length and average throughput', async () => {
+  const fixture = setup(new Response(new Uint8Array(1000), {headers:{'content-length':'1000'}}));
+  try {
+    assert.deepEqual(fixture.source.stats(0), {receivedBytes:0, expectedBytes:0, elapsedMs:0, kbps:0,
+      headroomSeconds:0, buffered:false, paused:false, completed:false});
+    await fixture.source.read();
+    const started = fixture.source.readStartedAt;
+    const stats = fixture.source.stats(started + 100);
+    assert.equal(stats.receivedBytes, 1000);
+    assert.equal(stats.expectedBytes, 1000);
+    assert.equal(stats.elapsedMs, 100);
+    assert.equal(stats.kbps, 80);
+    assert.equal(stats.completed, true);
+  } finally { fixture.restore(); }
+});

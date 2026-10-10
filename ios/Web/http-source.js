@@ -159,6 +159,9 @@ export class JSMpegHttpSource {
   stoppedPromise;
   lastProgressReport = 0;
   lastBufferState = null;
+  receivedBytes = 0;
+  expectedBytes = 0;
+  readStartedAt = null;
   // Keep enough media queued to absorb cellular/Cloudflare jitter. The
   // previous 8/3-second gate made 5G playback underrun and crackle; this
   // 12/6-second hysteresis is still bounded and is released on Pause/seek.
@@ -169,6 +172,14 @@ export class JSMpegHttpSource {
     this.stoppedPromise = new Promise(resolve => { this.stoppedResolve = resolve; });
   }
   connect(destination) { this.destination = destination; }
+  // Live delivery numbers for the diagnostics panel: bytes so far, average
+  // throughput since the request started, and buffered playback headroom.
+  stats(now = globalThis.performance?.now?.() ?? Date.now()) {
+    const elapsedMs = this.readStartedAt === null ? 0 : Math.max(0, Math.round(now - this.readStartedAt));
+    return {receivedBytes:this.receivedBytes, expectedBytes:this.expectedBytes, elapsedMs,
+      kbps:elapsedMs > 0 ? Math.round(this.receivedBytes * 8 / elapsedMs) : 0,
+      headroomSeconds:this.headroom, buffered:this.buffered, paused:this.paused, completed:this.completed};
+  }
   start() { if (!this.started) void this.read(); }
   // JSMpeg reports buffered playback seconds on every recorded-video frame.
   // Keep this separate from the user's Pause so a frame cannot undo a pause.
@@ -237,6 +248,7 @@ export class JSMpegHttpSource {
     let reader;
     let received = 0;
     const startedAt = globalThis.performance?.now?.() ?? Date.now();
+    this.readStartedAt = startedAt;
     try {
       const response = await fetch(this.url, {credentials:'same-origin',cache:'no-store',signal:this.controller.signal,
         headers:this.options.headers || undefined});
@@ -252,6 +264,7 @@ export class JSMpegHttpSource {
       const duration = Number(response.headers.get('x-video-duration'));
       if (Number.isFinite(duration) && duration > 0) this.options.onSourceDuration?.(duration);
       const expected = Number(response.headers.get('content-length'));
+      this.expectedBytes = Number.isSafeInteger(expected) && expected > 0 ? expected : 0;
       reader = response.body.getReader();
       this.reader = reader;
       while (!this.controller.signal.aborted) {
@@ -264,7 +277,8 @@ export class JSMpegHttpSource {
         if (this.controller.signal.aborted) break;
         if (value?.byteLength) {
           if (!this.established) { this.established = true; this.options.onSourceEstablished?.(this); }
-          received += value.byteLength; this.destination?.write(value.slice().buffer);
+          received += value.byteLength; this.receivedBytes = received;
+          this.destination?.write(value.slice().buffer);
           const now = globalThis.performance?.now?.() ?? Date.now();
           if (now - this.lastProgressReport >= 1000) {
             this.lastProgressReport = now;
