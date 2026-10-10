@@ -14,6 +14,18 @@ import Combine
     @Published private(set) var enabled: Bool
     @Published private(set) var eventCount = 0
     @Published private(set) var lastEventAt: Date?
+    /// Live stats for the app's Diagnostics screen. Updated even while the
+    /// journal is off, since they come from events the app already emits.
+    /// Latest tunnel round trip (phone -> Cloudflare -> phone), milliseconds.
+    @Published private(set) var tunnelRTTMs: Double?
+    @Published private(set) var tunnelRTTAt: Date?
+    /// Latest phone -> Worker HTTPS probe time, milliseconds.
+    @Published private(set) var workerProbeMs: Double?
+    /// Most recent finished video stream (tunnel or local): delivered Mb/s.
+    @Published private(set) var lastStreamMbps: Double?
+    @Published private(set) var lastStreamBytes: Int64?
+    @Published private(set) var lastStreamRoute: String?
+    @Published private(set) var lastStreamAt: Date?
 
     private let defaults = UserDefaults.standard
     private let maxBytes = 2_000_000
@@ -57,6 +69,7 @@ import Combine
 
     func record(component: String, event: String, fields: [String: String] = [:],
                 throttleKey: String? = nil, minimumInterval: TimeInterval = 0) {
+        noteLiveStat(component: component, event: event, fields: fields)
         guard enabled else { return }
         let now = ProcessInfo.processInfo.systemUptime
         if let throttleKey, minimumInterval > 0,
@@ -126,6 +139,24 @@ import Combine
         lastEventAt = nil
         lastEventByKey.removeAll()
         browserEventIDs.removeAll(); browserEventOrder.removeAll()
+    }
+
+    private func noteLiveStat(component: String, event: String, fields: [String: String]) {
+        if component == "network", event == "tunnelRTT" {
+            guard let value = fields["elapsedMs"].flatMap({ Double($0) }), value.isFinite, value >= 0 else { return }
+            tunnelRTTMs = value
+            tunnelRTTAt = Date()
+        } else if component == "network", event == "workerProbe" {
+            workerProbeMs = fields["status"] == "error" ? nil : fields["elapsedMs"].flatMap({ Double($0) })
+        } else if event == "streamSummary", component == "tunnel" || component == "http" {
+            // Ignore tiny responses; they say nothing about video throughput.
+            guard let bytes = fields["bytes"].flatMap({ Int64($0) }), bytes >= 1_000_000,
+                  let mbps = fields["mbps"].flatMap({ Double($0) }), mbps.isFinite else { return }
+            lastStreamMbps = mbps
+            lastStreamBytes = bytes
+            lastStreamRoute = component == "tunnel" ? "Cloudflare tunnel" : "Local Wi-Fi"
+            lastStreamAt = Date()
+        }
     }
 
     static func routeName(_ path: String) -> String {
