@@ -201,6 +201,7 @@ function showTab(id) {
     if (active) item.setAttribute?.('aria-current', 'page'); else item.removeAttribute?.('aria-current');
   });
   if (NAV_TABS.includes(id)) prefs.set('vp-tab', id);
+  if (lastStatus && lastLibrary) updatePreparation(lastStatus, lastLibrary.videos);
   if (id === 'home-tab') maybeLoadFeed();
   if (id === 'settings-tab') { renderSettings(); renderLiveDiagnostics(); }
   if (id === 'queue-tab') void refreshQueueApi();
@@ -669,7 +670,7 @@ function queueRow(entry, index) {
     const fraction = Number(lastStatus.preparationProgress);
     if (Number.isFinite(fraction)) entry.progress = fraction;
   }
-  if (entry.progress !== null) { const bar = element('progress'); bar.max = 1; bar.value = Math.max(0, Math.min(1, entry.progress)); text.append(bar); }
+  if (entry.progress !== null && (entry.active || entry.progress > 0)) { const bar = element('progress'); bar.max = 1; bar.value = Math.max(0, Math.min(1, entry.progress)); text.append(bar); }
   text.append(element('small', '', entry.detail));
   row.append(text);
   const actions = element('div', 'queue-actions');
@@ -782,7 +783,7 @@ function setConnection(state, text) {
   $('connection-text').textContent = text;
 }
 function updatePreparation(status, videos) {
-  $('preparation-panel').hidden = !status.busy || currentTab === 'settings-tab';
+  $('preparation-panel').hidden = !status.busy || currentTab === 'settings-tab' || currentTab === 'queue-tab';
   if (!status.busy) return;
   const titles = {resolving:'Finding your video', importing:'Importing video', downloading:'Downloading',
     waitingForApp:'Download complete', processing:'Preparing for playback', finalizing:'Adding to your library'};
@@ -1297,15 +1298,21 @@ function renderSettings() {
   $('diag-prep-bitrate').textContent = prep?.outputKbps ? `${Math.round(prep.outputKbps)} kb/s${prep.quality ? ` · ${prep.quality}` : ''}` : '—';
 }
 function renderLiveDiagnostics() {
-  const headroom = player?.source?.headroom;
+  // The stream reader's own numbers (http-source stats()) when a video is open.
+  let source = null;
+  try { source = player?.source?.stats?.() || null; } catch {}
+  const headroom = Number(source?.headroomSeconds ?? player?.source?.headroom);
   const live = liveStats.snapshot(player && Number.isFinite(headroom) ? headroom : null);
+  if (live.throughputMbps === null && Number(source?.kbps) > 0) live.throughputMbps = Number(source.kbps) / 1000;
   const setTile = (id, text, state = '') => { const node = $(id); node.textContent = text; if (node.classList) { node.classList.toggle('is-bad', state === 'bad'); node.classList.toggle('is-good', state === 'good'); } };
   setTile('diag-buffer', live.bufferSeconds === null ? '—' : `${live.bufferSeconds.toFixed(1)} s`,
     live.bufferSeconds === null ? '' : (live.bufferSeconds < 3 ? 'bad' : 'good'));
   setTile('diag-throughput', live.throughputMbps === null ? '—' : mbps(live.throughputMbps));
   setTile('diag-stalls', String(live.stalls), live.stalls ? 'bad' : '');
   setTile('diag-reconnects', String(live.reconnects), live.reconnects ? 'bad' : '');
-  $('diag-received').textContent = live.receivedBytes ? formatBytes(live.receivedBytes) : '—';
+  $('diag-received').textContent = source && Number(source.expectedBytes) > 0
+    ? `${formatBytes(source.receivedBytes)} of ${formatBytes(source.expectedBytes)}`
+    : (live.receivedBytes ? formatBytes(live.receivedBytes) : '—');
   $('diag-first-frame').textContent = live.firstFrameMs === null ? '—' : `${(live.firstFrameMs / 1000).toFixed(1)} s`;
   $('diag-api-errors').textContent = String(live.apiErrors);
   $('conn-rtt').textContent = live.rttMs === null ? '—' : `${Math.round(live.rttMs)} ms`;
@@ -1462,6 +1469,8 @@ function applyAudioState() {
   } catch {}
   const mute = $('mute');
   if (mute) mute.textContent = audioMuted ? 'Unmute' : 'Mute';
+  const preference = $('pref-boost');
+  if (preference) preference.checked = audioBoost;
   const boost = $('audio-boost');
   if (boost) {
     boost.textContent = audioBoost ? 'Audio +' : 'Audio';
