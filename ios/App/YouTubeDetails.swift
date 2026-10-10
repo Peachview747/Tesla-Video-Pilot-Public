@@ -26,9 +26,9 @@ enum YouTubeDetails {
         components.queryItems = [URLQueryItem(name: "url", value: "https://www.youtube.com/watch?v=\(id)"),
                                  URLQueryItem(name: "format", value: "json")]
         guard let url = components.url,
-              let (data, response) = try? await session.data(from: url),
-              (response as? HTTPURLResponse)?.statusCode == 200,
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = try? await session.data(from: url),
+              (result.1 as? HTTPURLResponse)?.statusCode == 200,
+              let object = try? JSONSerialization.jsonObject(with: result.0) as? [String: Any],
               let name = (object["author_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
               !name.isEmpty else { return nil }
         return String(name.prefix(200))
@@ -40,9 +40,9 @@ enum YouTubeDetails {
         var request = URLRequest(url: url)
         request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
         request.setValue("en-US", forHTTPHeaderField: "Accept-Language")
-        guard let (data, response) = try? await session.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-        return parseReleaseDate(String(decoding: data, as: UTF8.self))
+        guard let result = try? await session.data(for: request),
+              (result.1 as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return parseReleaseDate(String(decoding: result.0, as: UTF8.self))
     }
 
     static func parseReleaseDate(_ html: String) -> String? {
