@@ -1,7 +1,7 @@
 {
   "name": "Video Pilot",
-  "version": "0.1.37",
-  "build": "49",
+  "version": "0.1.38",
+  "build": "50",
   "iconVersion": "0.1.28",
   "artifactPrefix": "Tesla-Video-Pilot",
   "releaseNotes": "Build 49 fixes issues found in a full review: retry failed/paused downloads from the Tesla, typed youtu.be links, search button states, queue order, return to the library after closing the player, watched marking near the end, less work during playback, readable connection errors, Google sign-in errors shown with Google's actual reason, a Worker open-proxy fix, and a background-time crash risk.",
