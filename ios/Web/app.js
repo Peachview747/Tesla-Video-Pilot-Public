@@ -1,4 +1,4 @@
-import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedPlayerPause} from './http-source.js';
+import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause} from './http-source.js';
 import {DiagnosticsJournal} from './diagnostics.js';
 const $ = id => document.getElementById(id);
 let player = null, current = null, currentOffset = 0, seekTimer = null;
@@ -193,6 +193,69 @@ function card(title, subtitle, action, thumbnail) {
   div.append(body);
   return div;
 }
+const LIBRARY_SORTS = ['added', 'newest', 'oldest', 'channel'];
+let librarySort = (() => {
+  try { const saved = globalThis.localStorage?.getItem('vp-library-sort'); return LIBRARY_SORTS.includes(saved) ? saved : 'added'; }
+  catch { return 'added'; }
+})();
+let lastLibrary = null;
+const releaseTime = video => { const time = Date.parse(video.publishedAt || ''); return Number.isFinite(time) ? time : null; };
+function formatRelease(video) {
+  const time = releaseTime(video);
+  if (time === null) return '';
+  try { return new Date(time).toLocaleDateString('en-US', {year:'numeric', month:'short', day:'numeric'}); }
+  catch { return String(video.publishedAt).slice(0, 10); }
+}
+// Library order for the Tesla's Sort menu. The iPhone already lists videos
+// newest-added first; videos without a release date always sort last.
+function sortLibrary(videos, mode) {
+  const byRelease = direction => (a, b) => {
+    const left = releaseTime(a), right = releaseTime(b);
+    if (left === null || right === null) return left === null ? (right === null ? 0 : 1) : -1;
+    return direction * (left - right);
+  };
+  const list = [...videos];
+  if (mode === 'newest') return list.sort(byRelease(-1));
+  if (mode === 'oldest') return list.sort(byRelease(1));
+  if (mode === 'channel') {
+    const name = video => (video.channel || '').trim();
+    return list.sort((a, b) => {
+      if (!name(a) !== !name(b)) return name(a) ? -1 : 1;
+      return name(a).localeCompare(name(b), undefined, {sensitivity:'base'}) || byRelease(-1)(a, b);
+    });
+  }
+  return list;
+}
+function renderLibrary(videos, preparingID) {
+  lastLibrary = {videos, preparingID};
+  if ($('library-sort').value !== librarySort) $('library-sort').value = librarySort;
+  const library = $('library'); library.replaceChildren();
+  if (!videos.length) { library.append(card('Your library is empty', 'Prepare a YouTube video or import a file on the iPhone.')); return; }
+  let group = null;
+  for (const video of sortLibrary(videos, librarySort)) {
+    if (librarySort === 'channel') {
+      const channel = (video.channel || '').trim() || 'Other videos';
+      if (channel !== group) {
+        group = channel;
+        const heading = document.createElement('h3'); heading.className = 'library-group'; heading.textContent = channel;
+        library.append(heading);
+      }
+    }
+    const active = video.id?.toLowerCase() === preparingID?.toLowerCase();
+    const action = video.state === 'ready'
+      ? {label:savedResume(video) ? 'Resume · ' + formatTime(savedResume(video)) : 'Play',run:() => play(video)}
+      : {label:active ? 'Cancel and remove' : 'Remove',run:() => removeVideo(video.id)};
+    const details = librarySort === 'channel' ? [formatRelease(video)] : [video.channel, formatRelease(video)];
+    const subtitle = video.state === 'ready' ? (details.filter(Boolean).join(' · ') || 'Ready') : (video.message || video.state);
+    library.append(card(video.title, subtitle, action,
+      video.youtubeID ? `https://i.ytimg.com/vi/${encodeURIComponent(video.youtubeID)}/mqdefault.jpg` : null));
+  }
+}
+$('library-sort').onchange = event => {
+  librarySort = LIBRARY_SORTS.includes(event.target.value) ? event.target.value : 'added';
+  try { globalThis.localStorage?.setItem('vp-library-sort', librarySort); } catch {}
+  if (lastLibrary) renderLibrary(lastLibrary.videos, lastLibrary.preparingID);
+};
 function renderQueue(videos, activeID = '') {
   const queued = videos.filter(video => video.state === 'preparing');
   const panel = $('queue-panel');
@@ -230,16 +293,7 @@ async function refresh() {
     $('settings-search').textContent = status.youtubeSearch ? 'Enabled' : 'Add API key on iPhone';
     $('settings-version').textContent = status.version
       ? `v${status.version}${status.build ? ` · build ${status.build}` : ''}` : '—';
-    const library = $('library'); library.replaceChildren();
-    if (!videos.length) library.append(card('Your library is empty', 'Prepare a YouTube video or import a file on the iPhone.'));
-    for (const video of videos) {
-      const active = video.id?.toLowerCase() === status.preparingID?.toLowerCase();
-      const action = video.state === 'ready'
-        ? {label:savedResume(video) ? 'Resume · ' + formatTime(savedResume(video)) : 'Play',run:() => play(video)}
-        : {label:active ? 'Cancel and remove' : 'Remove',run:() => removeVideo(video.id)};
-      library.append(card(video.title, video.message || video.state, action,
-      video.youtubeID ? `https://i.ytimg.com/vi/${encodeURIComponent(video.youtubeID)}/mqdefault.jpg` : null));
-    }
+    renderLibrary(videos, status.preparingID);
     renderQueue(videos, status.preparingID);
     updatePreparation(status, videos);
     const down = Number(status.downloadMbps) || 0, up = Number(status.uploadMbps) || 0;
@@ -496,6 +550,7 @@ function boundDecoderBuffers() {
   }
   installRecordedAudioOutput(player?.audioOut,
     () => globalThis.JSMpeg?.Now?.() ?? (globalThis.performance?.now?.() ?? Date.now()) / 1000);
+  installRecordedAudioLead(player);
   installRecordedPlayerPause(player);
   reportDiagnostic('decoderBuffersBound', {
     videoBufferBytes:Number(player?.video?.bits?.bytes?.length) || 0,

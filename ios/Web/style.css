@@ -114,6 +114,11 @@ form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; marg
 .explore-panel, .queue-panel { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--hairline); }
 .library-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 39px; margin-bottom: 12px; }
 .library-heading h2 { margin: 0; }
+.library-heading #traffic-status { margin: 0 0 0 auto; }
+.library-sort { display: flex; align-items: center; gap: 7px; color: var(--graphite); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.library-sort select { min-height: 35px; padding: 6px 10px; border: 1px solid var(--stroke-bright); border-radius: 9px; background: var(--panel); color: var(--text); font: inherit; font-weight: 600; }
+.library-group { grid-column: 1 / -1; margin: 10px 0 -4px; padding-bottom: 6px; border-bottom: 1px solid var(--stroke); font-size: 15px; }
+.library-group:first-child { margin-top: 0; }
 .library-heading .eyebrow { margin-bottom: 2px; }
 .library-heading > button { min-height: 35px; padding: 7px 11px; border: 1px solid var(--stroke-bright); background: var(--panel); color: var(--graphite); box-shadow: none; font-size: 12px; }
 .preparation, .settings-card { padding: 17px; border: 1px solid var(--stroke); border-radius: 15px; background: #ffffffd9; box-shadow: 0 10px 23px var(--shadow); }

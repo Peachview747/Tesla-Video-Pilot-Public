@@ -56,6 +56,9 @@ export function installRecordedAudioOutput(output, now) {
   if (!output?.context?.createBufferSource || output.recordedSources) return;
   const sources = output.recordedSources = new Set();
   const destroy = output.destroy;
+  // A chunk scheduled after the previous one already finished leaves a gap,
+  // which is audible as a click. Count them so the log shows real crackle.
+  output.underruns = 0; output.underrunMs = 0; output.lastUnderrunReport = 0; output.scheduled = false;
   output.play = function(sampleRate, left, right) {
     if (!this.enabled) return;
     if (!this.unlocked) {
@@ -68,8 +71,17 @@ export function installRecordedAudioOutput(output, now) {
     const source = this.context.createBufferSource();
     source.buffer = buffer; source.connect(this.destination);
     if (this.startTime < this.context.currentTime) {
+      if (this.scheduled) {
+        this.underruns += 1; this.underrunMs += (this.context.currentTime - this.startTime) * 1000;
+        const at = now();
+        if (at - this.lastUnderrunReport >= 2) {
+          this.lastUnderrunReport = at;
+          reportDiagnostic('audioUnderrun', {underruns:this.underruns, gapMs:Math.round(this.underrunMs)});
+        }
+      }
       this.startTime = this.context.currentTime; this.wallclockStartTime = now();
     }
+    this.scheduled = true;
     sources.add(source);
     source.onended = () => { sources.delete(source); try { source.disconnect(); } catch {} };
     source.start(this.startTime);
@@ -82,10 +94,33 @@ export function installRecordedAudioOutput(output, now) {
       try { source.disconnect(); } catch {}
     }
     sources.clear();
+    this.scheduled = false;
     this.startTime = this.context.currentTime; this.wallclockStartTime = now();
     this.gain.gain.value = 0;
   };
   output.destroy = function() { this.stop(); return destroy?.call(this); };
+}
+
+// JSMpeg decodes recorded audio only 0.25 s ahead of the speaker. A Tesla
+// browser busy decoding video for longer than that starves WebAudio and every
+// gap clicks. Same loop as Player.updateForStaticFile, with a deeper lead.
+// Pause, seek and volume changes are unaffected: pause rewinds by seeking to
+// the audible position and volume is applied on the shared gain node.
+export function installRecordedAudioLead(player, lead = 0.75) {
+  if (!player || typeof player.updateForStaticFile !== 'function' || player.recordedAudioLead) return;
+  player.recordedAudioLead = lead;
+  const update = player.updateForStaticFile;
+  player.updateForStaticFile = function() {
+    if (!this.audio?.canPlay) return update.call(this);
+    let notEnoughData = false;
+    while (!notEnoughData && this.audio.decodedTime - this.audio.currentTime < lead) notEnoughData = !this.audio.decode();
+    if (this.video && this.video.currentTime < this.audio.currentTime) notEnoughData = !this.video.decode();
+    this.source.resume(this.demuxer.currentTime - this.audio.currentTime);
+    if (notEnoughData && this.source.completed) {
+      if (this.loop) this.seek(0);
+      else { this.pause(); this.options.onEnded?.(this); }
+    } else if (notEnoughData) this.options.onStalled?.(this);
+  };
 }
 
 // The shipped Player pauses by stopping output and then reading currentTime.

@@ -10,6 +10,10 @@ struct LibraryVideo: Codable, Identifiable {
     var message: String?
     var duration: Double?
     var createdAt: Date
+    /// Channel name and ISO 8601 release date from YouTube; nil for imports
+    /// and for items saved by builds before 46 until they are filled in.
+    var channel: String?
+    var publishedAt: String?
 }
 
 @MainActor final class Library: ObservableObject {
@@ -58,6 +62,13 @@ struct LibraryVideo: Codable, Identifiable {
         // A newly added item starts with nil, so this also preserves the
         // intended empty value until preparation produces metadata.
         if let duration, duration.isFinite, duration > 0 { videos[i].duration = duration }
+        do { try save() } catch { videos[i] = previous; throw error }
+    }
+    func setDetails(_ id: UUID, channel: String?, publishedAt: String?) throws {
+        guard let i = videos.firstIndex(where: { $0.id == id }) else { return }
+        let previous = videos[i]
+        if let channel { videos[i].channel = channel }
+        if let publishedAt { videos[i].publishedAt = publishedAt }
         do { try save() } catch { videos[i] = previous; throw error }
     }
     func remove(_ id: UUID) throws {

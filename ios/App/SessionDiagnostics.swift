@@ -32,7 +32,8 @@ import Combine
         "seekTargetSeconds", "positionSeconds", "durationSeconds", "bufferSeconds",
         "receivedBytes", "expectedBytes", "elapsedMs", "responseStatus", "error",
         "recoveryAttempt", "buffered", "paused", "headroomSeconds", "pendingEvents",
-        "muted", "boost", "gain", "videoBufferBytes", "audioBufferBytes", "eventId", "occurredAt"
+        "muted", "boost", "gain", "videoBufferBytes", "audioBufferBytes", "underruns", "gapMs",
+        "eventId", "occurredAt"
     ]
 
     private init() {

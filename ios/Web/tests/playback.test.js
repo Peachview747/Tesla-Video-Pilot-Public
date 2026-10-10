@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedPlayerPause} from '../http-source.js';
+import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause} from '../http-source.js';
 import {DiagnosticsJournal} from '../diagnostics.js';
 
 // Run the shipped UI against small DOM/player doubles. Decoder callbacks are
@@ -37,7 +37,7 @@ function setup({recoveryDelay} = {}) {
   }
   const context = vm.createContext({
     JSMpegHttpSource,
-    installRecordedBufferWindow, installRecordedAudioOutput, installRecordedPlayerPause,
+    installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause,
     DiagnosticsJournal,
     document:{getElementById:element},
     window:{JSMpeg:{Player}, addEventListener() {}},
@@ -50,6 +50,7 @@ function setup({recoveryDelay} = {}) {
     element, players,
     play:(video = {id:'video', title:'Test video'}) => { context.testVideo = video; vm.runInContext('play(testVideo)', context); },
     tick:() => intervals[0]?.(),
+    evaluate:code => vm.runInContext(code, context),
     advanceClock:ms => vm.runInContext(`{ const now = Date.now(); Date.now = () => now + ${ms}; }`, context),
     close:() => element('close').onclick(),
     preparation:status => {
@@ -267,4 +268,18 @@ test('resuming after a short pause keeps the same stream', async () => {
   assert.equal(f.players.length, 1);
   assert.equal(f.element('pause').textContent, 'Pause');
   f.close();
+});
+
+test('library sorts by release date and groups by channel, undated videos last', () => {
+  const f = setup();
+  f.evaluate(`globalThis.testVideos = [
+    {id:'a', title:'A', channel:'zeta', publishedAt:'2021-05-01T10:00:00-07:00'},
+    {id:'b', title:'B', channel:'Alpha', publishedAt:'2024-01-02T00:00:00Z'},
+    {id:'c', title:'C'},
+    {id:'d', title:'D', channel:'alpha', publishedAt:'2019-07-04T00:00:00+02:00'}]`);
+  const order = mode => f.evaluate(`sortLibrary(testVideos, '${mode}').map(v => v.id).join('')`);
+  assert.equal(order('added'), 'abcd');
+  assert.equal(order('newest'), 'badc');
+  assert.equal(order('oldest'), 'dabc');
+  assert.equal(order('channel'), 'bdac', 'channels A-Z ignoring case, newest first inside, no channel last');
 });

@@ -1,10 +1,10 @@
 {
   "name": "Video Pilot",
-  "version": "0.1.34",
-  "build": "46",
+  "version": "0.1.35",
+  "build": "47",
   "iconVersion": "0.1.28",
   "artifactPrefix": "Tesla-Video-Pilot",
-  "releaseNotes": "Build 46 removes the black band between the video and the controls in full-screen playback: the picture and its control rail now stay together, centred on the Tesla screen. Includes Build 45 relay-stream cleanup and Build 44 tunnel fixes.",
+  "releaseNotes": "Build 47 adds library sorting on the Tesla (recently added, release date newest/oldest, or grouped by channel) with channel and release date shown on each video, and reduces audio crackle by keeping 0.75 s of audio decoded ahead instead of 0.25 s. Remaining audio gaps are logged as audioUnderrun.",
   "packaging": "arm64-only-adhoc-signature-template",
   "stage": "native-prototype",
   "branch": "iphone-native",

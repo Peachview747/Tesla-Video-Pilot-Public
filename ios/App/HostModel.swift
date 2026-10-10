@@ -97,7 +97,7 @@ import Network
         youtubeSignedIn = youtubeOAuth.signedIn
         diagnosticsLogger.record(component: "app", event: "launch")
         Keychain.migrateToAfterFirstUnlock("tunnel-key")
-        do { library = try Library(); refresh() }
+        do { library = try Library(); refresh(); fillMissingDetails() }
         catch { message = "Could not open the local library: \(error.localizedDescription)" }
         networkMonitor.pathUpdateHandler = { [weak self] path in
             let state = PhoneConnection(path: path)
@@ -499,6 +499,33 @@ import Network
             self?.pausePreparation()
         }
     }
+    /// Channel and release date power the Tesla library's sort options. They
+    /// are fetched once per video; older library items are filled at launch.
+    private func fillDetails(_ id: UUID, youtubeID: String) {
+        Task { @MainActor [weak self] in
+            let details = await YouTubeDetails.fetch(youtubeID)
+            guard let self, details.channel != nil || details.publishedAt != nil else { return }
+            try? self.library?.setDetails(id, channel: details.channel, publishedAt: details.publishedAt)
+            self.refresh()
+        }
+    }
+    private func fillMissingDetails() {
+        let missing = (library?.videos ?? []).compactMap { video -> (UUID, String)? in
+            guard let youtubeID = video.youtubeID, video.channel == nil || video.publishedAt == nil else { return nil }
+            return (video.id, youtubeID)
+        }
+        guard !missing.isEmpty else { return }
+        Task { @MainActor [weak self] in
+            for (id, youtubeID) in missing {
+                let details = await YouTubeDetails.fetch(youtubeID)
+                guard let self else { return }
+                if details.channel != nil || details.publishedAt != nil {
+                    try? self.library?.setDetails(id, channel: details.channel, publishedAt: details.publishedAt)
+                }
+            }
+            self?.refresh()
+        }
+    }
     private func launchPreparation(video: LibraryVideo, imported: URL? = nil, restored: MediaPreparationJob? = nil) {
         guard let library, !busy else { return }
         busy = true
@@ -531,6 +558,7 @@ import Network
                 try Task.checkCancellation()
                 try library.update(video.id, title: prepared.title, state: "ready", duration: prepared.duration)
                 try? MediaPipeline.store.remove(video.id)
+                if let youtubeID = video.youtubeID { fillDetails(video.id, youtubeID: youtubeID) }
                 message = "\(prepared.title) is ready in the Tesla library."
                 notify(title: prepared.title, body: "Ready to play in Video Pilot.")
                 succeeded = true
