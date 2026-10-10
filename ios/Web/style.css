@@ -473,3 +473,12 @@ button.thumb:hover::after, button.thumb:focus-visible::after { opacity: 1; trans
 .result-card, .video-card { display: flex; flex-direction: column; }
 .result-card .card-body, .video-card .card-body { display: flex; flex: 1; flex-direction: column; }
 .result-card .card-body > button, .video-card .card-body > button { margin-top: auto; }
+.card-actions, .episode-actions { display: flex; gap: 8px; }
+.card-actions { margin-top: auto; }
+.card-actions button { flex: 1; }
+.card-actions button.quiet, .episode-actions button.quiet { flex: 0 0 auto; width: auto; }
+.episode-actions { justify-content: flex-end; }
+@media (max-width: 720px) { .episode-actions { grid-column: 1 / -1; } .episode-actions .episode-action { flex: 1; } }
+/* Thumbnails are buttons; keep the generic '.card button' sizing off them. */
+.card button.thumb, .episode button.thumb, .continue-tile button.thumb { width: 100%; min-height: 0; padding: 0; border: 0; border-radius: 0; background: var(--panel-dark); box-shadow: none; font-size: inherit; }
+.episode button.thumb { border-radius: 9px; }

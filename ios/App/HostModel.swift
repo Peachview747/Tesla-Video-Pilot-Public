@@ -234,7 +234,9 @@ import Network
             let generation = UUID()
             backgroundGeneration = generation
             backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "MK8 active work") { [weak self] in
-                Task { @MainActor in
+                // iOS calls this on the main thread and suspends right after it
+                // returns; end the task synchronously or the app is terminated.
+                MainActor.assumeIsolated {
                     guard self?.backgroundGeneration == generation else { return }
                     self?.expireBackgroundTime()
                 }
@@ -336,14 +338,22 @@ import Network
         }
         catch { message = "Could not save the search key: \(error.localizedDescription)" }
     }
+    /// Shown next to the Sign in button; `message` only appears on the Dashboard.
+    @Published private(set) var youtubeAuthStatus = ""
+    @Published private(set) var youtubeSigningIn = false
     func signInYouTube() {
-        message = "Complete Google sign-in in the secure browser window."
+        guard !youtubeSigningIn else { return }
+        youtubeSigningIn = true
+        youtubeAuthStatus = "Complete Google sign-in in the secure browser window."
+        message = youtubeAuthStatus
         Task { @MainActor in
+            defer { youtubeSigningIn = false }
             do {
                 try await youtubeOAuth.signIn()
                 youtubeSignedIn = youtubeOAuth.signedIn
-                message = "YouTube account connected."
-            } catch { message = error.localizedDescription }
+                youtubeAuthStatus = "YouTube account connected."
+            } catch { youtubeAuthStatus = error.localizedDescription }
+            message = youtubeAuthStatus
         }
     }
     func signOutYouTube() {
@@ -462,6 +472,9 @@ import Network
             guard let existingID = $0.youtubeID else { return false }
             return existingID == id
         }) {
+            // Adding a failed or paused video again retries it instead of
+            // refusing; the Tesla has no other way to restart a download.
+            if existing.state == "failed" || existing.state == "paused" { return requeue(existing.id) }
             message = existing.state == "preparing"
                 ? "That video is already in the preparation queue."
                 : "That video is already in your library. Use Play or Retry instead."
@@ -473,6 +486,20 @@ import Network
         if !busy { launchPreparation(video: video, imported: imported) }
         else { message = "Added to the preparation queue. It will start automatically." }
         return video
+    }
+    /// Retry now when idle, otherwise put the item back in the preparation queue.
+    @discardableResult func requeue(_ id: UUID) -> LibraryVideo? {
+        guard let library, let video = library.videos.first(where: { $0.id == id }) else { return nil }
+        guard video.youtubeID != nil || (try? MediaPipeline.store.load(id)) != nil else {
+            message = "Import this file again from Files."
+            return nil
+        }
+        if busy {
+            try? library.update(id, state: "preparing", message: "Waiting to retry")
+            refresh()
+            message = "Queued to retry. It will start automatically."
+        } else { retry(id) }
+        return library.videos.first(where: { $0.id == id })
     }
     func retry(_ id: UUID) {
         guard !busy, let library, let video = library.videos.first(where: { $0.id == id }) else { return }
@@ -772,6 +799,20 @@ import Network
             }
             guard let video = queue(id: id, imported: nil) else { return .json(["error": message], status: 409) }
             return .json(["id": video.id.uuidString], status: 202)
+        }
+        if request.path == "/api/library/retry", request.method == "POST" {
+            guard let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: String],
+                  let rawID = body["id"], let id = UUID(uuidString: rawID) else {
+                return .json(["error": "Choose a library item to retry."], status: 400)
+            }
+            guard let video = library?.videos.first(where: { $0.id == id }) else {
+                return .json(["error": "That library item no longer exists."], status: 404)
+            }
+            guard video.state == "failed" || video.state == "paused" else {
+                return .json(["error": "That video is not waiting for a retry."], status: 409)
+            }
+            guard requeue(id) != nil else { return .json(["error": message], status: 409) }
+            return .json(["queued": true], status: 202)
         }
         if request.path == "/api/library/remove", request.method == "POST" {
             guard let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: String],

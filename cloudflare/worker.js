@@ -42,7 +42,11 @@ export default {
     const target = await env.KV.get("target");
     if (!target) return new Response(OFFLINE, { status: 503, headers: { "content-type": "text/html" } });
 
-    const upstream = new URL(url.pathname + url.search, target);
+    // Join onto the target's origin as text: relative resolution would turn a
+    // '//other.host/…' path into a request to that other host.
+    const base = new URL(target);
+    const upstream = new URL(base.origin + url.pathname + url.search);
+    if (upstream.origin !== base.origin) return new Response("Bad path", { status: 400 });
     const headers = new Headers(req.headers);
     headers.delete("origin");
     headers.delete("host");

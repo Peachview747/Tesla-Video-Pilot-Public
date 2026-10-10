@@ -31,8 +31,21 @@ final class YouTubeOAuth: NSObject, ObservableObject, ASWebAuthenticationPresent
         signedIn = Self.loadTokens() != nil
     }
 
+    /// Signs in and records why a failure happened (Google's error code, the
+    /// browser sheet's code, or the stage) without logging codes or tokens.
     func signIn() async throws {
-        guard !isSigningIn else { throw Failure.couldNotStart }
+        do { try await performSignIn() }
+        catch {
+            let fields: [String: String]
+            if let failure = error as? Failure { fields = failure.diagnosticFields }
+            else { let ns = error as NSError; fields = ["stage": "other", "domain": ns.domain, "errorCode": String(ns.code)] }
+            SessionDiagnostics.shared.record(component: "youtube", event: "oauthFailed", fields: fields)
+            throw error
+        }
+    }
+
+    private func performSignIn() async throws {
+        guard !isSigningIn else { throw Failure.alreadyInProgress }
         isSigningIn = true
         defer { isSigningIn = false }
         generation = UUID()
@@ -128,12 +141,27 @@ final class YouTubeOAuth: NSObject, ObservableObject, ASWebAuthenticationPresent
         try await withCheckedThrowingContinuation { continuation in
             let auth = ASWebAuthenticationSession(url: url, callbackURLScheme: Self.callbackScheme) { [weak self] callback, error in
                 self?.session = nil
-                if let error { continuation.resume(throwing: error); return }
+                if let error {
+                    if let sheet = error as? ASWebAuthenticationSessionError {
+                        continuation.resume(throwing: Failure.browser(sheet.code.rawValue))
+                    } else { continuation.resume(throwing: error) }
+                    return
+                }
                 guard let callback,
-                      let values = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems,
-                      values.first(where: { $0.name == "state" })?.value == state,
-                      let code = values.first(where: { $0.name == "code" })?.value else {
-                    continuation.resume(throwing: Failure.invalidCallback); return
+                      let values = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems else {
+                    continuation.resume(throwing: Failure.missingCode); return
+                }
+                // Google reports consent-screen problems (access_denied, etc.) here.
+                if let googleError = values.first(where: { $0.name == "error" })?.value {
+                    continuation.resume(throwing: Failure.google(stage: "authorize", error: googleError,
+                        detail: values.first(where: { $0.name == "error_description" })?.value))
+                    return
+                }
+                guard values.first(where: { $0.name == "state" })?.value == state else {
+                    continuation.resume(throwing: Failure.stateMismatch); return
+                }
+                guard let code = values.first(where: { $0.name == "code" })?.value else {
+                    continuation.resume(throwing: Failure.missingCode); return
                 }
                 continuation.resume(returning: code)
             }
@@ -157,7 +185,8 @@ final class YouTubeOAuth: NSObject, ObservableObject, ASWebAuthenticationPresent
             "grant_type": "authorization_code", "redirect_uri": Self.redirectURI
         ]).data(using: .utf8)
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw Failure.tokenExchangeFailed }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else { throw Self.tokenFailure(stage: "exchange", status: status, data: data) }
         struct Result: Decodable { let access_token: String; let expires_in: Int; let refresh_token: String? }
         let result = try JSONDecoder().decode(Result.self, from: data)
         return Tokens(accessToken: result.access_token, refreshToken: result.refresh_token ?? "", expiresAt: Date().addingTimeInterval(TimeInterval(result.expires_in)))
@@ -178,12 +207,22 @@ final class YouTubeOAuth: NSObject, ObservableObject, ASWebAuthenticationPresent
             if Self.loadTokens()?.refreshToken == tokens.refreshToken { signOut() }
             throw Failure.notSignedIn
         }
-        guard (200..<300).contains(http.statusCode) else { throw Failure.refreshFailed }
+        guard (200..<300).contains(http.statusCode) else {
+            let failure = Self.tokenFailure(stage: "refresh", status: http.statusCode, data: data)
+            SessionDiagnostics.shared.record(component: "youtube", event: "oauthRefreshFailed", fields: failure.diagnosticFields)
+            throw failure
+        }
         struct Result: Decodable { let access_token: String; let expires_in: Int }
         let result = try JSONDecoder().decode(Result.self, from: data)
         return Tokens(accessToken: result.access_token, refreshToken: tokens.refreshToken, expiresAt: Date().addingTimeInterval(TimeInterval(result.expires_in)))
     }
 
+    /// Google's token errors carry only `error` and `error_description`.
+    private static func tokenFailure(stage: String, status: Int, data: Data) -> Failure {
+        let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        return .google(stage: stage, error: body?["error"] as? String ?? "http_\(status)",
+                       detail: body?["error_description"] as? String)
+    }
     private static func loadTokens() -> Tokens? {
         guard let data = Keychain.read(account).data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(Tokens.self, from: data)
@@ -205,12 +244,46 @@ final class YouTubeOAuth: NSObject, ObservableObject, ASWebAuthenticationPresent
 
     enum Failure: LocalizedError {
         case invalidAuthorizationURL, invalidCallback, couldNotStart, tokenExchangeFailed, refreshFailed, notSignedIn, invalidResponse
+        case alreadyInProgress, stateMismatch, missingCode
+        case browser(Int)
+        case google(stage: String, error: String, detail: String?)
         case requestFailed(Int)
         var errorDescription: String? {
             switch self {
             case .notSignedIn: return "Sign in with Google on the iPhone first."
             case .requestFailed(let code): return "YouTube account request failed (\(code))."
+            case .alreadyInProgress: return "Google sign-in is already open."
+            case .stateMismatch: return "Google returned an unexpected response. Try signing in again."
+            case .missingCode: return "Google did not return a sign-in code. Try signing in again."
+            case .browser(1):
+                return "The Google window closed before sign-in finished. If Google showed “Access blocked” or Error 403, add your Google account as a test user on the OAuth consent screen in Google Cloud Console, or publish the app."
+            case .browser(let code):
+                return "The Google sign-in window could not be shown (code \(code)). Bring Video Pilot to the front and try again."
+            case .google(let stage, let error, let detail):
+                let note = detail.map { " \($0)" } ?? ""
+                switch error {
+                case "access_denied":
+                    return "Google denied access (access_denied).\(note) If you did not cancel, add your Google account as a test user on the OAuth consent screen, or publish the app."
+                case "invalid_client", "unauthorized_client", "deleted_client":
+                    return "Google rejected Video Pilot's client ID (\(error)).\(note) Check the iOS OAuth client in Google Cloud Console."
+                case "invalid_grant":
+                    return stage == "refresh"
+                        ? "Google ended this sign-in (invalid_grant). Sign in again."
+                        : "Google rejected the sign-in code (invalid_grant).\(note) Try again, and check the iPhone's date and time."
+                default:
+                    return "Google sign-in failed during \(stage): \(error).\(note)"
+                }
             default: return "Google sign-in could not be completed."
+            }
+        }
+        var diagnosticFields: [String: String] {
+            switch self {
+            case .browser(let code): return ["stage": "browser", "errorCode": String(code)]
+            case .google(let stage, let error, let detail):
+                var fields = ["stage": stage, "error": error]
+                if let detail { fields["detail"] = String(detail.prefix(160)) }
+                return fields
+            default: return ["stage": "app", "error": String(describing: self)]
             }
         }
     }

@@ -59,6 +59,10 @@ function savedResume(video) {
 function saveResume(video = current, position = currentOffset) {
   const offset = Number(position) || 0;
   if (!video || offset < 3 || playback?.ended) return;
+  // Most videos end with an end screen people skip; treat the last 30 s
+  // (or 5%) as finished so they leave Continue watching and Play next moves on.
+  const duration = finiteDuration(playback?.duration || video.duration);
+  if (duration > 60 && offset >= Math.max(duration - 30, duration * 0.95)) { clearResume(video); markWatched(video); return; }
   try {
     globalThis.localStorage?.setItem(resumeKey(video), String(Math.floor(offset)));
     globalThis.localStorage?.setItem('video-pilot-resume-at:' + video.id, String(Date.now()));
@@ -96,6 +100,7 @@ async function api(path, body) {
     if (!response) reportDiagnostic('apiError', {responseStatus:0,
       elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - started),
       error:String(error?.message || 'network-failure')});
+    if (!response) throw new Error('The iPhone did not respond. Keep Video Pilot open on the iPhone.');
     throw error;
   }
 }
@@ -228,7 +233,8 @@ function formatRelease(video) {
 function sortLibrary(videos, mode) {
   const byRelease = direction => (a, b) => {
     const left = releaseTime(a), right = releaseTime(b);
-    if (left === null || right === null) return left === null ? (right === null ? 0 : 1) : -1;
+    if (left === null && right === null) return direction * ((Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
+    if (left === null || right === null) return left === null ? 1 : -1;
     return direction * (left - right);
   };
   const list = [...videos];
@@ -292,6 +298,7 @@ function videoAction(video, preparingID) {
     const resume = savedResume(video);
     return {label:resume ? `Resume · ${formatTime(resume)}` : (isWatched(video) ? 'Watch again' : 'Play'), run:() => play(video), primary:true};
   }
+  if (video.state === 'failed' || video.state === 'paused') return {label:'Retry', run:() => retryVideo(video.id), primary:true, remove:() => removeVideo(video.id)};
   const active = video.id?.toLowerCase() === preparingID?.toLowerCase();
   return {label:active ? 'Cancel' : 'Remove', run:() => removeVideo(video.id)};
 }
@@ -299,6 +306,24 @@ function videoStatus(video) {
   if (video.state === 'ready') return '';
   if (video.state === 'preparing') return video.message || 'Preparing…';
   return video.message || video.state;
+}
+// Action button(s) for a library item. Network actions disable themselves
+// until they finish so a second tap on a bumpy road cannot fire twice.
+function actionButtons(action, extraClass = '') {
+  const make = (label, run, primary) => {
+    const button = element('button', [extraClass, primary ? '' : 'quiet'].filter(Boolean).join(' '), label);
+    button.type = 'button';
+    button.onclick = async () => {
+      if (/^(Play|Resume|Watch)/.test(label)) { run(); return; }
+      button.disabled = true;
+      const ok = await run();
+      if (ok === false) button.disabled = false;
+    };
+    return button;
+  };
+  const buttons = [make(action.label, action.run, action.primary)];
+  if (action.remove) buttons.push(make('Remove', action.remove, false));
+  return buttons;
 }
 function videoCard(video, preparingID, showChannel = true) {
   const node = element('article', 'card video-card');
@@ -308,8 +333,10 @@ function videoCard(video, preparingID, showChannel = true) {
   const details = [showChannel ? video.channel : '', formatRelease(video)].filter(Boolean).join(' · ');
   body.append(element('p', '', videoStatus(video) || details || 'Ready'));
   const action = videoAction(video, preparingID);
-  const button = element('button', action.primary ? '' : 'quiet', action.label); button.type = 'button'; button.onclick = action.run;
-  body.append(button); node.append(body);
+  const buttons = actionButtons(action);
+  if (buttons.length > 1) { const row = element('div', 'card-actions'); row.append(...buttons); body.append(row); }
+  else body.append(buttons[0]);
+  node.append(body);
   return node;
 }
 function episodeRow(video, number, preparingID) {
@@ -324,16 +351,18 @@ function episodeRow(video, number, preparingID) {
   text.append(element('p', '', meta));
   row.append(text);
   const action = videoAction(video, preparingID);
-  const button = element('button', 'episode-action' + (action.primary ? '' : ' quiet'), action.label);
-  button.type = 'button'; button.onclick = action.run; row.append(button);
+  const actions = element('div', 'episode-actions');
+  actions.append(...actionButtons(action, 'episode-action')); row.append(actions);
   return row;
 }
 function saveOpenChannels() { prefs.set('vp-open-channels', JSON.stringify([...openChannels].slice(-40))); }
-function channelBlock(name, videos, preparingID, forceOpen) {
-  // "Sequential" order: oldest release first, numbered like episodes.
+function channelBlock(name, matching, preparingID, forceOpen, videos = matching) {
+  // "Sequential" order: oldest release first, numbered like episodes. Numbers,
+  // counts and Play next come from the whole channel even when filtered.
   const sequence = sortLibrary(videos, 'oldest');
   const numbered = new Map(sequence.map((video, index) => [video.id, index + 1]));
-  const shown = channelOrder === 'newest' ? [...sequence].reverse() : sequence;
+  const visible = new Set(matching.map(video => video.id));
+  const shown = (channelOrder === 'newest' ? [...sequence].reverse() : sequence).filter(video => visible.has(video.id));
   const open = forceOpen || openChannels.has(name);
   const block = element('article', 'channel' + (open ? ' open' : ''));
   const header = element('button', 'channel-header'); header.type = 'button';
@@ -435,7 +464,13 @@ function renderLibrary(videos, preparingID) {
   }
   const names = [...groups.keys()].sort((a, b) => (a === 'Other videos') - (b === 'Other videos')
     || a.localeCompare(b, undefined, {sensitivity:'base'}));
-  for (const name of names) library.append(channelBlock(name, groups.get(name), preparingID, Boolean(query)));
+  const everyChannel = new Map();
+  for (const video of videos) {
+    const name = channelName(video);
+    if (!everyChannel.has(name)) everyChannel.set(name, []);
+    everyChannel.get(name).push(video);
+  }
+  for (const name of names) library.append(channelBlock(name, groups.get(name), preparingID, Boolean(query), everyChannel.get(name)));
 }
 function rerenderLibrary() { librarySignature = ''; if (lastLibrary) renderLibrary(lastLibrary.videos, lastLibrary.preparingID); }
 $('library-sort').onchange = event => {
@@ -446,8 +481,16 @@ for (const view of LIBRARY_VIEWS) $(`view-${view}`).onclick = () => {
   libraryView = view; prefs.set('vp-library-view', view); rerenderLibrary();
 };
 $('library-filter').oninput = event => { libraryFilter = String(event.target.value || '').trim(); rerenderLibrary(); };
+let queueSignature = '';
+let refreshQueued = false, refreshError = '';
 function renderQueue(videos, activeID = '') {
-  const queued = videos.filter(video => video.state === 'preparing');
+  const isActive = video => video.id?.toLowerCase() === activeID?.toLowerCase();
+  // The iPhone prepares the oldest queued item next; number them that way.
+  const queued = videos.filter(video => video.state === 'preparing')
+    .sort((a, b) => isActive(b) - isActive(a) || (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
+  const signature = JSON.stringify([queued.map(video => [video.id, video.title, video.message]), activeID]);
+  if (signature === queueSignature) return;
+  queueSignature = signature;
   const panel = $('queue-panel');
   panel.hidden = !queued.length;
   $('queue-badge').textContent = `${queued.length} queued`;
@@ -461,8 +504,10 @@ function renderQueue(videos, activeID = '') {
       video.youtubeID ? `https://i.ytimg.com/vi/${encodeURIComponent(video.youtubeID)}/mqdefault.jpg` : null));
   });
 }
-async function refresh() {
-  if (refreshing) return;
+async function refresh(force = false) {
+  // A user action must see its own change, so queue one more pass instead of
+  // dropping the request when the 2-second poll is already in flight.
+  if (refreshing) { if (force) refreshQueued = true; return; }
   refreshing = true;
   try {
     const videos = await api('/api/library');
@@ -483,10 +528,16 @@ async function refresh() {
     $('settings-search').textContent = status.youtubeSearch ? 'Enabled' : 'Add API key on iPhone';
     $('settings-version').textContent = status.version
       ? `v${status.version}${status.build ? ` · build ${status.build}` : ''}` : '—';
+    if (refreshError && $('notice').textContent === refreshError) notice('');
+    refreshError = '';
     if (!searchChromeReady) { searchChromeReady = true; setSearchChrome(); }
-    renderLibrary(videos, status.preparingID);
-    updateResultButtons();
-    renderQueue(videos, status.preparingID);
+    // While a video plays, rebuilding hidden library DOM every poll competes
+    // with the decoder on the main thread; render once the player closes.
+    if ($('player-section').hidden) {
+      renderLibrary(videos, status.preparingID);
+      updateResultButtons();
+      renderQueue(videos, status.preparingID);
+    } else lastLibrary = {videos, preparingID:status.preparingID};
     updatePreparation(status, videos);
     const down = Number(status.downloadMbps) || 0, up = Number(status.uploadMbps) || 0;
     $('traffic-status').textContent = `Receiving ${down.toFixed(2)} Mb/s · Sending ${up.toFixed(2)} Mb/s`;
@@ -501,8 +552,12 @@ async function refresh() {
     if (status.youtubeExplore && !$('explore-results').children.length && Date.now() - exploreAttemptAt > 60000) void loadExplore();
   } catch (error) {
     $('connection').textContent = 'Connection lost'; $('connection').dataset.state = 'offline';
-    notice(error.message || 'Open Video Pilot on the iPhone and start hosting.');
-  } finally { refreshing = false; }
+    refreshError = error.message || 'Open Video Pilot on the iPhone and start hosting.';
+    notice(refreshError);
+  } finally {
+    refreshing = false;
+    if (refreshQueued) { refreshQueued = false; void refresh(); }
+  }
 }
 function statusLabel(status) {
   if (status.tunnel === 'connected') return status.busy ? 'Preparing' : 'Ready';
@@ -513,8 +568,8 @@ async function loadExplore() {
   exploring = true; exploreAttemptAt = Date.now();
   try {
     const results = await api('/api/explore');
-    $('explore-results').replaceChildren(...results.map(video => card(video.title, video.channel, {label:'Add to queue',run:() => queueVideo(video.id)}, video.thumbnail)));
-  } catch (error) { notice(error.message); }
+    $('explore-results').replaceChildren(...results.map(resultCard));
+  } catch (error) { $('explore-results').replaceChildren(card('Feed unavailable', error.message || 'Try Refresh in a moment.')); }
   finally { exploring = false; }
 }
 function updatePreparation(status, videos) {
@@ -556,12 +611,22 @@ async function queueVideo(url) {
   try {
     await api('/api/youtube', {url}); notice('');
     toast('Added. Your iPhone is preparing it; it appears in the library when ready.');
-    await refresh(); return true;
+    await refresh(true); return true;
   } catch (error) { notice(error.message); return false; }
 }
 async function removeVideo(id) {
-  try { const result = await api('/api/library/remove', {id}); notice(result.pending ? 'Cancelling preparation and removing video…' : 'Video removed.'); await refresh(); }
-  catch (error) { notice(error.message); }
+  try {
+    const result = await api('/api/library/remove', {id});
+    toast(result.pending ? 'Cancelling preparation and removing video…' : 'Video removed.');
+    await refresh(true); return true;
+  } catch (error) { notice(error.message); return false; }
+}
+async function retryVideo(id) {
+  try {
+    await api('/api/library/retry', {id}); notice('');
+    toast('Retrying on your iPhone.');
+    await refresh(true); return true;
+  } catch (error) { notice(error.message); return false; }
 }
 // ---- Search ----
 const SEARCH_FILTERS = ['any', 'short', 'medium', 'long', 'week', 'newest'];
@@ -586,25 +651,46 @@ function linkedVideoID(text) {
   return /^[\w-]{11}$/.test(value) && /[A-Z]/.test(value) && /[a-z]/.test(value) && /[\d_-]/.test(value) ? value : null;
 }
 function libraryEntry(youtubeID) { return lastLibrary?.videos.find(video => video.youtubeID === youtubeID) || null; }
-function updateResultButton(id) {
-  const button = resultButtons.get(id);
-  if (!button) return;
+// Search and feed cards can show the same video; every button for an ID
+// follows the library state for that ID.
+const addingFromSearch = new Set();
+function styleResultButton(button, id) {
   const entry = libraryEntry(id);
-  button.disabled = false; button.className = '';
+  if (entry) queuedFromSearch.delete(id);
+  button.disabled = false; button.className = ''; button.onclick = null;
+  if (addingFromSearch.has(id)) { button.textContent = 'Adding…'; button.className = 'quiet'; button.disabled = true; return; }
   if (entry?.state === 'ready') { button.textContent = savedResume(entry) ? 'Resume in library' : 'Play from library'; button.onclick = () => play(entry); return; }
-  if (entry && entry.state === 'preparing') { button.textContent = 'Preparing on iPhone…'; button.className = 'quiet'; button.disabled = true; return; }
-  if (queuedFromSearch.has(id) && !entry) { button.textContent = 'Added ✓'; button.className = 'quiet'; button.disabled = true; return; }
-  button.textContent = entry ? 'Try again' : 'Add to library';
+  if (entry?.state === 'preparing') { button.textContent = 'Preparing on iPhone…'; button.className = 'quiet'; button.disabled = true; return; }
+  if (queuedFromSearch.has(id)) { button.textContent = 'Added ✓'; button.className = 'quiet'; button.disabled = true; return; }
+  if (entry && (entry.state === 'failed' || entry.state === 'paused')) {
+    button.textContent = 'Retry download';
+    button.onclick = async () => { addingFromSearch.add(id); updateResultButton(id); await retryVideo(entry.id); addingFromSearch.delete(id); updateResultButton(id); };
+    return;
+  }
+  button.textContent = 'Add to library';
   button.onclick = async () => {
-    button.disabled = true; button.textContent = 'Adding…';
-    if (await queueVideo(id)) { queuedFromSearch.add(id); updateResultButton(id); }
-    else { button.disabled = false; button.textContent = 'Add to library'; }
+    addingFromSearch.add(id); updateResultButton(id);
+    const added = await queueVideo(id);
+    addingFromSearch.delete(id);
+    if (added) queuedFromSearch.add(id);
+    updateResultButton(id);
   };
 }
-function updateResultButtons() { for (const id of resultButtons.keys()) updateResultButton(id); }
+function updateResultButton(id) {
+  const buttons = resultButtons.get(id);
+  if (!buttons) return;
+  for (const button of buttons) {
+    if (button.isConnected === false) buttons.delete(button);
+    else styleResultButton(button, id);
+  }
+  if (!buttons.size) resultButtons.delete(id);
+}
+function updateResultButtons() { for (const id of [...resultButtons.keys()]) updateResultButton(id); }
 function resultCard(video) {
   const node = element('article', 'card result-card');
-  node.append(videoThumb({title:video.title, youtubeID:video.id, duration:0}, null));
+  const button = element('button'); button.type = 'button';
+  // Tapping the thumbnail does what the card's button does (play or add).
+  node.append(videoThumb({title:video.title, youtubeID:video.id, duration:0}, () => { if (!button.disabled) button.click(); }));
   if (video.duration) node.firstChild.append(element('span', 'duration-badge', video.duration));
   const body = element('div', 'card-body');
   body.append(element('h3', '', video.title));
@@ -618,9 +704,10 @@ function resultCard(video) {
   const extra = [video.views, video.published].filter(Boolean).join(' · ');
   if (extra) meta.append(element('span', '', (video.channel ? ' · ' : '') + extra));
   body.append(meta);
-  const button = element('button'); button.type = 'button'; body.append(button);
+  body.append(button);
   node.append(body);
-  resultButtons.set(video.id, button); updateResultButton(video.id);
+  if (!resultButtons.has(video.id)) resultButtons.set(video.id, new Set());
+  resultButtons.get(video.id).add(button); styleResultButton(button, video.id);
   return node;
 }
 function setSearchChrome() {
@@ -654,15 +741,18 @@ async function runSearch(rawQuery, append = false) {
   const query = String(rawQuery || '').trim();
   if (!query) return;
   hideSuggestions();
-  if (!append && linkedVideoID(query)) {
-    if (await queueVideo(query)) { $('query').value = ''; setSearchChrome(); }
+  // A typed or pasted YouTube link adds that video. Send the clean ID: the
+  // phone only accepts full https links, and drivers type 'youtu.be/…'.
+  const linked = linkedVideoID(query);
+  if (!append && linked && /youtu/i.test(query)) {
+    if (await queueVideo(linked)) { $('query').value = ''; setSearchChrome(); }
     return;
   }
   const seq = ++searchState.seq;
   searchState.loading = true;
   if (!append) {
     Object.assign(searchState, {query, continuation:null, results:[]});
-    resultButtons.clear(); rememberSearch(query);
+    rememberSearch(query);
     $('query').blur?.();
     $('results').replaceChildren(...Array.from({length:6}, () => element('div', 'card skeleton')));
     $('search-summary').hidden = false; $('search-summary').textContent = `Searching for “${query}”…`;
@@ -676,6 +766,7 @@ async function runSearch(rawQuery, append = false) {
     if (seq !== searchState.seq) return;
     const results = Array.isArray(page) ? page : (page.results || []);
     searchState.continuation = Array.isArray(page) ? null : (page.continuation || null);
+    if (!append) notice('');
     const known = new Set(searchState.results.map(video => video.id));
     const fresh = results.filter(video => video?.id && !known.has(video.id));
     searchState.results.push(...fresh);
@@ -698,14 +789,19 @@ $('query').oninput = () => {
   setSearchChrome();
   const value = $('query').value.trim();
   clearTimeout(suggestTimer);
-  if (linkedVideoID(value)) { showSuggestions([{label:'Add this video to your library', value, link:true}]); return; }
+  // A bare 11-character word could be an ID or a search ("GTA6Trailer");
+  // offer the add as a suggestion and still allow a normal search.
+  const linked = linkedVideoID(value);
+  if (linked && /youtu/i.test(value)) { showSuggestions([{label:'Add this video to your library', value:linked, link:true}]); return; }
   if (value.length < 2) { hideSuggestions(); return; }
+  const idSuggestion = linked ? [{label:'Add video ID ' + linked, value:linked, link:true}] : [];
+  if (idSuggestion.length) showSuggestions(idSuggestion);
   const seq = ++suggestSeq;
   suggestTimer = setTimeout(async () => {
     try {
       const items = await api('/api/suggest?q=' + encodeURIComponent(value));
       if (seq === suggestSeq && $('query').value.trim() === value && Array.isArray(items)) {
-        showSuggestions(items.filter(item => typeof item === 'string').slice(0, 7).map(item => ({label:item, value:item})));
+        showSuggestions([...idSuggestion, ...items.filter(item => typeof item === 'string').slice(0, 7).map(item => ({label:item, value:item}))]);
       }
     } catch {}
   }, 220);
@@ -726,6 +822,9 @@ document.querySelectorAll?.('[data-go]').forEach(button => button.onclick = () =
 $('explore-refresh').onclick = () => { void loadExplore(); };
 function formatTime(value) {
   const seconds = Math.max(0, Math.floor(Number(value) || 0));
+  if (seconds >= 3600) {
+    return `${Math.floor(seconds / 3600)}:${String(Math.floor(seconds % 3600 / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+  }
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 function finiteDuration(value) {
@@ -1108,7 +1207,12 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
     $('player-section').scrollIntoView({behavior:'smooth',block:'start'});
   } catch (error) { session.failed = true; $('playback-status').textContent = error.message; }
 }
+let playerReturn = null;
 function play(video, seek = null) {
+  if ($('player-section').hidden) {
+    const panels = [...(document.querySelectorAll?.('.tab-panel') || [])];
+    playerReturn = {tab:panels.find(panel => !panel.hidden && panel.id !== 'player-section')?.id || 'youtube-tab', y:globalThis.scrollY || 0};
+  }
   invalidateSeeks();
   // Opening the first video can stay synchronous for a responsive button. A
   // replacement is serialized behind decoder teardown so an old read loop can
@@ -1152,7 +1256,13 @@ $('back10').onclick = () => { if (current) requestSeek(Math.max(0, currentOffset
 $('forward10').onclick = () => { if (current) requestSeek(Math.min(current.duration || Infinity, currentOffset + 10)); };
 $('close').onclick = () => {
   invalidateSeeks();
-  void closePlayer().then(() => showTab('youtube-tab'));
+  void closePlayer().then(() => {
+    const back = playerReturn || {tab:'youtube-tab', y:0};
+    playerReturn = null;
+    showTab(back.tab); globalThis.scrollTo?.(0, back.y);
+    rerenderLibrary(); updateResultButtons(); queueSignature = '';
+    if (lastLibrary) renderQueue(lastLibrary.videos, lastLibrary.preparingID);
+  });
 };
 $('mute').onclick = () => {
   if (player) {

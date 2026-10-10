@@ -294,3 +294,13 @@ test('search box recognises pasted YouTube links and bare IDs but not ordinary w
   assert.equal(id('minecraftxx'), null);
   assert.equal(id('tesla model 3'), null);
 });
+
+test('long videos show hours, and undated videos keep the order they were added', () => {
+  const f = setup();
+  assert.equal(f.evaluate('formatTime(3725)'), '1:02:05');
+  assert.equal(f.evaluate('formatTime(125)'), '2:05');
+  f.evaluate(`globalThis.undated = [{id:'new', createdAt:300}, {id:'old', createdAt:100}, {id:'mid', createdAt:200},
+    {id:'dated', publishedAt:'2020-01-01T00:00:00Z', createdAt:50}]`);
+  assert.equal(f.evaluate(`sortLibrary(undated, 'oldest').map(v => v.id).join(',')`), 'dated,old,mid,new');
+  assert.equal(f.evaluate(`sortLibrary(undated, 'newest').map(v => v.id).join(',')`), 'dated,new,mid,old');
+});

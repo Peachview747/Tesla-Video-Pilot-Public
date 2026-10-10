@@ -1,10 +1,10 @@
 {
   "name": "Video Pilot",
-  "version": "0.1.36",
-  "build": "48",
+  "version": "0.1.37",
+  "build": "49",
   "iconVersion": "0.1.28",
   "artifactPrefix": "Tesla-Video-Pilot",
-  "releaseNotes": "Build 48 softens both themes on the iPhone and Tesla, adds a channel-first Tesla library (tap a channel to expand its videos in release order, numbered, with Play next and progress), Continue watching, a library filter, and rebuilds search: keyless YouTube search with suggestions, filters, Load more, durations, views and one-tap Add.",
+  "releaseNotes": "Build 49 fixes issues found in a full review: retry failed/paused downloads from the Tesla, typed youtu.be links, search button states, queue order, return to the library after closing the player, watched marking near the end, less work during playback, readable connection errors, Google sign-in errors shown with Google's actual reason, a Worker open-proxy fix, and a background-time crash risk.",
   "packaging": "arm64-only-adhoc-signature-template",
   "stage": "native-prototype",
   "branch": "iphone-native",

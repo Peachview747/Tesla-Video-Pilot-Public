@@ -752,8 +752,11 @@ private struct HostSettingsView: View {
                 } else {
                     Text("Sign in once on this iPhone to unlock account-aware YouTube search and subscriptions. Google tokens stay in the Keychain.")
                         .font(.subheadline).foregroundStyle(MK8Theme.secondary)
-                    Button("Sign in with Google", systemImage: "person.crop.circle") { host.signInYouTube() }
-                        .buttonStyle(.borderedProminent).controlSize(.large)
+                    Button(host.youtubeSigningIn ? "Signing in…" : "Sign in with Google", systemImage: "person.crop.circle") { host.signInYouTube() }
+                        .buttonStyle(.borderedProminent).controlSize(.large).disabled(host.youtubeSigningIn)
+                }
+                if !host.youtubeAuthStatus.isEmpty {
+                    Text(host.youtubeAuthStatus).font(.footnote).foregroundStyle(MK8Theme.secondary).textSelection(.enabled)
                 }
             }
             HostCard {
