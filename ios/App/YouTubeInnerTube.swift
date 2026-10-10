@@ -12,6 +12,8 @@ enum YouTubeInnerTube {
         let duration: String?
         let views: String?
         let published: String?
+        /// Owner channel (UC...) so the Tesla page can open the channel.
+        var channelId: String? = nil
     }
     struct Page: Encodable {
         let results: [Hit]
@@ -28,6 +30,9 @@ enum YouTubeInnerTube {
         "week": "EgQIAxAB", "newest": "CAISAhAB"
     ]
     private static let clientVersion = "2.20250101.00.00"
+    static var context: [String: Any] {
+        ["client": ["clientName": "WEB", "clientVersion": clientVersion, "hl": "en", "gl": "US"]]
+    }
     private static let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 15
@@ -37,18 +42,10 @@ enum YouTubeInnerTube {
     }()
 
     static func search(_ query: String, filter: String, continuation: String?) async throws -> Page {
-        var body: [String: Any] = ["context": ["client": ["clientName": "WEB", "clientVersion": clientVersion,
-                                                          "hl": "en", "gl": "US"]]]
+        var body: [String: Any] = [:]
         if let continuation, !continuation.isEmpty { body["continuation"] = continuation }
         else { body["query"] = query; body["params"] = filters[filter] ?? filters["any"]! }
-        var request = URLRequest(url: URL(string: "https://www.youtube.com/youtubei/v1/search?prettyPrint=false")!)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await session.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200,
-              let object = try? JSONSerialization.jsonObject(with: data) else { throw Failure.unavailable }
+        let object = try await post("search", body: body)
         var renderers: [[String: Any]] = []
         var token: String?
         walk(object, renderers: &renderers, token: &token)
@@ -63,9 +60,42 @@ enum YouTubeInnerTube {
                        thumbnail: "https://i.ytimg.com/vi/\(id)/mqdefault.jpg",
                        duration: text(renderer["lengthText"]),
                        views: text(renderer["shortViewCountText"]) ?? text(renderer["viewCountText"]),
-                       published: text(renderer["publishedTimeText"]))
+                       published: text(renderer["publishedTimeText"]),
+                       channelId: browseID(renderer["ownerText"]) ?? browseID(renderer["longBylineText"]))
         }
         return Page(results: hits, continuation: token)
+    }
+
+    /// POSTs a keyless InnerTube request (`search`, `browse`, `next`,
+    /// `navigation/resolve_url`) and returns the parsed JSON object.
+    static func post(_ endpoint: String, body: [String: Any]) async throws -> Any {
+        var payload = body
+        payload["context"] = context
+        guard let url = URL(string: "https://www.youtube.com/youtubei/v1/\(endpoint)?prettyPrint=false") else {
+            throw Failure.unavailable
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        // Feed and channel routes make several calls inside the 15 s HTTP timeout.
+        request.timeoutInterval = 8
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("en-US", forHTTPHeaderField: "Accept-Language")
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        let (data, response) = try await session.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              let object = try? JSONSerialization.jsonObject(with: data) else { throw Failure.unavailable }
+        return object
+    }
+
+    /// The first `browseEndpoint.browseId` inside a text/runs object.
+    static func browseID(_ value: Any?) -> String? {
+        guard let runs = (value as? [String: Any])?["runs"] as? [[String: Any]] else { return nil }
+        for run in runs {
+            if let endpoint = (run["navigationEndpoint"] as? [String: Any])?["browseEndpoint"] as? [String: Any],
+               let id = endpoint["browseId"] as? String, id.hasPrefix("UC") { return id }
+        }
+        return nil
     }
 
     /// Typeahead suggestions from YouTube's public completion endpoint.
@@ -90,7 +120,11 @@ enum YouTubeInnerTube {
     private static func walk(_ value: Any, renderers: inout [[String: Any]], token: inout String?) {
         if let dictionary = value as? [String: Any] {
             if let renderer = dictionary["videoRenderer"] as? [String: Any] { renderers.append(renderer) }
-            if token == nil, let command = dictionary["continuationCommand"] as? [String: Any] {
+            // Only the continuation that loads more results; other commands
+            // (sort chips, engagement panels) also carry tokens.
+            if token == nil, let item = dictionary["continuationItemRenderer"] as? [String: Any],
+               let endpoint = item["continuationEndpoint"] as? [String: Any],
+               let command = endpoint["continuationCommand"] as? [String: Any] {
                 token = command["token"] as? String
             }
             for child in dictionary.values { walk(child, renderers: &renderers, token: &token) }
@@ -98,7 +132,7 @@ enum YouTubeInnerTube {
             for child in array { walk(child, renderers: &renderers, token: &token) }
         }
     }
-    private static func text(_ value: Any?) -> String? {
+    static func text(_ value: Any?) -> String? {
         guard let value = value as? [String: Any] else { return nil }
         if let simple = value["simpleText"] as? String { return simple }
         if let runs = value["runs"] as? [[String: Any]] {

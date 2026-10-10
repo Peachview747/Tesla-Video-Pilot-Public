@@ -14,6 +14,10 @@ struct LibraryVideo: Codable, Identifiable {
     /// and for items saved by builds before 46 until they are filled in.
     var channel: String?
     var publishedAt: String?
+    /// YouTube channel ID (UC...) so the Tesla page can open the channel.
+    /// Optional, so libraries saved by older builds still decode; it is
+    /// filled lazily by BrowseService.
+    var channelId: String?
 }
 
 @MainActor final class Library: ObservableObject {
@@ -69,6 +73,13 @@ struct LibraryVideo: Codable, Identifiable {
         let previous = videos[i]
         if let channel { videos[i].channel = channel }
         if let publishedAt { videos[i].publishedAt = publishedAt }
+        do { try save() } catch { videos[i] = previous; throw error }
+    }
+    func setChannelId(_ id: UUID, channelId: String, channel: String? = nil) throws {
+        guard let i = videos.firstIndex(where: { $0.id == id }) else { return }
+        let previous = videos[i]
+        videos[i].channelId = channelId
+        if videos[i].channel == nil, let channel, !channel.isEmpty { videos[i].channel = channel }
         do { try save() } catch { videos[i] = previous; throw error }
     }
     func remove(_ id: UUID) throws {

@@ -64,6 +64,12 @@ import Network
     var preparingTitle: String { videos.first { $0.id == preparingID }?.title ?? "Your video" }
     var queuedCount: Int { videos.filter { $0.state == "preparing" && $0.id != preparingID }.count }
     private var library: Library?
+    /// Channel pages, watch history and the "For you" feed (YouTubeBrowse.swift).
+    private lazy var browse: BrowseService = {
+        let service = BrowseService()
+        service.libraryChanged = { [weak self] in self?.refresh() }
+        return service
+    }()
     private var server: HTTPServer?
     private var tunnel: PhoneTunnel?
     private var localStreams = 0
@@ -749,6 +755,18 @@ import Network
             return HTTPResponse(status: 200, contentType: type, body: data,
                 headers: ["Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https://i.ytimg.com https://yt3.ggpht.com https://yt3.googleusercontent.com; connect-src 'self'; object-src 'none'; frame-ancestors 'none'"])
         }
+        // Browse routes: /api/channel, /api/history, /api/foryou. Also notes
+        // plays on /api/stream/ and fills channel IDs on /api/library.
+        var subscriptions: BrowseService.Subscriptions?
+        if youtubeSignedIn {
+            let oauth = youtubeOAuth
+            subscriptions = {
+                try await oauth.retryUnauthorized { token in try await YouTubeSearch.subscriptions(accessToken: token) }
+            }
+        }
+        if let response = await browse.respond(to: request, library: library, subscriptions: subscriptions) {
+            return response
+        }
         if request.path == "/api/library", request.method == "GET" {
             return HTTPResponse(status: 200, contentType: "application/json", body: (try? JSONEncoder().encode(videos)) ?? Data("[]".utf8))
         }
@@ -805,6 +823,7 @@ import Network
                 return .json(["error": "Enter a valid YouTube URL or video ID."], status: 400)
             }
             guard let video = queue(id: id, imported: nil) else { return .json(["error": message], status: 409) }
+            browse.adopt(channelId: body["channelId"], channel: body["channel"], for: video.id, library: library)
             return .json(["id": video.id.uuidString], status: 202)
         }
         if request.path == "/api/library/retry", request.method == "POST" {
