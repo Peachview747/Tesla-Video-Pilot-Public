@@ -96,3 +96,19 @@ against this contract now and hide the controls gracefully if an endpoint return
 - Queue page/panel: live list with stage, progress bar, speed, ETA, cancel, move to top.
 - Settings: Quality picker (720p / 1080p).
 - Library: "Upgrade to 1080p" per video and "Upgrade all" (only shown for lower-quality items).
+
+### Worker changes needed (assigned to `quality`, after `perf`'s cloudflare edits land)
+Reviewed `cloudflare/worker.js` + `phone-relay.js` against the new features:
+- New endpoints (`/api/channel`, `/api/foryou`, `/api/queue`, `/api/settings`, upgrade) pass
+  through already — the Worker has no route allowlist. No change needed for routing.
+- `MAX_REQUESTS = 8` is shared by video streams and small API calls. The new home feed
+  (several rows) plus queue polling plus a playing video can hit "iPhone is busy" (429).
+  Split the limit: streams capped separately; short JSON API calls get their own budget.
+- "iPhone did not respond" fires after 15 s. `/api/foryou` and `/api/channel` make several
+  YouTube calls on the phone and can exceed that cold. Raise the first-byte timeout for API
+  calls (e.g. 30 s) and keep streams at the current values.
+- 1080p throughput: each 128 KiB chunk is pulled one at a time, so speed is capped by one
+  Worker↔phone round trip per chunk. 1080p MPEG-1 needs roughly 1 MB/s. Allow a small
+  window of chunks in flight (e.g. 4) with the same backpressure guarantees.
+- Offline page still says "MK8 host is offline" → rename to Video Pilot.
+- Keep relay tests green and add tests for the split limit and the chunk window.
