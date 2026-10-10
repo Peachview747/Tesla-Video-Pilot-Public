@@ -1317,7 +1317,7 @@ function renderSettings() {
   $('diag-prep-download').textContent = prep ? [mbps(prep.downloadMbps), prep.downloadSeconds != null ? `${prep.downloadSeconds} s` : ''].filter(Boolean).join(' · ') : '—';
   $('diag-prep-processing').textContent = prep ? [prep.processingSpeed ? `${Number(prep.processingSpeed).toFixed(1)}× real time` : '', prep.processingSeconds != null ? `${prep.processingSeconds} s` : ''].filter(Boolean).join(' · ') || '—' : '—';
   $('diag-prep-hw').textContent = prep && prep.hardwareDecode != null ? (prep.hardwareDecode ? 'Yes' : 'No (software)') : '—';
-  $('diag-prep-bitrate').textContent = prep?.outputKbps ? `${Math.round(prep.outputKbps)} kb/s${prep.quality ? ` · ${prep.quality}` : ''}` : '—';
+  $('diag-prep-bitrate').textContent = prep?.outputKbps ? `${Math.round(prep.outputKbps)} kb/s${prep.quality ? ` · ${/^\d+$/.test(String(prep.quality)) ? `${prep.quality}p` : prep.quality}` : ''}` : '—';
 }
 function renderLiveDiagnostics() {
   // The stream reader's own numbers (http-source stats()) when a video is open.
