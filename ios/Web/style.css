@@ -191,15 +191,20 @@ canvas { display: block; width: 100%; height: auto; aspect-ratio: auto; border-r
 #player-shell:fullscreen,
 #player-shell:-webkit-full-screen {
   position: relative;
+  /* Video and its control rail form one stacked group, centred vertically.
+     Pinning the video to the top left every spare pixel as a black band
+     between the picture and the controls on the Tesla screen. */
   display: flex;
-  align-items: stretch;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
+  gap: 6px;
   width: 100vw;
   height: 100vh;
   height: 100dvh;
   max-width: none;
   max-height: none;
-  padding: 0;
+  padding: 0 0 10px;
   border-radius: 0;
   background: #000;
   overflow: hidden;
@@ -216,22 +221,23 @@ canvas { display: block; width: 100%; height: auto; aspect-ratio: auto; border-r
 #player-shell.vp-fullscreen canvas,
 #player-shell:fullscreen canvas,
 #player-shell:-webkit-full-screen canvas {
+  /* Keep the decoder's own ratio; leave room below for the control rail. */
+  flex: 0 1 auto;
   width: 100%;
   max-width: none;
-  height: 100%;
+  height: auto;
+  max-height: calc(100dvh - 96px);
   min-height: 0;
   object-fit: contain;
-  object-position: center top;
   aspect-ratio: auto;
   border-radius: 0;
 }
 #player-shell.vp-fullscreen .controls,
 #player-shell:fullscreen .controls,
 #player-shell:-webkit-full-screen .controls {
-  position: absolute;
-  right: 16px;
-  bottom: 38px;
-  left: 16px;
+  position: static;
+  flex: 0 0 auto;
+  width: calc(100% - 32px);
   display: flex;
   justify-content: center;
   gap: 5px;
@@ -283,13 +289,12 @@ canvas { display: block; width: 100%; height: auto; aspect-ratio: auto; border-r
 #player-shell.vp-fullscreen .timeline,
 #player-shell:fullscreen .timeline,
 #player-shell:-webkit-full-screen .timeline {
-  position: absolute;
-  right: 20px;
-  bottom: 12px;
-  left: 20px;
+  position: static;
+  flex: 0 0 auto;
+  width: calc(100% - 40px);
   display: flex;
   gap: 7px;
-  height: 13px;
+  height: 24px;
   padding: 0;
   color: #dbe5eb;
   font-size: 10px;
@@ -304,14 +309,15 @@ canvas { display: block; width: 100%; height: auto; aspect-ratio: auto; border-r
 @media (max-width: 560px) {
   #player-shell.vp-fullscreen .controls,
   #player-shell:fullscreen .controls,
-  #player-shell:-webkit-full-screen .controls { right: 8px; bottom: 31px; left: 8px; gap: 3px; padding: 4px; }
+  #player-shell:-webkit-full-screen .controls { gap: 3px; padding: 4px; }
   #player-shell.vp-fullscreen .controls button,
   #player-shell:fullscreen .controls button,
   #player-shell:-webkit-full-screen .controls button { padding: 4px 6px; font-size: 10px; }
   #player-shell.vp-fullscreen #exit-fullscreen,
   #player-shell:fullscreen #exit-fullscreen,
   #player-shell:-webkit-full-screen #exit-fullscreen { top: 8px; right: 8px; min-height: 31px; padding: 6px 8px; font-size: 10px; }
-  #player-shell.vp-fullscreen .timeline,
-  #player-shell:fullscreen .timeline,
-  #player-shell:-webkit-full-screen .timeline { right: 10px; bottom: 8px; left: 10px; }
+  #player-shell.vp-fullscreen .controls, #player-shell.vp-fullscreen .timeline,
+  #player-shell:fullscreen .controls, #player-shell:fullscreen .timeline,
+  #player-shell:-webkit-full-screen .controls,
+  #player-shell:-webkit-full-screen .timeline { width: calc(100% - 16px); }
 }
