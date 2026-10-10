@@ -54,6 +54,8 @@ import MK8Core
                     components.scheme = "wss"
                     request.url = components.url
                     request.setValue(secret, forHTTPHeaderField: "x-secret")
+                    // Advertise windowed pulls; an older Worker ignores the header.
+                    request.setValue(String(RelayProtocol.maximumWindow), forHTTPHeaderField: RelayProtocol.windowHeader)
                     let socket = self.session.webSocketTask(with: request)
                     socket.maximumMessageSize = RelayProtocol.maximumChunk + 16
                     self.socket = socket
@@ -162,6 +164,8 @@ import MK8Core
             guard !sawHello, value["protocol"] as? String == RelayProtocol.name else { throw RelayError.protocolMismatch }
             sawHello = true
             lastPong = ProcessInfo.processInfo.systemUptime
+            SessionDiagnostics.shared.record(component: "tunnel", event: "hello",
+                fields: ["window": String((value["window"] as? Int) ?? 1)])
             changeState(.connected, "Connected. Open the public address in the Tesla browser.")
             return
         }
@@ -181,9 +185,15 @@ import MK8Core
         if type == "pull" {
             guard let peer = peers[id] else { return }
             guard peer.ready else { throw RelayError.protocolMismatch }
+            // A windowed Worker sends several credits per pull so frames stay in
+            // flight across the Cloudflare round trip. Legacy pulls carry none.
+            let windowed = value["credits"] as? Int
             let startDrain: Bool
-            do { startDrain = try peer.credits.grant() }
-            catch {
+            do {
+                if let windowed {
+                    startDrain = try peer.credits.grant(windowed, limit: RelayProtocol.maximumWindow)
+                } else { startDrain = try peer.credits.grant() }
+            } catch {
                 // A late/duplicate pull can race a seek cancellation. It is
                 // local to this peer; tearing down the whole tunnel would
                 // strand every other browser request.

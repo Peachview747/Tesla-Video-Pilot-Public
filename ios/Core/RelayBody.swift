@@ -76,36 +76,39 @@ public final class RelayBody {
 }
 
 // A new Worker pull may arrive before URLSession finishes the preceding async
-// send. Keep exactly one pending credit behind the serial drain instead of
-// treating that legitimate ordering as a protocol error.
+// send. Keep the granted credits behind the serial drain instead of treating
+// that legitimate ordering as a protocol error. A legacy Worker grants one
+// credit per pull (limit 1); a windowed Worker grants several at once so the
+// phone can keep frames in flight across the Cloudflare round trip.
 public struct RelayCredits {
     public enum Failure: Error { case closed, duplicate }
     public private(set) var draining = false
-    public private(set) var pending = false
+    public private(set) var available = 0
     private var closed = false
+
+    public var pending: Bool { available > 0 }
 
     public init() {}
 
     // True means the caller must start the sole drain task.
-    public mutating func grant() throws -> Bool {
+    public mutating func grant(_ count: Int = 1, limit: Int = 1) throws -> Bool {
         guard !closed else { throw Failure.closed }
-        guard !pending else { throw Failure.duplicate }
-        pending = true
+        guard count > 0, limit > 0, available + count <= limit else { throw Failure.duplicate }
+        available += count
         if draining { return false }
         draining = true
         return true
     }
 
     public mutating func consume() -> Bool {
-        guard !closed, pending else { draining = false; return false }
-        pending = false
+        guard !closed, available > 0 else { draining = false; return false }
+        available -= 1
         return true
     }
 
     public mutating func close() {
         closed = true
-        pending = false
+        available = 0
         draining = false
     }
 }
-

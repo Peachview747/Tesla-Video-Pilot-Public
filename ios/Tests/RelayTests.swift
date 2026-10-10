@@ -203,6 +203,21 @@ final class RelayTests: XCTestCase {
         XCTAssertFalse(credits.draining)
     }
 
+    func testWindowedCreditsQueueSeveralFramesAndStayBounded() throws {
+        var credits = RelayCredits()
+        let limit = RelayProtocol.maximumWindow
+        XCTAssertTrue(try credits.grant(4, limit: limit)) // A windowed Worker grants several at once.
+        XCTAssertEqual(credits.available, 4)
+        XCTAssertFalse(try credits.grant(limit - 4, limit: limit)) // Top-up joins the running drain.
+        XCTAssertThrowsError(try credits.grant(1, limit: limit)) // Never beyond the advertised window.
+        XCTAssertThrowsError(try credits.grant(0, limit: limit))
+        for _ in 0..<limit { XCTAssertTrue(credits.consume()) }
+        XCTAssertFalse(credits.consume())
+        XCTAssertFalse(credits.draining)
+        XCTAssertTrue(try credits.grant()) // Legacy single-credit pulls still work afterwards.
+        XCTAssertThrowsError(try credits.grant())
+    }
+
     @MainActor func testQueuedPullDuringSuspendedSendDrainsAndRestartsWithoutLosingBytes() async throws {
         let bytes = Data((0..<(RelayProtocol.maximumChunk * 2 + 17)).map { UInt8($0 % 251) })
         let drain = RelayTestDrain(body: RelayBody(data: bytes))

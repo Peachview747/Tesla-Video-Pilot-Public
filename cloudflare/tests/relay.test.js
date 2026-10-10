@@ -21,8 +21,8 @@ async function fixture(t) {
   }));
   t.after(() => mf.dispose());
   const fetch = (path, init) => mf.dispatchFetch(ORIGIN + path, init);
-  const connect = async (key = SECRET) => {
-    const response = await fetch("/__iphone/connect", { headers: { upgrade: "websocket", "x-secret": key } });
+  const connect = async (key = SECRET, extra = {}) => {
+    const response = await fetch("/__iphone/connect", { headers: { upgrade: "websocket", "x-secret": key, ...extra } });
     if (!response.webSocket) return { response, socket: null };
     const socket = response.webSocket;
     socket.accept();
@@ -36,10 +36,12 @@ function phone(socket, respond) {
   const requests = new Map();
   const observed = [];
   let pulls = 0, cancels = 0;
+  const credits = [];
+  const hello = [];
   socket.addEventListener("message", event => {
     if (socket.readyState !== 1) return;
     const message = JSON.parse(event.data);
-    if (message.type === "hello") return;
+    if (message.type === "hello") { hello.push(message); return; }
     if (message.type === "ping") { socket.send(JSON.stringify({ type: "pong", id: message.id })); return; }
     if (message.type === "request") {
       observed.push(message);
@@ -51,21 +53,24 @@ function phone(socket, respond) {
     }
     if (message.type === "pull") {
       pulls++;
-      const pending = requests.get(message.id);
-      if (!pending) return;
-      if (pending.chunks++ >= pending.holdAfter) return;
-      const chunk = pending.body.subarray(pending.offset, pending.offset + 32768);
-      pending.offset += chunk.length;
-      const identity = Buffer.from(message.id.replaceAll("-", ""), "hex");
-      socket.send(Buffer.concat([identity, chunk]));
-      if (pending.offset === pending.body.length) {
-        socket.send(JSON.stringify({ type: "end", id: message.id }));
-        requests.delete(message.id);
+      credits.push(message.credits);
+      for (let credit = 0; credit < (message.credits ?? 1); credit++) {
+        const pending = requests.get(message.id);
+        if (!pending) return;
+        if (pending.chunks++ >= pending.holdAfter) return;
+        const chunk = pending.body.subarray(pending.offset, pending.offset + 32768);
+        pending.offset += chunk.length;
+        const identity = Buffer.from(message.id.replaceAll("-", ""), "hex");
+        socket.send(Buffer.concat([identity, chunk]));
+        if (pending.offset === pending.body.length) {
+          socket.send(JSON.stringify({ type: "end", id: message.id }));
+          requests.delete(message.id);
+        }
       }
     }
     if (message.type === "cancel") { cancels++; requests.delete(message.id); }
   });
-  return { observed, get pulls() { return pulls; }, get cancels() { return cancels; } };
+  return { observed, credits, hello, get pulls() { return pulls; }, get cancels() { return cancels; } };
 }
 
 test("rejects an incorrect key and exposes an authenticated setup check", async t => {
@@ -228,4 +233,77 @@ test("bounds request bodies and active requests, and replaces a stale phone clea
     catch (error) { if (error.code === "ERR_ASSERTION") throw error; }
   }
   assert.equal(await (await f.fetch("/new")).text(), "new phone");
+});
+
+test("a windowed phone streams exact bytes with several frames in flight", async t => {
+  const f = await fixture(t);
+  const { socket } = await f.connect(SECRET, { "x-mk8-relay-window": "16" });
+  const ts = Buffer.alloc(188 * 5000);
+  for (let i = 0; i < ts.length; i++) ts[i] = i % 188 === 0 ? 0x47 : i % 241;
+  const p = phone(socket, () => ({ body: ts }));
+  const response = await f.fetch("/api/stream/window.ts");
+  assert.equal(response.status, 200);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), ts);
+  // The Worker caps the phone's advertised window at its own bound.
+  assert.equal(p.credits[0], 6);
+  assert.ok(p.credits.every(value => Number.isInteger(value) && value >= 1 && value <= 6));
+  assert.equal(p.hello[0].window, 6);
+  // Legacy phones (no header) keep one credit per pull.
+  const legacy = await f.connect();
+  const q = phone(legacy.socket, () => ({ body: ts.subarray(0, 100000) }));
+  assert.equal((await (await f.fetch("/legacy")).arrayBuffer()).byteLength, 100000);
+  assert.ok(q.credits.every(value => value === undefined));
+});
+
+test("windowed relay prefetches before the first read and never exceeds its credit", async t => {
+  const messages = [];
+  const socket = { readyState: 1, send: text => messages.push(JSON.parse(text)), close() {} };
+  const relay = new PhoneTunnel({ getWebSockets: () => [] }, { SECRET });
+  relay.phone = socket;
+  relay.window = 6;
+  const responsePromise = relay.fetch(new Request(ORIGIN + "/video"));
+  await tick();
+  const id = messages[0].id;
+  const identity = Buffer.from(id.replaceAll("-", ""), "hex");
+  relay.webSocketMessage(socket, JSON.stringify({ type: "response", id, status: 200, headers: {}, length: 20 }));
+  const response = await responsePromise;
+  await tick();
+  // Credits are granted before the browser reads anything.
+  const granted = () => messages.filter(m => m.type === "pull").reduce((sum, m) => sum + m.credits, 0);
+  assert.equal(granted(), 6);
+  for (let i = 0; i < 6; i++) relay.webSocketMessage(socket, Buffer.concat([identity, Buffer.from([i, i])]));
+  await tick();
+  // Nothing read yet: the queue is full, so no further credit is granted.
+  assert.equal(granted(), 6);
+  const reader = response.body.getReader();
+  const seen = [];
+  for (let i = 0; i < 6; i++) seen.push(...(await reader.read()).value);
+  await tick();
+  assert.ok(granted() > 6 && granted() <= 12, "reads must replenish credit up to the window");
+  assert.deepEqual(seen, [0,0,1,1,2,2,3,3,4,4,5,5]);
+  relay.webSocketMessage(socket, Buffer.concat([identity, Buffer.from([6, 7, 8, 9, 10, 11, 12, 13])]));
+  assert.deepEqual([...(await reader.read()).value], [6, 7, 8, 9, 10, 11, 12, 13]);
+  assert.equal((await reader.read()).done, true);
+  assert.equal(relay.pending.size, 0);
+  // A frame beyond granted credit is a protocol violation.
+  messages.length = 0;
+  const overPromise = relay.fetch(new Request(ORIGIN + "/over"));
+  await tick();
+  const overID = messages[0].id;
+  relay.webSocketMessage(socket, JSON.stringify({ type: "response", id: overID, status: 200, headers: {}, length: 100 }));
+  await overPromise;
+  await tick();
+  const overIdentity = Buffer.from(overID.replaceAll("-", ""), "hex");
+  for (let i = 0; i < 6; i++) relay.webSocketMessage(socket, Buffer.concat([overIdentity, Buffer.from([1])]));
+  assert.equal(relay.phone, socket);
+  relay.webSocketMessage(socket, Buffer.concat([overIdentity, Buffer.from([1])]));
+  assert.equal(relay.phone, null);
+  t.after(() => relay.disconnect(socket, "test complete"));
+});
+
+test("a hibernated relay restores the phone's window from its socket attachment", () => {
+  const socket = { readyState: 1, deserializeAttachment: () => ({ window: 6 }) };
+  assert.equal(new PhoneTunnel({ getWebSockets: () => [socket] }, { SECRET }).window, 6);
+  assert.equal(new PhoneTunnel({ getWebSockets: () => [{ readyState: 1 }] }, { SECRET }).window, 1);
+  assert.equal(new PhoneTunnel({ getWebSockets: () => [] }, { SECRET }).window, 1);
 });
