@@ -57,14 +57,15 @@ final class MediaDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Se
         background.waitsForConnectivity = true
         background.allowsCellularAccess = true
         background.allowsExpensiveNetworkAccess = true
-        background.httpMaximumConnectionsPerHost = 6
+        background.httpMaximumConnectionsPerHost = 8
         background.timeoutIntervalForResource = 86_400
         backgroundSession = URLSession(configuration: background, delegate: self, delegateQueue: queue)
         let foreground = URLSessionConfiguration.ephemeral
         foreground.waitsForConnectivity = true
         foreground.allowsCellularAccess = true
         foreground.allowsExpensiveNetworkAccess = true
-        foreground.httpMaximumConnectionsPerHost = 6
+        // Six video + two audio range workers may share one googlevideo host.
+        foreground.httpMaximumConnectionsPerHost = 8
         foreground.timeoutIntervalForResource = 86_400
         foregroundSession = URLSession(configuration: foreground, delegate: self, delegateQueue: queue)
     }
@@ -114,7 +115,8 @@ final class MediaDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Se
                 mode(background ? .background : .standard)
                 return try await download(url, descriptor: descriptor, background: background, progress: progress, traffic: traffic)
             }
-            plan = MediaTransferPlan(url: url, length: verified.length, transport: verified.transport)
+            plan = MediaTransferPlan(url: url, length: verified.length,
+                                     chunkSize: Self.chunkSize(forLength: verified.length), transport: verified.transport)
             try save(plan!, to: planFile)
         }
         guard var transfer = plan else { throw MediaError.badDownload }
@@ -155,6 +157,12 @@ final class MediaDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Se
         return destination
     }
 
+    /// Large tracks use bigger ranges so fewer request round trips are spent;
+    /// both sizes stay under googlevideo's unthrottled range-request size.
+    static func chunkSize(forLength length: Int64) -> Int64 {
+        length >= 64 * 1_024 * 1_024 ? 8 * 1_024 * 1_024 : 4 * 1_024 * 1_024
+    }
+
     private struct BackgroundHandoff: Error {}
     private enum ChunkEvent: Sendable { case completed, handoff }
 
@@ -181,7 +189,9 @@ final class MediaDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Se
                     }
                 }
             }
-            let workers = descriptor.track == .audio ? 2 : 4
+            // YouTube paces each connection, so more concurrent ranges finish a
+            // track sooner. Six stays within the per-host connection budget.
+            let workers = descriptor.track == .audio ? 2 : 6
             while next < min(workers, ranges.count) { enqueue(next); next += 1 }
             while let event = try await group.next() {
                 switch event {
