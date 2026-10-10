@@ -12,6 +12,8 @@ const MAX_REQUESTS = 8;
 // frames are queued ahead of the browser's reader per stream.
 const WINDOW = 6;
 const STALL_MS = 12000;
+// The web app waits up to 30 s for /api/foryou and /api/channel.
+const API_FIRST_BYTE_MS = 32000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PLAYER = /^[A-Za-z0-9_-]{8,128}$/;
 const HOP_HEADERS = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "content-encoding"]);
@@ -143,7 +145,10 @@ export class PhoneTunnel {
       entry.abort = () => this.fail(id, "Browser disconnected");
       this.pending.set(id, entry);
       request.signal.addEventListener("abort", entry.abort, { once: true });
-      entry.timer = setTimeout(() => this.fail(id, "iPhone did not respond"), 15000);
+      // Media streams answer fast; browse calls (/api/foryou, /api/channel)
+      // make several YouTube requests on the phone and can need longer cold.
+      const firstByteMs = url.pathname.startsWith("/api/") && !url.pathname.startsWith("/api/stream/") ? API_FIRST_BYTE_MS : 15000;
+      entry.timer = setTimeout(() => this.fail(id, "iPhone did not respond"), firstByteMs);
       try {
         this.send({ type: "request", id, method: request.method, target: url.pathname + url.search,
           headers, body: btoa(String.fromCharCode(...body)) });
