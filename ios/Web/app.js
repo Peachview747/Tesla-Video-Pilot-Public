@@ -29,7 +29,13 @@ const playbackClient = (() => {
   try { if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID(); } catch {}
   return `vp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 })();
-const notice = message => { $('notice').textContent = message; };
+// Action errors fade after a while; connection errors are re-set by every poll.
+let noticeTimer = null;
+const notice = message => {
+  $('notice').textContent = message;
+  clearTimeout(noticeTimer);
+  if (message) { noticeTimer = setTimeout(() => { if ($('notice').textContent === message) $('notice').textContent = ''; }, 10000); noticeTimer?.unref?.(); }
+};
 const themeKey = 'video-pilot-theme';
 // Theme choice is 'system' (follow the browser/car), 'light' or 'dark'.
 let themeChoice = 'system';
@@ -139,11 +145,15 @@ function scheduleDiagnosticsFlush(delay = 250) {
 function reportDiagnostic(event, fields = {}) {
   const now = Date.now();
   if (event === 'playerStart') diagnosticLastTimes.delete('playerDecode');
-  if (event === 'playerDecode' || event === 'browserRTT') {
-    if (now - (diagnosticLastTimes.get(event) ?? -Infinity) < 1000) return;
+  try { liveStats.record(event, fields); } catch {}
+  // Every status poll measures RTT; journaling each one cost an extra
+  // /api/diagnostics POST per poll. Keep one sample per 30 s in the log
+  // (the live panel still sees every sample).
+  const throttle = event === 'browserRTT' ? 30000 : (event === 'playerDecode' ? 1000 : 0);
+  if (throttle) {
+    if (now - (diagnosticLastTimes.get(event) ?? -Infinity) < throttle) return;
     diagnosticLastTimes.set(event, now);
   }
-  try { liveStats.record(event, fields); } catch {}
   diagnosticsJournal.append(event, fields);
   persistDiagnostics();
   scheduleDiagnosticsFlush();
@@ -742,10 +752,17 @@ async function refresh(force = false) {
   if (refreshing) { if (force) refreshQueued = true; return; }
   refreshing = true; lastPollAt = Date.now();
   try {
-    const videos = await api('/api/library');
     const statusStarted = globalThis.performance?.now?.() ?? Date.now();
     const status = await api('/api/status');
     reportDiagnostic('browserRTT', {elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - statusStarted)});
+    // The library list is the largest poll. When the phone exposes a
+    // revision, refetch it only when that changes (or every 30 s, or after
+    // a user action); older phones without one are polled every time.
+    let videos = lastLibrary?.videos;
+    if (libraryNeedsFetch(status, force)) {
+      videos = await api('/api/library');
+      lastLibraryFetch = {revision:status.libraryRevision, at:Date.now()};
+    }
     lastStatus = status;
     if ($('host-ui').hidden) {
       $('host-ui').hidden = false; $('connecting-panel').hidden = true;
@@ -774,8 +791,13 @@ async function refresh(force = false) {
     notice(refreshError);
   } finally {
     refreshing = false;
-    if (refreshQueued) { refreshQueued = false; void refresh(); }
+    if (refreshQueued) { refreshQueued = false; void refresh(true); }
   }
+}
+let lastLibraryFetch = {revision:undefined, at:0};
+function libraryNeedsFetch(status, force = false) {
+  if (force || !lastLibrary || status?.libraryRevision === undefined || status.libraryRevision === null) return true;
+  return status.libraryRevision !== lastLibraryFetch.revision || Date.now() - lastLibraryFetch.at > 30000;
 }
 function setConnection(state, text) {
   const node = $('connection');

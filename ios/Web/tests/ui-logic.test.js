@@ -121,3 +121,15 @@ test('theme choice resolves system to the browser preference', () => {
   assert.equal(f.evaluate(`resolveTheme('light')`), 'light');
   assert.equal(f.evaluate(`resolveTheme('system')`), 'light', 'no matchMedia: light');
 });
+
+test('library list is refetched only when the phone revision changes', () => {
+  const f = setup();
+  assert.equal(f.evaluate(`libraryNeedsFetch({})`), true, 'first load');
+  f.evaluate(`lastLibrary = {videos:[], preparingID:''}; lastLibraryFetch = {revision:7, at:Date.now()}`);
+  assert.equal(f.evaluate(`libraryNeedsFetch({})`), true, 'phones without a revision are polled every time');
+  assert.equal(f.evaluate(`libraryNeedsFetch({libraryRevision:7})`), false);
+  assert.equal(f.evaluate(`libraryNeedsFetch({libraryRevision:8})`), true);
+  assert.equal(f.evaluate(`libraryNeedsFetch({libraryRevision:7}, true)`), true, 'user actions force a fetch');
+  f.evaluate(`lastLibraryFetch.at = Date.now() - 31000`);
+  assert.equal(f.evaluate(`libraryNeedsFetch({libraryRevision:7})`), true, 'safety refetch every 30 s');
+});
