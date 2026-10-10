@@ -17,6 +17,7 @@
   </header>
   <main>
     <p id="notice" role="status" aria-live="polite"></p>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
     <div id="host-ui" hidden>
       <nav class="tabs" aria-label="Video Pilot sections">
         <button id="menu-toggle" class="menu-toggle" aria-expanded="false" aria-controls="tab-menu"><span class="menu-glyph" aria-hidden="true"></span><span>Menu</span></button>
@@ -45,14 +46,24 @@
       </section>
       <section id="youtube-tab" class="tab-panel">
         <div class="hero-heading"><div><p class="eyebrow">VIDEO PILOT</p><h1>What do you want to watch?</h1><p class="hero-copy">Paste a link, search YouTube, or pick up where you left off.</p></div><span id="queue-badge" class="queue-badge">0 queued</span></div>
-        <div class="watch-tools">
-          <div class="tool-card"><div class="tool-label"><span class="tool-icon">↗</span><span>Play from a link</span></div><form id="url-form"><input id="url" placeholder="Paste a YouTube link or video ID" aria-label="YouTube URL" required><button>Prepare</button></form></div>
-          <div class="tool-card"><div class="tool-label"><span class="tool-icon">⌕</span><span>Find something new</span></div><form id="search-form"><input id="query" placeholder="Search YouTube" aria-label="Search YouTube" maxlength="200" required><button>Search</button></form></div>
+        <div class="search-shell">
+          <form id="search-form" class="search-bar" role="search" autocomplete="off">
+            <span class="search-glyph" aria-hidden="true"></span>
+            <input id="query" type="search" placeholder="Search YouTube or paste a link" aria-label="Search YouTube or paste a link" maxlength="300" enterkeyhint="search" autocomplete="off" spellcheck="false">
+            <button id="query-clear" class="query-clear" type="button" aria-label="Clear search" hidden>×</button>
+            <button id="search-submit" class="search-submit" type="submit">Search</button>
+          </form>
+          <div id="suggestions" class="suggestions" role="listbox" aria-label="Suggestions" hidden></div>
         </div>
-        <div class="search-chips" aria-label="Popular searches"><button type="button" data-query="trending now">Trending</button><button type="button" data-query="music">Music</button><button type="button" data-query="latest news">News</button><button type="button" data-query="Tesla">Tesla</button></div>
+        <div id="search-filters" class="filter-chips" role="group" aria-label="Search filters"><button type="button" data-filter="any" aria-pressed="true">All</button><button type="button" data-filter="short" aria-pressed="false">Under 4 min</button><button type="button" data-filter="medium" aria-pressed="false">4–20 min</button><button type="button" data-filter="long" aria-pressed="false">Over 20 min</button><button type="button" data-filter="week" aria-pressed="false">This week</button><button type="button" data-filter="newest" aria-pressed="false">Newest</button></div>
+        <div id="search-start" class="search-start">
+          <div id="recent-searches" class="chip-row" hidden></div>
+          <div class="chip-row" aria-label="Popular searches"><span class="chip-label">Try</span><button type="button" class="chip" data-query="trending now">Trending</button><button type="button" class="chip" data-query="music">Music</button><button type="button" class="chip" data-query="latest news">News</button><button type="button" class="chip" data-query="Tesla">Tesla</button></div>
+        </div>
         <div id="search-summary" class="search-summary" hidden></div>
         <p id="search-hint"></p>
-        <div id="results" class="grid"></div>
+        <div id="results" class="grid results-grid"></div>
+        <div class="load-more-row"><button id="load-more" class="load-more" type="button" hidden>Load more results</button></div>
         <section id="explore-panel" class="explore-panel" hidden><div class="library-heading"><div><p class="eyebrow">YOUR FEED</p><h2 id="explore-title">Trending now</h2></div><button id="explore-refresh" type="button">Refresh</button></div><div id="explore-results" class="grid"></div></section>
         <section id="queue-panel" class="queue-panel" hidden><div class="library-heading"><h2>Up next</h2><p id="queue-summary"></p></div><div id="queue-list" class="grid"></div></section>
       </section>
@@ -71,7 +82,16 @@
         <p id="playback-status" role="status"></p>
         </div>
       </section>
-      <section id="library-tab" class="tab-panel" hidden><div class="library-heading"><h2>Your library</h2><p id="traffic-status"></p><label class="library-sort"><span>Sort</span><select id="library-sort" aria-label="Sort library"><option value="added">Recently added</option><option value="newest">Release date · newest</option><option value="oldest">Release date · oldest</option><option value="channel">Channel</option></select></label></div><div id="library" class="grid"></div></section>
+      <section id="library-tab" class="tab-panel" hidden>
+        <div class="library-heading"><div><h2>Your library</h2><p id="library-count" class="library-count"></p></div><p id="traffic-status"></p></div>
+        <div class="library-toolbar">
+          <div class="segmented" role="tablist" aria-label="Library view"><button id="view-channels" type="button" role="tab" data-view="channels" aria-selected="true">Channels</button><button id="view-all" type="button" role="tab" data-view="all" aria-selected="false">All videos</button></div>
+          <div class="library-filter-wrap"><input id="library-filter" type="search" placeholder="Filter by title or channel" aria-label="Filter library" autocomplete="off" spellcheck="false"></div>
+          <label id="library-sort-wrap" class="library-sort" hidden><span>Sort</span><select id="library-sort" aria-label="Sort library"><option value="added">Recently added</option><option value="newest">Release date · newest</option><option value="oldest">Release date · oldest</option><option value="channel">Channel</option></select></label>
+        </div>
+        <section id="continue-panel" class="continue-panel" hidden><h3 class="section-title">Continue watching</h3><div id="continue-list" class="continue-row"></div></section>
+        <div id="library" class="library-list"></div>
+      </section>
       <section id="settings-tab" class="tab-panel" hidden>
         <div class="hero-heading"><div><p class="eyebrow">VIDEO PILOT</p><h1>Settings</h1><p class="hero-copy">Connection details and setup guidance.</p></div></div>
         <article class="settings-card"><h2>iPhone host</h2><p>Keep Video Pilot open on the iPhone while the Tesla browser is connected. The live tunnel state is shown at the top of this page.</p><div class="setting-row"><span>Host authorization</span><strong id="settings-auth">Face ID per app session</strong></div><div class="setting-row"><span>YouTube account</span><strong id="settings-youtube">Not connected</strong></div><div class="setting-row"><span>Search</span><strong id="settings-search">Unavailable</strong></div><div class="setting-row"><span>Version</span><strong id="settings-version">—</strong></div><p>Connect or disconnect Google from Video Pilot → Settings on the iPhone. Google tokens never enter the Tesla browser.</p></article>

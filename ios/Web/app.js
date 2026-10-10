@@ -32,7 +32,7 @@ const playbackClient = (() => {
 })();
 const notice = message => { $('notice').textContent = message; };
 const themeKey = 'video-pilot-theme';
-function applyTheme(theme) {
+function applyTheme(theme, persist = true) {
   const value = theme === 'dark' ? 'dark' : 'light';
   const root = document.documentElement;
   if (!root) return;
@@ -42,9 +42,13 @@ function applyTheme(theme) {
     toggle.textContent = value === 'dark' ? 'Light mode' : 'Dark mode';
     toggle.setAttribute('aria-pressed', value === 'dark' ? 'true' : 'false');
   }
-  try { globalThis.localStorage?.setItem(themeKey, value); } catch {}
+  if (persist) { try { globalThis.localStorage?.setItem(themeKey, value); } catch {} }
 }
-try { applyTheme(globalThis.localStorage?.getItem(themeKey) || 'light'); } catch { applyTheme('light'); }
+// No saved choice: follow the browser's light/dark preference.
+try {
+  const saved = globalThis.localStorage?.getItem(themeKey);
+  applyTheme(saved || (globalThis.matchMedia?.('(prefers-color-scheme: dark)')?.matches ? 'dark' : 'light'), false);
+} catch { applyTheme('light'); }
 const resumeKey = video => 'video-pilot-resume:' + (video?.id || '');
 function savedResume(video) {
   try {
@@ -55,7 +59,10 @@ function savedResume(video) {
 function saveResume(video = current, position = currentOffset) {
   const offset = Number(position) || 0;
   if (!video || offset < 3 || playback?.ended) return;
-  try { globalThis.localStorage?.setItem(resumeKey(video), String(Math.floor(offset))); } catch {}
+  try {
+    globalThis.localStorage?.setItem(resumeKey(video), String(Math.floor(offset)));
+    globalThis.localStorage?.setItem('video-pilot-resume-at:' + video.id, String(Date.now()));
+  } catch {}
 }
 function clearResume(video = current) {
   try { globalThis.localStorage?.removeItem(resumeKey(video)); } catch {}
@@ -193,11 +200,21 @@ function card(title, subtitle, action, thumbnail) {
   div.append(body);
   return div;
 }
+const prefs = {
+  get(key, fallback = null) { try { return globalThis.localStorage?.getItem(key) ?? fallback; } catch { return fallback; } },
+  set(key, value) { try { globalThis.localStorage?.setItem(key, value); } catch {} },
+};
 const LIBRARY_SORTS = ['added', 'newest', 'oldest', 'channel'];
-let librarySort = (() => {
-  try { const saved = globalThis.localStorage?.getItem('vp-library-sort'); return LIBRARY_SORTS.includes(saved) ? saved : 'added'; }
-  catch { return 'added'; }
-})();
+const LIBRARY_VIEWS = ['channels', 'all'];
+let librarySort = LIBRARY_SORTS.includes(prefs.get('vp-library-sort')) ? prefs.get('vp-library-sort') : 'added';
+let libraryView = LIBRARY_VIEWS.includes(prefs.get('vp-library-view')) ? prefs.get('vp-library-view') : 'channels';
+let channelOrder = prefs.get('vp-channel-order') === 'newest' ? 'newest' : 'oldest';
+let libraryFilter = '';
+let librarySignature = '';
+const openChannels = new Set((() => {
+  try { const value = JSON.parse(prefs.get('vp-open-channels', '[]')); return Array.isArray(value) ? value.filter(item => typeof item === 'string') : []; }
+  catch { return []; }
+})());
 let lastLibrary = null;
 const releaseTime = video => { const time = Date.parse(video.publishedAt || ''); return Number.isFinite(time) ? time : null; };
 function formatRelease(video) {
@@ -226,36 +243,209 @@ function sortLibrary(videos, mode) {
   }
   return list;
 }
+const watchedKey = video => 'video-pilot-watched:' + (video?.id || '');
+const isWatched = video => prefs.get(watchedKey(video)) === '1';
+const markWatched = video => prefs.set(watchedKey(video), '1');
+const channelName = video => (video.channel || '').trim() || 'Other videos';
+function formatDuration(value) {
+  const seconds = Math.round(finiteDuration(value));
+  if (!seconds) return '';
+  const h = Math.floor(seconds / 3600), m = Math.floor(seconds % 3600 / 60), sec = seconds % 60;
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}` : `${m}:${String(sec).padStart(2, '0')}`;
+}
+function watchFraction(video) {
+  const duration = finiteDuration(video.duration), resume = savedResume(video);
+  return duration && resume ? Math.min(1, resume / duration) : 0;
+}
+function channelHue(name) {
+  let hash = 0;
+  for (const character of name) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  return hash % 360;
+}
+function element(tag, className = '', text = '') {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text) node.textContent = text;
+  return node;
+}
+function thumbnailFor(video) {
+  return video.youtubeID ? `https://i.ytimg.com/vi/${encodeURIComponent(video.youtubeID)}/mqdefault.jpg` : '';
+}
+// Thumbnail with duration badge and a watched-progress bar; tapping it plays.
+function videoThumb(video, onPlay) {
+  const thumb = element(onPlay ? 'button' : 'div', 'thumb');
+  if (onPlay) { thumb.type = 'button'; thumb.setAttribute('aria-label', `Play ${video.title}`); thumb.onclick = onPlay; }
+  const url = thumbnailFor(video);
+  if (url) { const img = element('img'); img.src = url; img.alt = ''; img.loading = 'lazy'; thumb.append(img); }
+  else thumb.append(element('span', 'thumb-placeholder', '▶'));
+  const duration = formatDuration(video.duration);
+  if (duration) thumb.append(element('span', 'duration-badge', duration));
+  const fraction = isWatched(video) ? 1 : watchFraction(video);
+  if (fraction > 0) {
+    const bar = element('span', 'watch-progress'); const fill = element('i');
+    fill.style.width = `${Math.max(4, Math.round(fraction * 100))}%`; bar.append(fill); thumb.append(bar);
+  }
+  return thumb;
+}
+function videoAction(video, preparingID) {
+  if (video.state === 'ready') {
+    const resume = savedResume(video);
+    return {label:resume ? `Resume · ${formatTime(resume)}` : (isWatched(video) ? 'Watch again' : 'Play'), run:() => play(video), primary:true};
+  }
+  const active = video.id?.toLowerCase() === preparingID?.toLowerCase();
+  return {label:active ? 'Cancel' : 'Remove', run:() => removeVideo(video.id)};
+}
+function videoStatus(video) {
+  if (video.state === 'ready') return '';
+  if (video.state === 'preparing') return video.message || 'Preparing…';
+  return video.message || video.state;
+}
+function videoCard(video, preparingID, showChannel = true) {
+  const node = element('article', 'card video-card');
+  node.append(videoThumb(video, video.state === 'ready' ? () => play(video) : null));
+  const body = element('div', 'card-body');
+  body.append(element('h3', '', video.title));
+  const details = [showChannel ? video.channel : '', formatRelease(video)].filter(Boolean).join(' · ');
+  body.append(element('p', '', videoStatus(video) || details || 'Ready'));
+  const action = videoAction(video, preparingID);
+  const button = element('button', action.primary ? '' : 'quiet', action.label); button.type = 'button'; button.onclick = action.run;
+  body.append(button); node.append(body);
+  return node;
+}
+function episodeRow(video, number, preparingID) {
+  const row = element('div', 'episode' + (isWatched(video) ? ' is-watched' : ''));
+  row.append(videoThumb(video, video.state === 'ready' ? () => play(video) : null));
+  const text = element('div', 'episode-text');
+  text.append(element('span', 'episode-number', `#${number}`));
+  text.append(element('h4', '', video.title));
+  const resume = savedResume(video);
+  const meta = videoStatus(video) || [formatRelease(video), formatDuration(video.duration),
+    isWatched(video) ? 'Watched' : (resume ? `${Math.round(watchFraction(video) * 100)}% watched` : '')].filter(Boolean).join(' · ');
+  text.append(element('p', '', meta));
+  row.append(text);
+  const action = videoAction(video, preparingID);
+  const button = element('button', 'episode-action' + (action.primary ? '' : ' quiet'), action.label);
+  button.type = 'button'; button.onclick = action.run; row.append(button);
+  return row;
+}
+function saveOpenChannels() { prefs.set('vp-open-channels', JSON.stringify([...openChannels].slice(-40))); }
+function channelBlock(name, videos, preparingID, forceOpen) {
+  // "Sequential" order: oldest release first, numbered like episodes.
+  const sequence = sortLibrary(videos, 'oldest');
+  const numbered = new Map(sequence.map((video, index) => [video.id, index + 1]));
+  const shown = channelOrder === 'newest' ? [...sequence].reverse() : sequence;
+  const open = forceOpen || openChannels.has(name);
+  const block = element('article', 'channel' + (open ? ' open' : ''));
+  const header = element('button', 'channel-header'); header.type = 'button';
+  header.setAttribute('aria-expanded', open ? 'true' : 'false');
+  const avatar = element('span', 'avatar', name === 'Other videos' ? '•' : name.slice(0, 1).toUpperCase());
+  avatar.style.setProperty('--hue', String(channelHue(name)));
+  const label = element('span', 'channel-text');
+  label.append(element('strong', '', name));
+  const latest = sortLibrary(videos, 'newest')[0];
+  const ready = videos.filter(video => video.state === 'ready');
+  const unwatched = ready.filter(video => !isWatched(video)).length;
+  label.append(element('small', '', [`${videos.length} video${videos.length === 1 ? '' : 's'}`,
+    unwatched && unwatched < ready.length ? `${unwatched} unwatched` : '',
+    formatRelease(latest) ? `latest ${formatRelease(latest)}` : ''].filter(Boolean).join(' · ')));
+  const strip = element('span', 'channel-strip');
+  for (const video of sortLibrary(videos, 'newest').slice(0, 3)) {
+    const url = thumbnailFor(video);
+    if (url) { const img = element('img'); img.src = url; img.alt = ''; img.loading = 'lazy'; strip.append(img); }
+  }
+  header.append(avatar, label, strip, element('span', 'chevron'));
+  const panel = element('div', 'channel-panel');
+  const inner = element('div', 'channel-inner');
+  const tools = element('div', 'channel-tools');
+  const next = sequence.find(video => video.state === 'ready' && !isWatched(video));
+  if (next) {
+    const resume = savedResume(next);
+    const playNext = element('button', 'play-next', `${resume ? 'Resume' : 'Play'} #${numbered.get(next.id)} · ${next.title}`);
+    playNext.type = 'button'; playNext.onclick = () => play(next); tools.append(playNext);
+  }
+  const order = element('button', 'order-toggle quiet', channelOrder === 'oldest' ? 'Oldest first ↓' : 'Newest first ↑');
+  order.type = 'button';
+  order.onclick = () => {
+    channelOrder = channelOrder === 'oldest' ? 'newest' : 'oldest'; prefs.set('vp-channel-order', channelOrder);
+    librarySignature = ''; if (lastLibrary) renderLibrary(lastLibrary.videos, lastLibrary.preparingID);
+  };
+  tools.append(order); inner.append(tools);
+  for (const video of shown) inner.append(episodeRow(video, numbered.get(video.id), preparingID));
+  panel.append(inner);
+  header.onclick = () => {
+    const nowOpen = !block.classList.contains('open');
+    block.classList.toggle('open', nowOpen);
+    header.setAttribute('aria-expanded', nowOpen ? 'true' : 'false');
+    if (nowOpen) openChannels.add(name); else openChannels.delete(name);
+    saveOpenChannels();
+  };
+  block.append(header, panel);
+  return block;
+}
+function renderContinue(videos) {
+  const items = videos.filter(video => video.state === 'ready' && !isWatched(video) && savedResume(video) >= 10)
+    .sort((a, b) => Number(prefs.get('video-pilot-resume-at:' + b.id, 0)) - Number(prefs.get('video-pilot-resume-at:' + a.id, 0)))
+    .slice(0, 8);
+  $('continue-panel').hidden = !items.length || Boolean(libraryFilter);
+  $('continue-list').replaceChildren(...items.map(video => {
+    const tile = element('article', 'continue-tile');
+    tile.append(videoThumb(video, () => play(video)));
+    const text = element('div', 'continue-text');
+    text.append(element('strong', '', video.title));
+    text.append(element('small', '', [video.channel, `${formatTime(savedResume(video))} of ${formatDuration(video.duration) || '—'}`].filter(Boolean).join(' · ')));
+    tile.append(text);
+    return tile;
+  }));
+}
 function renderLibrary(videos, preparingID) {
   lastLibrary = {videos, preparingID};
+  const signature = JSON.stringify([videos.map(video => [video.id, video.state, video.title, video.message, video.channel,
+    video.publishedAt, video.duration, savedResume(video), isWatched(video)]), preparingID, librarySort, libraryView,
+    channelOrder, libraryFilter]);
+  if (signature === librarySignature) return;
+  librarySignature = signature;
   if ($('library-sort').value !== librarySort) $('library-sort').value = librarySort;
+  $('library-sort-wrap').hidden = libraryView !== 'all';
+  for (const view of LIBRARY_VIEWS) $(`view-${view}`).setAttribute?.('aria-selected', view === libraryView ? 'true' : 'false');
+  const channels = new Set(videos.map(channelName));
+  $('library-count').textContent = videos.length
+    ? `${videos.length} video${videos.length === 1 ? '' : 's'} · ${channels.size} channel${channels.size === 1 ? '' : 's'}` : '';
+  renderContinue(videos);
+  const query = libraryFilter.toLowerCase();
+  const filtered = query ? videos.filter(video => `${video.title} ${video.channel || ''}`.toLowerCase().includes(query)) : videos;
   const library = $('library'); library.replaceChildren();
-  if (!videos.length) { library.append(card('Your library is empty', 'Prepare a YouTube video or import a file on the iPhone.')); return; }
-  let group = null;
-  for (const video of sortLibrary(videos, librarySort)) {
-    if (librarySort === 'channel') {
-      const channel = (video.channel || '').trim() || 'Other videos';
-      if (channel !== group) {
-        group = channel;
-        const heading = document.createElement('h3'); heading.className = 'library-group'; heading.textContent = channel;
-        library.append(heading);
+  library.className = libraryView === 'all' ? 'grid library-list' : 'library-list channels-list';
+  if (!videos.length) { library.append(card('Your library is empty', 'Search for a video on the Home tab and add it here.')); return; }
+  if (!filtered.length) { library.append(card('No matches', `Nothing in your library matches “${libraryFilter}”.`)); return; }
+  if (libraryView === 'all') {
+    let group = null;
+    for (const video of sortLibrary(filtered, librarySort)) {
+      if (librarySort === 'channel' && channelName(video) !== group) {
+        group = channelName(video); library.append(element('h3', 'library-group', group));
       }
+      library.append(videoCard(video, preparingID, librarySort !== 'channel'));
     }
-    const active = video.id?.toLowerCase() === preparingID?.toLowerCase();
-    const action = video.state === 'ready'
-      ? {label:savedResume(video) ? 'Resume · ' + formatTime(savedResume(video)) : 'Play',run:() => play(video)}
-      : {label:active ? 'Cancel and remove' : 'Remove',run:() => removeVideo(video.id)};
-    const details = librarySort === 'channel' ? [formatRelease(video)] : [video.channel, formatRelease(video)];
-    const subtitle = video.state === 'ready' ? (details.filter(Boolean).join(' · ') || 'Ready') : (video.message || video.state);
-    library.append(card(video.title, subtitle, action,
-      video.youtubeID ? `https://i.ytimg.com/vi/${encodeURIComponent(video.youtubeID)}/mqdefault.jpg` : null));
+    return;
   }
+  const groups = new Map();
+  for (const video of filtered) {
+    const name = channelName(video);
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(video);
+  }
+  const names = [...groups.keys()].sort((a, b) => (a === 'Other videos') - (b === 'Other videos')
+    || a.localeCompare(b, undefined, {sensitivity:'base'}));
+  for (const name of names) library.append(channelBlock(name, groups.get(name), preparingID, Boolean(query)));
 }
+function rerenderLibrary() { librarySignature = ''; if (lastLibrary) renderLibrary(lastLibrary.videos, lastLibrary.preparingID); }
 $('library-sort').onchange = event => {
   librarySort = LIBRARY_SORTS.includes(event.target.value) ? event.target.value : 'added';
-  try { globalThis.localStorage?.setItem('vp-library-sort', librarySort); } catch {}
-  if (lastLibrary) renderLibrary(lastLibrary.videos, lastLibrary.preparingID);
+  prefs.set('vp-library-sort', librarySort); rerenderLibrary();
 };
+for (const view of LIBRARY_VIEWS) $(`view-${view}`).onclick = () => {
+  libraryView = view; prefs.set('vp-library-view', view); rerenderLibrary();
+};
+$('library-filter').oninput = event => { libraryFilter = String(event.target.value || '').trim(); rerenderLibrary(); };
 function renderQueue(videos, activeID = '') {
   const queued = videos.filter(video => video.state === 'preparing');
   const panel = $('queue-panel');
@@ -293,18 +483,16 @@ async function refresh() {
     $('settings-search').textContent = status.youtubeSearch ? 'Enabled' : 'Add API key on iPhone';
     $('settings-version').textContent = status.version
       ? `v${status.version}${status.build ? ` · build ${status.build}` : ''}` : '—';
+    if (!searchChromeReady) { searchChromeReady = true; setSearchChrome(); }
     renderLibrary(videos, status.preparingID);
+    updateResultButtons();
     renderQueue(videos, status.preparingID);
     updatePreparation(status, videos);
     const down = Number(status.downloadMbps) || 0, up = Number(status.uploadMbps) || 0;
     $('traffic-status').textContent = `Receiving ${down.toFixed(2)} Mb/s · Sending ${up.toFixed(2)} Mb/s`;
-    $('search-form').hidden = !status.youtubeSearch;
     $('explore-panel').hidden = !status.youtubeExplore;
     $('explore-title').textContent = status.youtubeSignedIn ? 'From your subscriptions' : 'Trending now';
-    $('search-hint').textContent = status.youtubeSearch
-      ? (status.youtubeSignedIn ? 'Searching all of YouTube · your account feed is shown below.' : 'Searching all of YouTube with the host API key.')
-      : 'Paste a video URL above. To enable search, add a YouTube Data API key in the iPhone app.';
-    $('url-form').querySelector('button').disabled = false;
+    $('search-hint').textContent = searchState.results.length ? '' : 'Search all of YouTube, or paste a link to add a video directly.';
     $('preparation-detail').dataset.queue = status.queuedCount ? `${status.queuedCount} more queued` : '';
     if (exploreAccount !== Boolean(status.youtubeSignedIn)) {
       exploreAccount = Boolean(status.youtubeSignedIn);
@@ -359,29 +547,180 @@ function updatePreparation(status, videos) {
   if (status.queuedCount) detail += ` · ${status.queuedCount} queued next`;
   $('preparation-detail').textContent = detail;
 }
+let toastTimer = null;
+function toast(message) {
+  $('toast').textContent = message; $('toast').hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 3200);
+}
 async function queueVideo(url) {
-  try { await api('/api/youtube', {url}); notice('Preparing video on your iPhone. It will appear in the library when ready.'); await refresh(); }
-  catch (error) { notice(error.message); }
+  try {
+    await api('/api/youtube', {url}); notice('');
+    toast('Added. Your iPhone is preparing it; it appears in the library when ready.');
+    await refresh(); return true;
+  } catch (error) { notice(error.message); return false; }
 }
 async function removeVideo(id) {
   try { const result = await api('/api/library/remove', {id}); notice(result.pending ? 'Cancelling preparation and removing video…' : 'Video removed.'); await refresh(); }
   catch (error) { notice(error.message); }
 }
-$('url-form').onsubmit = event => { event.preventDefault(); void queueVideo($('url').value.trim()); };
-$('search-form').onsubmit = async event => {
-  event.preventDefault(); const button = event.currentTarget.querySelector('button'); button.disabled = true;
+// ---- Search ----
+const SEARCH_FILTERS = ['any', 'short', 'medium', 'long', 'week', 'newest'];
+const searchState = {query:'', filter:'any', continuation:null, results:[], seq:0, loading:false};
+const resultButtons = new Map();
+const queuedFromSearch = new Set();
+let suggestTimer = null, suggestSeq = 0, suggestHide = null;
+let searchChromeReady = false;
+const RECENT_KEY = 'vp-recent-searches';
+function recentSearches() {
+  try { const value = JSON.parse(prefs.get(RECENT_KEY, '[]')); return Array.isArray(value) ? value.filter(item => typeof item === 'string').slice(0, 8) : []; }
+  catch { return []; }
+}
+function rememberSearch(query) {
+  prefs.set(RECENT_KEY, JSON.stringify([query, ...recentSearches().filter(item => item.toLowerCase() !== query.toLowerCase())].slice(0, 8)));
+}
+// A pasted link (or a bare 11-character video ID) prepares that video directly.
+function linkedVideoID(text) {
+  const value = String(text || '').trim();
+  const link = value.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?(?:[^#]*&)?v=|shorts\/|live\/|embed\/))([\w-]{11})/);
+  if (link) return link[1];
+  return /^[\w-]{11}$/.test(value) && /[A-Z]/.test(value) && /[a-z]/.test(value) && /[\d_-]/.test(value) ? value : null;
+}
+function libraryEntry(youtubeID) { return lastLibrary?.videos.find(video => video.youtubeID === youtubeID) || null; }
+function updateResultButton(id) {
+  const button = resultButtons.get(id);
+  if (!button) return;
+  const entry = libraryEntry(id);
+  button.disabled = false; button.className = '';
+  if (entry?.state === 'ready') { button.textContent = savedResume(entry) ? 'Resume in library' : 'Play from library'; button.onclick = () => play(entry); return; }
+  if (entry && entry.state === 'preparing') { button.textContent = 'Preparing on iPhone…'; button.className = 'quiet'; button.disabled = true; return; }
+  if (queuedFromSearch.has(id) && !entry) { button.textContent = 'Added ✓'; button.className = 'quiet'; button.disabled = true; return; }
+  button.textContent = entry ? 'Try again' : 'Add to library';
+  button.onclick = async () => {
+    button.disabled = true; button.textContent = 'Adding…';
+    if (await queueVideo(id)) { queuedFromSearch.add(id); updateResultButton(id); }
+    else { button.disabled = false; button.textContent = 'Add to library'; }
+  };
+}
+function updateResultButtons() { for (const id of resultButtons.keys()) updateResultButton(id); }
+function resultCard(video) {
+  const node = element('article', 'card result-card');
+  node.append(videoThumb({title:video.title, youtubeID:video.id, duration:0}, null));
+  if (video.duration) node.firstChild.append(element('span', 'duration-badge', video.duration));
+  const body = element('div', 'card-body');
+  body.append(element('h3', '', video.title));
+  const meta = element('p', 'result-meta');
+  if (video.channel) {
+    const channel = element('button', 'channel-link', video.channel); channel.type = 'button';
+    channel.title = `More from ${video.channel}`;
+    channel.onclick = () => { $('query').value = video.channel; void runSearch(video.channel); };
+    meta.append(channel);
+  }
+  const extra = [video.views, video.published].filter(Boolean).join(' · ');
+  if (extra) meta.append(element('span', '', (video.channel ? ' · ' : '') + extra));
+  body.append(meta);
+  const button = element('button'); button.type = 'button'; body.append(button);
+  node.append(body);
+  resultButtons.set(video.id, button); updateResultButton(video.id);
+  return node;
+}
+function setSearchChrome() {
+  const hasQuery = Boolean($('query').value);
+  $('query-clear').hidden = !hasQuery;
+  $('search-start').hidden = Boolean(searchState.query) && searchState.results.length > 0;
+  $('load-more').hidden = !searchState.continuation || !searchState.results.length;
+  $('load-more').disabled = searchState.loading;
+  $('load-more').textContent = searchState.loading ? 'Loading…' : 'Load more results';
+  $('search-submit').disabled = searchState.loading && !searchState.results.length;
+  const recent = recentSearches();
+  $('recent-searches').hidden = !recent.length;
+  $('recent-searches').replaceChildren(...(recent.length ? [element('span', 'chip-label', 'Recent'), ...recent.map(query => {
+    const chip = element('button', 'chip', query); chip.type = 'button';
+    chip.onclick = () => { $('query').value = query; void runSearch(query); };
+    return chip;
+  }), Object.assign(element('button', 'chip chip-clear', 'Clear'), {type:'button', onclick:() => { prefs.set(RECENT_KEY, '[]'); setSearchChrome(); }})] : []));
+}
+function hideSuggestions() { clearTimeout(suggestTimer); suggestSeq++; $('suggestions').hidden = true; $('suggestions').replaceChildren(); }
+function showSuggestions(items) {
+  $('suggestions').replaceChildren(...items.map(item => {
+    const option = element('button', 'suggestion' + (item.link ? ' suggestion-link' : ''), item.label);
+    option.type = 'button'; option.setAttribute('role', 'option');
+    option.onmousedown = event => event.preventDefault();
+    option.onclick = () => { hideSuggestions(); if (item.link) void queueVideo(item.value); else { $('query').value = item.value; void runSearch(item.value); } };
+    return option;
+  }));
+  $('suggestions').hidden = !items.length;
+}
+async function runSearch(rawQuery, append = false) {
+  const query = String(rawQuery || '').trim();
+  if (!query) return;
+  hideSuggestions();
+  if (!append && linkedVideoID(query)) {
+    if (await queueVideo(query)) { $('query').value = ''; setSearchChrome(); }
+    return;
+  }
+  const seq = ++searchState.seq;
+  searchState.loading = true;
+  if (!append) {
+    Object.assign(searchState, {query, continuation:null, results:[]});
+    resultButtons.clear(); rememberSearch(query);
+    $('query').blur?.();
+    $('results').replaceChildren(...Array.from({length:6}, () => element('div', 'card skeleton')));
+    $('search-summary').hidden = false; $('search-summary').textContent = `Searching for “${query}”…`;
+    $('search-hint').textContent = '';
+  }
+  setSearchChrome();
   try {
-    const query = $('query').value.trim();
-    const results = await api('/api/search?q=' + encodeURIComponent(query));
-    $('results').replaceChildren(); notice(results.length ? '' : 'No videos found.');
-    $('search-summary').hidden = !results.length;
-    $('search-summary').textContent = results.length ? `${results.length} results for “${query}” · Add one to the queue or refine your search.` : '';
-    for (const video of results) $('results').append(card(video.title, video.channel, {label:'Prepare video',run:() => queueVideo(video.id)}, video.thumbnail));
-  } catch (error) { notice(error.message); } finally { button.disabled = false; }
+    const params = new URLSearchParams({q:searchState.query, filter:searchState.filter});
+    if (append && searchState.continuation) params.set('continuation', searchState.continuation);
+    const page = await api('/api/search?' + params.toString());
+    if (seq !== searchState.seq) return;
+    const results = Array.isArray(page) ? page : (page.results || []);
+    searchState.continuation = Array.isArray(page) ? null : (page.continuation || null);
+    const known = new Set(searchState.results.map(video => video.id));
+    const fresh = results.filter(video => video?.id && !known.has(video.id));
+    searchState.results.push(...fresh);
+    if (!append) $('results').replaceChildren();
+    $('results').append(...fresh.map(resultCard));
+    const filterLabel = document.querySelector?.(`[data-filter="${searchState.filter}"]`)?.textContent;
+    $('search-summary').textContent = searchState.results.length
+      ? `${searchState.results.length} videos for “${searchState.query}”${searchState.filter !== 'any' && filterLabel ? ` · ${filterLabel}` : ''}`
+      : `No videos found for “${searchState.query}”. Try different words or another filter.`;
+  } catch (error) {
+    if (seq !== searchState.seq) return;
+    if (!append) { $('results').replaceChildren(); $('search-summary').textContent = 'Search did not complete.'; }
+    notice(error.message);
+  } finally {
+    if (seq === searchState.seq) { searchState.loading = false; setSearchChrome(); }
+  }
+}
+$('search-form').onsubmit = event => { event.preventDefault(); void runSearch($('query').value); };
+$('query').oninput = () => {
+  setSearchChrome();
+  const value = $('query').value.trim();
+  clearTimeout(suggestTimer);
+  if (linkedVideoID(value)) { showSuggestions([{label:'Add this video to your library', value, link:true}]); return; }
+  if (value.length < 2) { hideSuggestions(); return; }
+  const seq = ++suggestSeq;
+  suggestTimer = setTimeout(async () => {
+    try {
+      const items = await api('/api/suggest?q=' + encodeURIComponent(value));
+      if (seq === suggestSeq && $('query').value.trim() === value && Array.isArray(items)) {
+        showSuggestions(items.filter(item => typeof item === 'string').slice(0, 7).map(item => ({label:item, value:item})));
+      }
+    } catch {}
+  }, 220);
 };
+$('query').onkeydown = event => { if (event.key === 'Escape') hideSuggestions(); };
+$('query').onblur = () => { clearTimeout(suggestHide); suggestHide = setTimeout(hideSuggestions, 150); };
+$('query-clear').onclick = () => { $('query').value = ''; hideSuggestions(); setSearchChrome(); $('query').focus?.(); };
+$('load-more').onclick = () => { if (!searchState.loading) void runSearch(searchState.query, true); };
+document.querySelectorAll?.('[data-filter]').forEach(button => button.onclick = () => {
+  searchState.filter = SEARCH_FILTERS.includes(button.dataset.filter) ? button.dataset.filter : 'any';
+  document.querySelectorAll?.('[data-filter]').forEach(other => other.setAttribute('aria-pressed', other === button ? 'true' : 'false'));
+  if (searchState.query) void runSearch(searchState.query);
+});
 document.querySelectorAll?.('[data-query]').forEach(button => button.onclick = () => {
-  $('query').value = button.dataset.query || '';
-  $('search-form').requestSubmit?.();
+  $('query').value = button.dataset.query || ''; void runSearch($('query').value);
 });
 document.querySelectorAll?.('[data-go]').forEach(button => button.onclick = () => goTo(button.dataset.go));
 $('explore-refresh').onclick = () => { void loadExplore(); };
@@ -687,7 +1026,12 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
       onStalled:() => {
         if (active()) {
           $('playback-status').textContent = 'Buffering…';
-          reportDiagnostic('playerStalled', {positionSeconds:session.position || 0});
+          // A starved decoder fires this every frame; one entry a second is enough.
+          const now = Date.now();
+          if (now - (session.lastStallReport || 0) >= 1000) {
+            session.lastStallReport = now;
+            reportDiagnostic('playerStalled', {positionSeconds:session.position || 0});
+          }
           if (!session.decoded) armRecovery();
         }
       },
@@ -749,6 +1093,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
         updateTimeline(session.position, session.duration);
         $('playback-status').textContent = 'Finished'; $('pause').textContent = 'Play';
         clearResume(video);
+        markWatched(video);
         reportDiagnostic('playerEnded', {positionSeconds:session.position || 0, durationSeconds:session.duration || 0});
       }
     });

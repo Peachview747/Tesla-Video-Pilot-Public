@@ -283,3 +283,14 @@ test('library sorts by release date and groups by channel, undated videos last',
   assert.equal(order('oldest'), 'dabc');
   assert.equal(order('channel'), 'bdac', 'channels A-Z ignoring case, newest first inside, no channel last');
 });
+
+test('search box recognises pasted YouTube links and bare IDs but not ordinary words', () => {
+  const f = setup();
+  const id = text => f.evaluate(`linkedVideoID(${JSON.stringify(text)})`);
+  assert.equal(id('https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42'), 'dQw4w9WgXcQ');
+  assert.equal(id('https://youtu.be/dQw4w9WgXcQ'), 'dQw4w9WgXcQ');
+  assert.equal(id('https://youtube.com/shorts/dQw4w9WgXcQ'), 'dQw4w9WgXcQ');
+  assert.equal(id('dQw4w9WgXcQ'), 'dQw4w9WgXcQ');
+  assert.equal(id('minecraftxx'), null);
+  assert.equal(id('tesla model 3'), null);
+});

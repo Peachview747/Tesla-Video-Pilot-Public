@@ -75,7 +75,7 @@ enum YouTubeSearch {
         }
         return try JSONDecoder().decode(Result.self, from: data).items.compactMap {
             guard let id = $0.id.videoId else { return nil }
-            return SearchVideo(id: id, title: $0.snippet.title, channel: $0.snippet.channelTitle,
+            return SearchVideo(id: id, title: $0.snippet.title.htmlDecoded, channel: $0.snippet.channelTitle.htmlDecoded,
                                thumbnail: $0.snippet.thumbnails["medium"]?.url)
         }
     }
@@ -142,7 +142,7 @@ enum YouTubeSearch {
                     let items = try JSONDecoder().decode(Playlist.self, from: data).items
                     return items.compactMap { item in
                         guard let id = item.contentDetails.videoId else { return nil }
-                        return FeedItem(video: SearchVideo(id: id, title: item.snippet.title, channel: item.snippet.channelTitle,
+                        return FeedItem(video: SearchVideo(id: id, title: item.snippet.title.htmlDecoded, channel: item.snippet.channelTitle.htmlDecoded,
                                                            thumbnail: item.snippet.thumbnails["medium"]?.url),
                                         publishedAt: item.snippet.publishedAt ?? "")
                     }
@@ -179,5 +179,17 @@ enum YouTubeSearch {
         let detail: String? = (try? JSONDecoder().decode(Envelope.self, from: data))?.error?.message
         let suffix = detail.map { ": \($0)" } ?? ""
         return NSError(domain: "MK8.YouTube", code: status, userInfo: [NSLocalizedDescriptionKey: "\(fallback) (HTTP \(status))\(suffix)"])
+    }
+}
+
+extension String {
+    /// The Data API returns titles HTML-escaped (`Rock &amp; Roll`, `Don&#39;t`).
+    var htmlDecoded: String {
+        guard contains("&") else { return self }
+        var result = self
+        for (entity, character) in [("&amp;", "&"), ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'"), ("&lt;", "<"), ("&gt;", ">")] {
+            result = result.replacingOccurrences(of: entity, with: character)
+        }
+        return result
     }
 }

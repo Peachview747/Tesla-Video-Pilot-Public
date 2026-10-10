@@ -724,7 +724,7 @@ import Network
             let progressValue: Any
             if let progress = preparation?.fraction { progressValue = progress } else { progressValue = NSNull() }
             return .json(["hosting": running, "busy": busy, "publicAccess": true, "authentication": "faceID-on-start",
-                          "youtubeSearch": !searchKey.isEmpty || youtubeSignedIn, "youtubeExplore": !searchKey.isEmpty || youtubeSignedIn,
+                          "youtubeSearch": true, "youtubeExplore": !searchKey.isEmpty || youtubeSignedIn,
                           "youtubeSignedIn": youtubeSignedIn,
                           "tunnel": tunnelState.rawValue, "version": version, "build": build,
                           "activeStreams": activeStreams, "queuedCount": queuedCount, "downloadMbps": traffic.downloadMbps,
@@ -785,23 +785,45 @@ import Network
             return .json(["removed": !removalsRequested.contains(id), "pending": removalsRequested.contains(id)])
         }
         if request.path == "/api/search", request.method == "GET" {
-            let query = request.query.first(where: { $0.name == "q" })?.value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !query.isEmpty, query.count <= 200 else { return .json(["error": "Enter a search of up to 200 characters."], status: 400) }
-            do {
-                let results: [SearchVideo]
-                if youtubeSignedIn {
-                    results = try await youtubeOAuth.retryUnauthorized { token in
-                        try await YouTubeSearch.search(query, accessToken: token)
-                    }
-                } else {
-                    guard !searchKey.isEmpty else { return .json(["error": "Sign in with Google on the iPhone or add a YouTube Data API key in Settings."], status: 503) }
-                    results = try await YouTubeSearch.search(query, apiKey: searchKey)
-                }
-                return HTTPResponse(status: 200, contentType: "application/json", body: try JSONEncoder().encode(results))
-            } catch {
-                youtubeSignedIn = youtubeOAuth.signedIn
-                return .json(["error": "YouTube search failed: \(error.localizedDescription)"], status: 503)
+            let value = { (name: String) in request.query.first(where: { $0.name == name })?.value ?? "" }
+            let query = value("q").trimmingCharacters(in: .whitespacesAndNewlines)
+            let continuation = value("continuation")
+            let filter = YouTubeInnerTube.filters[value("filter")] == nil ? "any" : value("filter")
+            guard !query.isEmpty, query.count <= 200, continuation.count <= 3000 else {
+                return .json(["error": "Enter a search of up to 200 characters."], status: 400)
             }
+            do {
+                let page = try await YouTubeInnerTube.search(query, filter: filter, continuation: continuation.isEmpty ? nil : continuation)
+                return HTTPResponse(status: 200, contentType: "application/json", body: try JSONEncoder().encode(page))
+            } catch {
+                // Fall back to the Data API when the account or key allows it.
+                guard continuation.isEmpty, youtubeSignedIn || !searchKey.isEmpty else {
+                    return .json(["error": error.localizedDescription], status: 503)
+                }
+                do {
+                    let results: [SearchVideo]
+                    if youtubeSignedIn {
+                        results = try await youtubeOAuth.retryUnauthorized { token in
+                            try await YouTubeSearch.search(query, accessToken: token)
+                        }
+                    } else { results = try await YouTubeSearch.search(query, apiKey: searchKey) }
+                    let page = YouTubeInnerTube.Page(results: results.map {
+                        YouTubeInnerTube.Hit(id: $0.id, title: $0.title, channel: $0.channel,
+                                             thumbnail: $0.thumbnail ?? "https://i.ytimg.com/vi/\($0.id)/mqdefault.jpg",
+                                             duration: nil, views: nil, published: nil)
+                    }, continuation: nil)
+                    return HTTPResponse(status: 200, contentType: "application/json", body: try JSONEncoder().encode(page))
+                } catch {
+                    youtubeSignedIn = youtubeOAuth.signedIn
+                    return .json(["error": "YouTube search failed: \(error.localizedDescription)"], status: 503)
+                }
+            }
+        }
+        if request.path == "/api/suggest", request.method == "GET" {
+            let query = (request.query.first(where: { $0.name == "q" })?.value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !query.isEmpty, query.count <= 120 else { return .json([String]()) }
+            let suggestions = (try? await YouTubeInnerTube.suggestions(query)) ?? []
+            return HTTPResponse(status: 200, contentType: "application/json", body: (try? JSONEncoder().encode(suggestions)) ?? Data("[]".utf8))
         }
         if request.path == "/api/explore", request.method == "GET" {
             do {

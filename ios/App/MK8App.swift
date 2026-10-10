@@ -8,12 +8,12 @@ import MK8Core
     @UIApplicationDelegateAdaptor(MK8AppDelegate.self) private var appDelegate
     @StateObject private var host = HostModel()
     @Environment(\.scenePhase) private var phase
-    @AppStorage("appearanceMode") private var appearanceMode = "light"
+    @AppStorage("appearanceMode") private var appearanceMode = "system"
     var body: some Scene {
         WindowGroup {
             AppRootView(host: host)
             .tint(MK8Theme.accent)
-            .preferredColorScheme(appearanceMode == "dark" ? .dark : .light)
+            .preferredColorScheme(appearanceMode == "dark" ? .dark : appearanceMode == "light" ? .light : nil)
             .onChange(of: phase) { _, value in
                 if value == .inactive { host.preparingToBackground() }
                 if value == .background { host.backgrounded() }
@@ -94,14 +94,17 @@ private enum MK8Theme {
     private static func adaptive(_ light: UIColor, _ dark: UIColor) -> Color {
         Color(uiColor: UIColor { traits in traits.userInterfaceStyle == .dark ? dark : light })
     }
-    static let background = adaptive(UIColor(red: 0.93, green: 0.95, blue: 0.97, alpha: 1), UIColor(red: 0.035, green: 0.05, blue: 0.07, alpha: 1))
-    static let card = adaptive(.white, UIColor(red: 0.075, green: 0.10, blue: 0.13, alpha: 1))
-    static let cardRaised = adaptive(UIColor(red: 0.985, green: 0.99, blue: 1, alpha: 1), UIColor(red: 0.11, green: 0.145, blue: 0.18, alpha: 1))
-    static let accent = adaptive(UIColor(red: 0.14, green: 0.21, blue: 0.26, alpha: 1), UIColor(red: 0.88, green: 0.92, blue: 0.95, alpha: 1))
-    static let accentDeep = adaptive(UIColor(red: 0.05, green: 0.10, blue: 0.14, alpha: 1), UIColor(red: 0.18, green: 0.25, blue: 0.30, alpha: 1))
-    static let secondary = adaptive(UIColor(red: 0.38, green: 0.44, blue: 0.49, alpha: 1), UIColor(red: 0.62, green: 0.69, blue: 0.74, alpha: 1))
-    static let steel = adaptive(UIColor(red: 0.63, green: 0.70, blue: 0.75, alpha: 1), UIColor(red: 0.30, green: 0.40, blue: 0.47, alpha: 1))
-    static let blue = adaptive(UIColor(red: 0.42, green: 0.62, blue: 0.79, alpha: 1), UIColor(red: 0.54, green: 0.73, blue: 0.88, alpha: 1))
+    // Softened palette (Build 48): no pure white surfaces in light mode and no
+    // near-black background or near-white accent in dark mode, so text and
+    // buttons read clearly without glare.
+    static let background = adaptive(UIColor(red: 0.895, green: 0.91, blue: 0.92, alpha: 1), UIColor(red: 0.085, green: 0.10, blue: 0.115, alpha: 1))
+    static let card = adaptive(UIColor(red: 0.95, green: 0.955, blue: 0.96, alpha: 1), UIColor(red: 0.13, green: 0.15, blue: 0.17, alpha: 1))
+    static let cardRaised = adaptive(UIColor(red: 0.965, green: 0.97, blue: 0.975, alpha: 1), UIColor(red: 0.155, green: 0.175, blue: 0.195, alpha: 1))
+    static let accent = adaptive(UIColor(red: 0.27, green: 0.36, blue: 0.43, alpha: 1), UIColor(red: 0.60, green: 0.70, blue: 0.78, alpha: 1))
+    static let accentDeep = adaptive(UIColor(red: 0.19, green: 0.26, blue: 0.32, alpha: 1), UIColor(red: 0.21, green: 0.27, blue: 0.32, alpha: 1))
+    static let secondary = adaptive(UIColor(red: 0.40, green: 0.45, blue: 0.50, alpha: 1), UIColor(red: 0.60, green: 0.66, blue: 0.70, alpha: 1))
+    static let steel = adaptive(UIColor(red: 0.66, green: 0.72, blue: 0.76, alpha: 1), UIColor(red: 0.32, green: 0.40, blue: 0.46, alpha: 1))
+    static let blue = adaptive(UIColor(red: 0.45, green: 0.61, blue: 0.75, alpha: 1), UIColor(red: 0.52, green: 0.68, blue: 0.81, alpha: 1))
 }
 
 private struct HostScreen<Content: View>: View {
@@ -191,7 +194,7 @@ private struct DashboardMetric: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(11)
         .background(MK8Theme.background.opacity(0.72), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.06), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(MK8Theme.steel.opacity(0.25), lineWidth: 1))
     }
 }
 
@@ -710,19 +713,20 @@ private struct HostSettingsView: View {
     @ObservedObject private var background = BackgroundPreparation.shared
     @ObservedObject private var diagnostics = SessionDiagnostics.shared
     @ObservedObject private var keepalive = SilentAudioKeepAlive.shared
-    @AppStorage("appearanceMode") private var appearanceMode = "light"
+    @AppStorage("appearanceMode") private var appearanceMode = "system"
     var body: some View {
         HostScreen(title: "Settings") {
             HostCard {
                 PiPExperimentView(playback: host.pipPlayback)
             }
             HostCard {
-                Label("Appearance", systemImage: appearanceMode == "dark" ? "moon.fill" : "sun.max.fill").font(.headline)
-                Toggle("Dark mode", isOn: Binding(
-                    get: { appearanceMode == "dark" },
-                    set: { appearanceMode = $0 ? "dark" : "light" }
-                ))
-                Text("Light mode matches the bright media-cockpit design. Dark mode keeps the same layout with graphite surfaces.")
+                Label("Appearance", systemImage: appearanceMode == "dark" ? "moon.fill" : appearanceMode == "light" ? "sun.max.fill" : "circle.lefthalf.filled").font(.headline)
+                Picker("Appearance", selection: $appearanceMode) {
+                    Text("Match iPhone").tag("system")
+                    Text("Light").tag("light")
+                    Text("Dark").tag("dark")
+                }.pickerStyle(.segmented)
+                Text("Both themes use soft, low-glare surfaces. Match iPhone follows the system's light or dark setting.")
                     .font(.footnote).foregroundStyle(MK8Theme.secondary)
             }
             HostCard {

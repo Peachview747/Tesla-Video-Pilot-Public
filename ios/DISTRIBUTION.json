@@ -1,10 +1,10 @@
 {
   "name": "Video Pilot",
-  "version": "0.1.35",
-  "build": "47",
+  "version": "0.1.36",
+  "build": "48",
   "iconVersion": "0.1.28",
   "artifactPrefix": "Tesla-Video-Pilot",
-  "releaseNotes": "Build 47 adds library sorting on the Tesla (recently added, release date newest/oldest, or grouped by channel) with channel and release date shown on each video, and reduces audio crackle by keeping 0.75 s of audio decoded ahead instead of 0.25 s. Remaining audio gaps are logged as audioUnderrun.",
+  "releaseNotes": "Build 48 softens both themes on the iPhone and Tesla, adds a channel-first Tesla library (tap a channel to expand its videos in release order, numbered, with Play next and progress), Continue watching, a library filter, and rebuilds search: keyless YouTube search with suggestions, filters, Load more, durations, views and one-tap Add.",
   "packaging": "arm64-only-adhoc-signature-template",
   "stage": "native-prototype",
   "branch": "iphone-native",
