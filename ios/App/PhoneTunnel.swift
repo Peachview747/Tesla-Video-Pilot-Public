@@ -259,14 +259,14 @@ import MK8Core
         peers[id] = peer
         peer.preparationTask = Task { [weak self, weak peer] in
             guard let self, let peer else { return }
-            let response = await self.route(request)
+            let response = await self.route(request).revalidated(for: request)
             guard !Task.isCancelled, self.socket === socket, self.peers[id] === peer else { return }
             do {
                 try peer.prepare(response)
                 self.updateStreams()
                 var headers = response.headers
                 headers["Content-Type"] = response.contentType
-                headers["Cache-Control"] = "no-store"
+                headers["Cache-Control"] = response.headers["Cache-Control"] ?? "no-store"
                 headers["X-Content-Type-Options"] = "nosniff"
                 headers["Referrer-Policy"] = "no-referrer"
                 try await self.send(["type": "response", "id": rawID, "status": response.status,

@@ -224,7 +224,9 @@ export class PhoneTunnel {
             if (!HOP_HEADERS.has(name.toLowerCase()) && name.toLowerCase() !== "content-length") headers.set(name, header);
           }
           headers.set("content-length", String(value.length));
-          headers.set("cache-control", "no-store");
+          // The phone marks bundled web assets "private, no-cache" with an
+          // ETag so browsers revalidate (304) instead of re-downloading them.
+          if (!headers.has("cache-control")) headers.set("cache-control", "no-store");
           headers.set("x-mk8-source", "iphone");
           const response = new Response(value.length ? entry.stream : null, { status: value.status, headers });
           clearTimeout(entry.timer);

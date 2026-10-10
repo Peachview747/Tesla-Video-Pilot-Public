@@ -1,9 +1,10 @@
 import Foundation
 import Network
+import CryptoKit
 import MK8Core
 
 struct HTTPResponse {
-    let status: Int
+    var status: Int
     let contentType: String
     var body: Data = Data()
     var headers: [String: String] = [:]
@@ -12,6 +13,27 @@ struct HTTPResponse {
     static func json(_ value: Any, status: Int = 200) -> HTTPResponse {
         HTTPResponse(status: status, contentType: "application/json",
                      body: (try? JSONSerialization.data(withJSONObject: value)) ?? Data("{}".utf8))
+    }
+
+    /// Bundled web assets (index, app.js, jsmpeg, css) are revalidated instead
+    /// of re-sent: the browser keeps its copy and asks with If-None-Match, so a
+    /// page load over the tunnel costs a few hundred bytes once cached. API and
+    /// media responses are untouched and stay no-store.
+    func revalidated(for request: HTTPRequest) -> HTTPResponse {
+        guard request.method == "GET", status == 200, file == nil, !body.isEmpty,
+              !request.path.hasPrefix("/api/") else { return self }
+        let digest = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+        let tag = "\"" + String(digest.prefix(32)) + "\""
+        var copy = self
+        copy.headers["ETag"] = tag
+        copy.headers["Cache-Control"] = "private, no-cache"
+        let candidates = (request.headers["if-none-match"] ?? "").split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        if candidates.contains(tag) || candidates.contains("W/" + tag) {
+            copy.status = 304
+            copy.body = Data()
+        }
+        return copy
     }
 }
 
@@ -141,7 +163,7 @@ struct HTTPResponse {
                             fields: ["method": request.method, "route": self.currentRoute])
                         self.requestTask = Task { [weak self] in
                             guard let self else { return }
-                            let response = await self.route(request)
+                            let response = await self.route(request).revalidated(for: request)
                             if !self.done { self.respond(response) }
                         }
                     } else if complete || error != nil { self.finish() }
@@ -165,14 +187,14 @@ struct HTTPResponse {
             fields: ["route": currentRoute, "status": String(response.status), "bytes": String(length),
                      "stream": String(isStreaming),
                      "elapsedMs": String(format: "%.1f", (ProcessInfo.processInfo.systemUptime - requestStartedAt) * 1000)])
-        let reason = [200: "OK", 202: "Accepted", 400: "Bad Request", 401: "Unauthorized",
+        let reason = [200: "OK", 202: "Accepted", 304: "Not Modified", 400: "Bad Request", 401: "Unauthorized",
                       403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed", 409: "Conflict",
                       429: "Too Many Requests", 503: "Service Unavailable"][response.status] ?? "Error"
         var headers = response.headers
         headers["Content-Type"] = response.contentType
         headers["Content-Length"] = String(length)
         headers["Connection"] = "close"
-        headers["Cache-Control"] = "no-store"
+        headers["Cache-Control"] = response.headers["Cache-Control"] ?? "no-store"
         headers["X-Content-Type-Options"] = "nosniff"
         headers["Referrer-Policy"] = "no-referrer"
         let text = "HTTP/1.1 \(response.status) \(reason)\r\n" + headers.sorted(by: { $0.key < $1.key })

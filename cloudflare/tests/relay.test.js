@@ -307,3 +307,21 @@ test("a hibernated relay restores the phone's window from its socket attachment"
   assert.equal(new PhoneTunnel({ getWebSockets: () => [{ readyState: 1 }] }, { SECRET }).window, 1);
   assert.equal(new PhoneTunnel({ getWebSockets: () => [] }, { SECRET }).window, 1);
 });
+
+test("revalidated assets keep the phone's cache policy and pass If-None-Match through", async t => {
+  const f = await fixture(t);
+  const { socket } = await f.connect();
+  const p = phone(socket, request => request.target.startsWith("/api/") ? { body: "{}" }
+    : request.headers["if-none-match"] === '"abc"' ? { status: 304, headers: { etag: '"abc"', "cache-control": "private, no-cache" } }
+    : { body: "console.log(1)", headers: { "content-type": "text/javascript", etag: '"abc"', "cache-control": "private, no-cache" } });
+  const fresh = await f.fetch("/app.js");
+  assert.equal(await fresh.text(), "console.log(1)");
+  assert.equal(fresh.headers.get("cache-control"), "private, no-cache");
+  assert.equal(fresh.headers.get("etag"), '"abc"');
+  const cached = await f.fetch("/app.js", { headers: { "if-none-match": '"abc"' } });
+  assert.equal(cached.status, 304);
+  assert.equal(p.observed[1].headers["if-none-match"], '"abc"');
+  // Responses without a policy (API, media) stay uncacheable.
+  const plain = await f.fetch("/api/library");
+  assert.equal(plain.headers.get("cache-control"), "no-store");
+});
