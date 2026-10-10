@@ -210,6 +210,7 @@ import MK8Core
                         if !chunk.isEmpty {
                             let frame = try RelayProtocol.frame(id: id, payload: chunk)
                             try await self.send(frame, socket: socket)
+                            peer.sentBytes += Int64(chunk.count)
                         }
                         // Cancel/reconnect can run while a WebSocket send awaits
                         // completion. Never send another frame or remove its successor.
@@ -338,7 +339,21 @@ import MK8Core
             await fail(id, peer: peer, socket: socket)
         }
     }
-    private func remove(_ id: UUID) { peers.removeValue(forKey: id)?.close(); updateStreams() }
+    private func remove(_ id: UUID) {
+        if let peer = peers.removeValue(forKey: id) {
+            if peer.isFile, peer.sentBytes > 0 { Self.recordStreamSummary(peer) }
+            peer.close()
+        }
+        updateStreams()
+    }
+    /// One line per media stream: how fast the relay actually delivered it.
+    private static func recordStreamSummary(_ peer: RelayPeer) {
+        let seconds = max(0.001, ProcessInfo.processInfo.systemUptime - peer.startedAt)
+        SessionDiagnostics.shared.record(component: "tunnel", event: "streamSummary",
+            fields: ["bytes": String(peer.sentBytes), "expectedBytes": String(peer.length),
+                     "complete": String(peer.finished), "elapsedMs": String(format: "%.0f", seconds * 1000),
+                     "mbps": String(format: "%.2f", Double(peer.sentBytes) * 8 / seconds / 1_000_000)])
+    }
     private func updateStreams() { streamsChanged?(peers.values.filter(\.isFile).count) }
 }
 
@@ -347,6 +362,8 @@ import MK8Core
     var transferTask: Task<Void, Never>?
     var ready = false
     var lastPull = ProcessInfo.processInfo.systemUptime
+    let startedAt = ProcessInfo.processInfo.systemUptime
+    var sentBytes: Int64 = 0
     var credits = RelayCredits()
     private var body: RelayBody?
     var length: Int { body?.length ?? 0 }

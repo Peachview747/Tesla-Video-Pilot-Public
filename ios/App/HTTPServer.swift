@@ -111,6 +111,7 @@ struct HTTPResponse {
     private var timeout: Task<Void, Never>?
     private var currentRoute = "unknown"
     private var requestStartedAt = ProcessInfo.processInfo.systemUptime
+    private var sentBytes: Int64 = 0
     private var done = false
 
     init(connection: NWConnection, route: @escaping HTTPServer.Router) {
@@ -141,6 +142,13 @@ struct HTTPResponse {
     func finish() {
         guard !done else { return }
         done = true
+        if let body, body.isFile, sentBytes > 0 {
+            let seconds = max(0.001, ProcessInfo.processInfo.systemUptime - requestStartedAt)
+            SessionDiagnostics.shared.record(component: "http", event: "streamSummary",
+                fields: ["route": currentRoute, "bytes": String(sentBytes), "expectedBytes": String(body.length),
+                         "complete": String(body.finished), "elapsedMs": String(format: "%.0f", seconds * 1000),
+                         "mbps": String(format: "%.2f", Double(sentBytes) * 8 / seconds / 1_000_000)])
+        }
         requestTask?.cancel()
         timeout?.cancel()
         body?.close()
@@ -227,7 +235,11 @@ struct HTTPResponse {
             Task { @MainActor in
                 guard let self, !self.done else { return }
                 self.timeout?.cancel()
-                if error != nil { self.finish() } else { self.sent?(Int64(data.count)); completion() }
+                if error != nil { self.finish() } else {
+                    self.sentBytes += Int64(data.count)
+                    self.sent?(Int64(data.count))
+                    completion()
+                }
             }
         })
     }
