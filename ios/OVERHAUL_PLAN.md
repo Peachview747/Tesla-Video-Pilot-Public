@@ -66,3 +66,33 @@ Only two agents run at once (4-CPU container).
 
 ## Status
 See `ios/overhaul/*.md`.
+
+## Added after launch (user request): 1080p, upgrade old videos, queue list
+
+Track `quality` runs after `perf` finishes (same files). Web and app tracks build the UI
+against this contract now and hide the controls gracefully if an endpoint returns 404.
+
+### API contract (phone)
+- `GET /api/settings` → `{quality: "720p"|"1080p", ...}`; `POST /api/settings` `{quality}`.
+  Default `1080p`. Applies to new downloads/transcodes.
+- Library items gain `quality` (e.g. `"1080p"`) and `height` (int, may be missing on old items;
+  treat missing as below the current setting → upgradable).
+- `POST /api/library/upgrade` `{id}` or `{all: true}` → re-queues at the current quality
+  setting; the old file keeps playing until the new one is ready, then it is replaced.
+  Returns `{queued: n}`.
+- `GET /api/queue` → `{items: [{id, videoId, title, thumbnail, stage, progress, speedBps,
+  etaSec, quality, upgrade, error}]}` in processing order.
+  `stage`: `"queued"|"downloading"|"transcoding"|"ready"|"failed"|"paused"`, `progress` 0–1.
+- `POST /api/queue/cancel` `{id}`, `POST /api/queue/move` `{id, to}` (0 = next up).
+
+### quality track (phone)
+- Pick 1080p source formats (H.264 first for hardware decode) and transcode 1080p MPEG-1
+  with a bitrate that looks good but stays efficient; verify the JSMpeg decoder in the
+  Tesla browser can keep up (fall back to 720p setting if it measurably can't — log decode
+  timing from the web side).
+- Implement settings, upgrade, queue endpoints above; keep old file until replacement is ready.
+
+### web/app UI
+- Queue page/panel: live list with stage, progress bar, speed, ETA, cancel, move to top.
+- Settings: Quality picker (720p / 1080p).
+- Library: "Upgrade to 1080p" per video and "Upgrade all" (only shown for lower-quality items).
