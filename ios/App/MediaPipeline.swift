@@ -273,9 +273,9 @@ enum MediaPipeline {
             report = try await MediaConverter.convert(video: video, audio: audio, output: output,
                 duration: duration, quality: quality, progress: progress)
         } catch let failure as MediaConverter.Failure {
-            let report = "Video Pilot converter · FFmpeg 5.1.2\nExit code: \(failure.code)\nQuality: \(quality.title)\n\n"
+            let text = "Video Pilot converter · FFmpeg 5.1.2\nExit code: \(failure.code)\nQuality: \(quality.title)\n\n"
                 + String(failure.log.suffix(24_000))
-            try? report.write(to: diagnosticsURL(jobID), atomically: true, encoding: .utf8)
+            try? text.write(to: diagnosticsURL(jobID), atomically: true, encoding: .utf8)
             throw MediaError.conversionFailed(failure.detail)
         }
         try Task.checkCancellation()

@@ -27,6 +27,9 @@ enum MediaConverter {
         let segments: Int
     }
 
+    /// Failure code for joining/muxing parallel slices (encoding succeeded).
+    static let joinStageCode: Int32 = -2
+
     /// Setting key; false forces the single-pass converter.
     static let parallelDefaultsKey = "parallelConversion"
 
@@ -59,24 +62,39 @@ enum MediaConverter {
         var parallelFailure: Failure?
         // Fast path: whole-second slices encoded side by side. Needs a known
         // duration and the separate audio track YouTube downloads provide.
-        // Any failure falls back to the proven single-pass conversion below.
+        // VideoToolbox first, then CPU decoding (iOS may withhold the hardware
+        // decoder in the background); any other failure falls back to the
+        // proven single-pass conversion below.
         if let audio, let duration {
             let plan = TranscodeArguments.segments(duration: duration, maximum: parallelSegmentLimit)
             if plan.count >= 2 {
-                do {
-                    try await convertInSegments(video: video, audio: audio, output: output, duration: duration,
-                        quality: quality, segments: plan, hardwareDecode: true, progress: progress, runner: execute)
+                for hardware in [true, false] {
                     try Task.checkCancellation()
-                    guard fileSize(output) > 0 else { throw Failure(code: -1, log: "The parallel converter did not produce a video.") }
-                    completed = true
-                    return Report(hardwareDecode: true, seconds: ProcessInfo.processInfo.systemUptime - started,
-                                  failedHardwareSeconds: nil, segments: plan.count)
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch {
-                    try Task.checkCancellation()
-                    parallelFailure = error as? Failure ?? Failure(code: -1, log: error.localizedDescription)
-                    failedHardwareSeconds = ProcessInfo.processInfo.systemUptime - started
+                    if FileManager.default.fileExists(atPath: output.path) {
+                        try FileManager.default.removeItem(at: output)
+                    }
+                    do {
+                        try await convertInSegments(video: video, audio: audio, output: output, duration: duration,
+                            quality: quality, segments: plan, hardwareDecode: hardware, progress: progress, runner: execute)
+                        try Task.checkCancellation()
+                        guard fileSize(output) > 0 else {
+                            throw Failure(code: joinStageCode, log: "The parallel converter did not produce a video.")
+                        }
+                        completed = true
+                        return Report(hardwareDecode: hardware, seconds: ProcessInfo.processInfo.systemUptime - started,
+                                      failedHardwareSeconds: failedHardwareSeconds, segments: plan.count)
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        try Task.checkCancellation()
+                        let failure = error as? Failure ?? Failure(code: -1, log: error.localizedDescription)
+                        let earlier = parallelFailure.map { $0.log + "\n\n" } ?? ""
+                        parallelFailure = Failure(code: failure.code, log: earlier + failure.log)
+                        failedHardwareSeconds = ProcessInfo.processInfo.systemUptime - started
+                        // The slices encoded but could not be joined: a CPU
+                        // decode would fail the same way, so go single pass.
+                        if failure.code == joinStageCode { break }
+                    }
                 }
             }
         }
@@ -155,7 +173,16 @@ enum MediaConverter {
         let joined = work.appendingPathComponent("video.m1v")
         try concatenate(parts, into: joined)
         try Task.checkCancellation()
-        try await execute(TranscodeArguments.mux(video: joined.path, audio: audioOutput.path, output: output.path), nil, { _ in })
+        do {
+            try await execute(TranscodeArguments.mux(video: joined.path, audio: audioOutput.path, output: output.path),
+                              nil, { _ in })
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            let failure = error as? Failure
+            throw Failure(code: joinStageCode, log: "Joining the converted slices failed (exit \(failure?.code ?? -1)):\n"
+                + (failure?.log ?? error.localizedDescription))
+        }
     }
 
     private static func concatenate(_ parts: [URL], into destination: URL) throws {

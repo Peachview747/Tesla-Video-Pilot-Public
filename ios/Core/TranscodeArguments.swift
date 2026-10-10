@@ -67,7 +67,7 @@ public enum TranscodeArguments {
     /// Plans up to `maximum` slices of at least `minimumSeconds` each. Returns
     /// an empty plan when the video is too short to benefit.
     public static func segments(duration: Double, maximum: Int, minimumSeconds: Int = 30) -> [TranscodeSegment] {
-        guard duration.isFinite, duration > 0, maximum >= 2, minimumSeconds >= 1 else { return [] }
+        guard duration.isFinite, duration > 0, duration < 1_000_000, maximum >= 2, minimumSeconds >= 1 else { return [] }
         let count = min(maximum, Int(duration) / minimumSeconds)
         guard count >= 2 else { return [] }
         let length = Int((duration / Double(count)).rounded(.up))
