@@ -93,7 +93,7 @@ public struct RelayCredits {
     // True means the caller must start the sole drain task.
     public mutating func grant(_ count: Int = 1, limit: Int = 1) throws -> Bool {
         guard !closed else { throw Failure.closed }
-        guard count > 0, limit > 0, available + count <= limit else { throw Failure.duplicate }
+        guard count > 0, limit > 0, count <= limit - available else { throw Failure.duplicate }
         available += count
         if draining { return false }
         draining = true
