@@ -359,6 +359,7 @@ import Network
     func signOutYouTube() {
         youtubeOAuth.signOut()
         youtubeSignedIn = false
+        youtubeAuthStatus = ""
         message = "YouTube account disconnected."
     }
     func saveTunnelKey() {
@@ -495,6 +496,7 @@ import Network
             return nil
         }
         if busy {
+            resetForRetry(id)
             try? library.update(id, state: "preparing", message: "Waiting to retry")
             refresh()
             message = "Queued to retry. It will start automatically."
@@ -505,12 +507,15 @@ import Network
         guard !busy, let library, let video = library.videos.first(where: { $0.id == id }) else { return }
         let job = try? MediaPipeline.store.load(id)
         guard job != nil || video.youtubeID != nil else { message = "Import this file again from Files."; return }
+        resetForRetry(id)
+        launchPreparation(video: video, restored: job)
+    }
+    private func resetForRetry(_ id: UUID) {
         seekIndexes.removeValue(forKey: id)
         seekIndexTasks.removeValue(forKey: id)?.cancel()
         seekIndexGenerations.removeValue(forKey: id)
         MediaPipeline.store.clearFailures(id)
         MediaDownloader.shared.forget(jobID: id)
-        launchPreparation(video: video, restored: job)
     }
     func pausePreparation() { preparationTask?.cancel() }
     func diagnostics(for id: UUID) -> URL? {

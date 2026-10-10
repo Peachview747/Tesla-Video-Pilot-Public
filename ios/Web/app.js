@@ -481,7 +481,7 @@ for (const view of LIBRARY_VIEWS) $(`view-${view}`).onclick = () => {
   libraryView = view; prefs.set('vp-library-view', view); rerenderLibrary();
 };
 $('library-filter').oninput = event => { libraryFilter = String(event.target.value || '').trim(); rerenderLibrary(); };
-let queueSignature = '';
+let queueSignature = '', exploreFailed = false;
 let refreshQueued = false, refreshError = '';
 function renderQueue(videos, activeID = '') {
   const isActive = video => video.id?.toLowerCase() === activeID?.toLowerCase();
@@ -549,7 +549,7 @@ async function refresh(force = false) {
       exploreAccount = Boolean(status.youtubeSignedIn);
       $('explore-results').replaceChildren(); exploreAttemptAt = 0;
     }
-    if (status.youtubeExplore && !$('explore-results').children.length && Date.now() - exploreAttemptAt > 60000) void loadExplore();
+    if (status.youtubeExplore && (!$('explore-results').children.length || exploreFailed) && Date.now() - exploreAttemptAt > 60000) void loadExplore();
   } catch (error) {
     $('connection').textContent = 'Connection lost'; $('connection').dataset.state = 'offline';
     refreshError = error.message || 'Open Video Pilot on the iPhone and start hosting.';
@@ -568,8 +568,11 @@ async function loadExplore() {
   exploring = true; exploreAttemptAt = Date.now();
   try {
     const results = await api('/api/explore');
-    $('explore-results').replaceChildren(...results.map(resultCard));
-  } catch (error) { $('explore-results').replaceChildren(card('Feed unavailable', error.message || 'Try Refresh in a moment.')); }
+    $('explore-results').replaceChildren(...results.map(resultCard)); exploreFailed = false;
+  } catch (error) {
+    exploreFailed = true;
+    $('explore-results').replaceChildren(card('Feed unavailable', error.message || 'Try Refresh in a moment.'));
+  }
   finally { exploring = false; }
 }
 function updatePreparation(status, videos) {

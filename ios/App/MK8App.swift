@@ -755,7 +755,7 @@ private struct HostSettingsView: View {
                     Button(host.youtubeSigningIn ? "Signing in…" : "Sign in with Google", systemImage: "person.crop.circle") { host.signInYouTube() }
                         .buttonStyle(.borderedProminent).controlSize(.large).disabled(host.youtubeSigningIn)
                 }
-                if !host.youtubeAuthStatus.isEmpty {
+                if !host.youtubeSignedIn, !host.youtubeAuthStatus.isEmpty {
                     Text(host.youtubeAuthStatus).font(.footnote).foregroundStyle(MK8Theme.secondary).textSelection(.enabled)
                 }
             }
