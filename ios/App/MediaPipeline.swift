@@ -32,7 +32,10 @@ struct PreparationTimings: Sendable {
     var waitSeconds: Double = 0
     var processingSeconds: Double?
     var hardwareDecode: Bool?
-    var hardwareFallbackSeconds: Double?
+    /// Time spent in attempts that failed before the conversion that worked.
+    var fallbackSeconds: Double?
+    /// Encoder sessions run side by side (1 = single pass).
+    var segments: Int = 1
     var indexSeconds: Double = 0
     var mediaSeconds: Double?
     var outputBytes: Int64 = 0
@@ -64,7 +67,7 @@ struct PreparationTimings: Sendable {
          "downloadMbps": Self.rounded(downloadMbps), "waitSeconds": Self.rounded(waitSeconds),
          "processingSeconds": Self.rounded(processingSeconds), "processingSpeed": Self.rounded(processingSpeed),
          "hardwareDecode": hardwareDecode.map { $0 as Any } ?? NSNull(),
-         "hardwareFallbackSeconds": Self.rounded(hardwareFallbackSeconds),
+         "fallbackSeconds": Self.rounded(fallbackSeconds), "segments": segments,
          "indexSeconds": Self.rounded(indexSeconds), "mediaSeconds": Self.rounded(mediaSeconds),
          "outputBytes": outputBytes, "outputKbps": Self.rounded(outputKbps, 1),
          "finishedAt": ISO8601DateFormatter().string(from: finishedAt)]
@@ -233,7 +236,8 @@ enum MediaPipeline {
                                            quality: job.quality ?? .balanced, jobID: job.id, progress: progress)
             timings.processingSeconds = report.seconds
             timings.hardwareDecode = report.hardwareDecode
-            timings.hardwareFallbackSeconds = report.failedHardwareSeconds
+            timings.fallbackSeconds = report.failedHardwareSeconds
+            timings.segments = report.segments
         }
         let indexStarted = ProcessInfo.processInfo.systemUptime
         // MPEG-TS is variable bitrate, so a file-size ratio cannot provide a

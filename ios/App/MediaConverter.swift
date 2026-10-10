@@ -21,8 +21,21 @@ enum MediaConverter {
         let hardwareDecode: Bool
         /// Wall time of the successful encode.
         let seconds: Double
-        /// Time lost to a failed VideoToolbox attempt before the CPU retry.
+        /// Time lost to failed attempts (parallel or VideoToolbox) before the one that worked.
         let failedHardwareSeconds: Double?
+        /// Encoder sessions that ran side by side (1 = single pass).
+        let segments: Int
+    }
+
+    /// Setting key; false forces the single-pass converter.
+    static let parallelDefaultsKey = "parallelConversion"
+
+    /// FFmpeg 5.1 runs decode, filter and encode for one output on a single
+    /// thread, so independent slices are how a conversion uses every core.
+    /// Leave one core for the HTTP server, tunnel and UI.
+    static var parallelSegmentLimit: Int {
+        if UserDefaults.standard.object(forKey: parallelDefaultsKey) as? Bool == false { return 1 }
+        return min(4, max(1, ProcessInfo.processInfo.activeProcessorCount - 1))
     }
 
     @discardableResult
@@ -40,8 +53,33 @@ enum MediaConverter {
             if !completed { try? FileManager.default.removeItem(at: output) }
         }
         let execute = runner ?? run
+        let started = ProcessInfo.processInfo.systemUptime
         var hardwareFailure: Failure?
         var failedHardwareSeconds: Double?
+        var parallelFailure: Failure?
+        // Fast path: whole-second slices encoded side by side. Needs a known
+        // duration and the separate audio track YouTube downloads provide.
+        // Any failure falls back to the proven single-pass conversion below.
+        if let audio, let duration {
+            let plan = TranscodeArguments.segments(duration: duration, maximum: parallelSegmentLimit)
+            if plan.count >= 2 {
+                do {
+                    try await convertInSegments(video: video, audio: audio, output: output, duration: duration,
+                        quality: quality, segments: plan, hardwareDecode: true, progress: progress, runner: execute)
+                    try Task.checkCancellation()
+                    guard fileSize(output) > 0 else { throw Failure(code: -1, log: "The parallel converter did not produce a video.") }
+                    completed = true
+                    return Report(hardwareDecode: true, seconds: ProcessInfo.processInfo.systemUptime - started,
+                                  failedHardwareSeconds: nil, segments: plan.count)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    try Task.checkCancellation()
+                    parallelFailure = error as? Failure ?? Failure(code: -1, log: error.localizedDescription)
+                    failedHardwareSeconds = ProcessInfo.processInfo.systemUptime - started
+                }
+            }
+        }
         for hardware in [true, false] {
             try Task.checkCancellation()
             let attemptStarted = ProcessInfo.processInfo.systemUptime
@@ -54,12 +92,11 @@ enum MediaConverter {
             do {
                 try await execute(arguments, duration, progress)
                 try Task.checkCancellation()
-                let size = (try? FileManager.default.attributesOfItem(atPath: output.path)[.size] as? NSNumber)?.int64Value ?? 0
-                guard size > 0 else { throw Failure(code: -1, log: "The converter did not produce a video.") }
+                guard fileSize(output) > 0 else { throw Failure(code: -1, log: "The converter did not produce a video.") }
                 completed = true
                 return Report(hardwareDecode: hardware,
                               seconds: ProcessInfo.processInfo.systemUptime - attemptStarted,
-                              failedHardwareSeconds: failedHardwareSeconds)
+                              failedHardwareSeconds: failedHardwareSeconds, segments: 1)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -70,14 +107,104 @@ enum MediaConverter {
                 let failure = error as? Failure ?? Failure(code: -1, log: error.localizedDescription)
                 if hardware {
                     hardwareFailure = failure
-                    failedHardwareSeconds = ProcessInfo.processInfo.systemUptime - attemptStarted
+                    failedHardwareSeconds = ProcessInfo.processInfo.systemUptime - started
                     continue
                 }
-                let context = hardwareFailure.map { "VideoToolbox attempt:\n\($0.log)\n\nSoftware attempt:\n" } ?? ""
+                let parallelContext = parallelFailure.map { "Parallel attempt:\n\($0.log)\n\n" } ?? ""
+                let context = parallelContext
+                    + (hardwareFailure.map { "VideoToolbox attempt:\n\($0.log)\n\nSoftware attempt:\n" } ?? "")
                 throw Failure(code: failure.code, log: context + failure.log)
             }
         }
         throw Failure(code: -1, log: "The converter did not run.")
+    }
+
+    /// Encodes `segments` concurrently, joins the MPEG-1 elementary streams and
+    /// muxes them with one MP2 track into `output`. Internal so the macOS smoke
+    /// check can exercise it on a short fixture.
+    static func convertInSegments(video: URL, audio: URL, output: URL, duration: Double,
+                                  quality: MediaQuality, segments: [TranscodeSegment], hardwareDecode: Bool,
+                                  progress: @escaping Progress, runner: Runner? = nil) async throws {
+        guard segments.count >= 2 else { throw Failure(code: -1, log: "A parallel conversion needs two or more segments.") }
+        let execute = runner ?? run
+        let work = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mk8-segments-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: work) }
+        let audioOutput = work.appendingPathComponent("audio.mp2")
+        let parts = segments.indices.map { work.appendingPathComponent("part-\($0).m1v") }
+        let meter = SegmentMeter(duration: duration, count: segments.count, progress: progress)
+        progress(.init(stage: .processing, fraction: 0))
+        let audioArguments = TranscodeArguments.audioTrack(audio: audio.path, output: audioOutput.path, duration: duration)
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { try await execute(audioArguments, nil, { _ in }) }
+            for index in segments.indices {
+                let segment = segments[index]
+                let length: Double
+                if let frames = segment.frames { length = Double(frames) / Double(TranscodeArguments.outputFrameRate) }
+                else { length = max(1, duration - Double(segment.start)) }
+                let arguments = TranscodeArguments.videoSegment(video: video.path, output: parts[index].path,
+                    quality: quality, hardwareDecode: hardwareDecode, segment: segment)
+                group.addTask {
+                    try await execute(arguments, length, { value in meter.update(index, fraction: value.fraction, length: length) })
+                }
+            }
+            try await group.waitForAll()
+        }
+        try Task.checkCancellation()
+        let joined = work.appendingPathComponent("video.m1v")
+        try concatenate(parts, into: joined)
+        try Task.checkCancellation()
+        try await execute(TranscodeArguments.mux(video: joined.path, audio: audioOutput.path, output: output.path), nil, { _ in })
+    }
+
+    private static func concatenate(_ parts: [URL], into destination: URL) throws {
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
+            throw Failure(code: -1, log: "Could not join the converted segments.")
+        }
+        let writer = try FileHandle(forWritingTo: destination)
+        defer { try? writer.close() }
+        for index in parts.indices {
+            let reader = try FileHandle(forReadingFrom: parts[index])
+            defer { try? reader.close() }
+            var wrote = false
+            while let bytes = try reader.read(upToCount: 1_048_576), !bytes.isEmpty {
+                try Task.checkCancellation()
+                try writer.write(contentsOf: bytes)
+                wrote = true
+            }
+            guard wrote else { throw Failure(code: -1, log: "Converted segment \(index + 1) is empty.") }
+        }
+    }
+
+    private static func fileSize(_ url: URL) -> Int64 {
+        ((try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?.int64Value ?? 0
+    }
+
+    /// Sums every slice's encoded media time into one progress/speed reading.
+    private final class SegmentMeter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var meter: ProcessingMeter
+        private var times: [Double]
+        private var lastEmitted: TimeInterval = 0
+        private let progress: Progress
+        init(duration: Double, count: Int, progress: @escaping Progress) {
+            meter = ProcessingMeter(startedAt: ProcessInfo.processInfo.systemUptime, duration: duration)
+            times = Array(repeating: 0, count: count)
+            self.progress = progress
+        }
+        func update(_ index: Int, fraction: Double?, length: Double) {
+            let now = ProcessInfo.processInfo.systemUptime
+            lock.lock()
+            guard index >= 0, index < times.count else { lock.unlock(); return }
+            times[index] = max(times[index], (fraction ?? 0) * length)
+            guard now - lastEmitted >= 0.25 else { lock.unlock(); return }
+            lastEmitted = now
+            let sample = meter.sample(mediaTime: times.reduce(0, +), at: now)
+            lock.unlock()
+            progress(.init(stage: .processing, fraction: sample.fraction,
+                           processingSpeed: sample.speed, processingSecondsRemaining: sample.secondsRemaining))
+        }
     }
 
     private static func run(_ arguments: [String], duration: Double?, progress: @escaping Progress) async throws {

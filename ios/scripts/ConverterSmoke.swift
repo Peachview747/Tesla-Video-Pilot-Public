@@ -111,7 +111,16 @@ import MK8Core
                 try validate(output, quality: quality, duration: 2)
             }
         }
+        // Parallel slices: two whole-second segments joined and muxed with one
+        // MP2 track must match the single-pass format, timeline and duration.
+        for quality in MediaQuality.allCases {
+            let output = root.appendingPathComponent("H264-parallel-\(quality.rawValue).ts")
+            try await MediaConverter.convertInSegments(video: h264, audio: h264Audio, output: output, duration: 2,
+                quality: quality, segments: [TranscodeSegment(start: 0, frames: 30), TranscodeSegment(start: 1, frames: nil)],
+                hardwareDecode: false, progress: { _ in })
+            try validate(output, quality: quality, duration: 2)
+        }
         try await checkFallbackAndCancellation(source: h264, root: root)
-        print("Native converter smoke passed: 25fps software and 60fps H264 production worker, all qualities, combined/separate audio, 30fps MPEG-1 + MP2 output decoded; hardware fallback and cancellation/expiration verified.")
+        print("Native converter smoke passed: 25fps software and 60fps H264 production worker, all qualities, combined/separate audio, 30fps MPEG-1 + MP2 output decoded; parallel segments, hardware fallback and cancellation/expiration verified.")
     }
 }
