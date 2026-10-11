@@ -35,7 +35,7 @@ try {
   try { await sql`SELECT 1`; console.log("OK: PostgreSQL connection"); }
   finally { await sql.end({ timeout: 1 }); }
 } catch { console.log("UNAVAILABLE: PostgreSQL connection"); failed = true; }
-for (const [label, url] of [["Local live editing", "http://localhost:5173"], ["Production site", "https://tv.jcruzhoovertesla.workers.dev"]]) {
+for (const [label, url] of [["Local live editing", "http://localhost:5173"], ["Production site", "https://tv.jch76.workers.dev"]]) {
   try {
     const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
     if (!response.ok) throw new Error();

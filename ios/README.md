@@ -89,7 +89,7 @@ Version 0.1.4 runs **iPhone → outbound TLS WebSocket → Cloudflare Worker →
 2. On your Windows PC, run **Setup-iPhone-Tunnel.cmd** and give it the path of your original MK8 folder containing `.env`. Sign into the Cloudflare account that owns your TV URL if asked.
 3. The setup updates the existing `tv` Worker, retains its KV target/laptop fallback, adds a SQLite Durable Object, and tests the existing `TV_SECRET`. If the local key differs from Cloudflare, it synchronizes the existing local key and retests. Wait for **KEY TEST PASSED**.
 4. In the iPhone app, open **Settings → Cloudflare tunnel**, paste only the value of `TV_SECRET`, and tap **Save tunnel key**. The key stays in Keychain.
-5. Tap **Start hosting** and approve Face ID once. Wait for **Cloudflare tunnel: Connected**, then open **https://tv.jcruzhoovertesla.workers.dev** in the Tesla browser. No browser code is required; keep the public address private.
+5. Tap **Start hosting** and approve Face ID once. Wait for **Cloudflare tunnel: Connected**, then open **https://tv.jch76.workers.dev** in the Tesla browser. No browser code is required; keep the public address private.
 
 The phone and Tesla each need internet access; shared Wi-Fi is optional. Keep MK8 foregrounded for continuous hosting. iOS's finite background allowance applies to the relay too. Background downloads use a separate system session and do not extend tunnel runtime.
 

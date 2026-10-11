@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: public-iphone-build-${{ github.ref }}
@@ -71,16 +71,3 @@ jobs:
           path: ios/build/Tesla-Video-Pilot-Ver-*-Build-*.ipa
           if-no-files-found: error
           retention-days: 7
-      - name: Publish GitHub Release asset
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          version="$(python3 -c 'import json; print(json.load(open("ios/DISTRIBUTION.json"))["version"])')"
-          build="$(python3 -c 'import json; print(json.load(open("ios/DISTRIBUTION.json"))["build"])')"
-          tag="tesla-video-pilot-ver-${version}-build-${build}-${GITHUB_RUN_NUMBER}"
-          gh release create "$tag" "$IPA_PATH" \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "Tesla Video Pilot Ver ${version} Build ${build}" \
-            --notes "Unsigned IPA for Sideloadly. Built from commit $GITHUB_SHA." \
-            --latest

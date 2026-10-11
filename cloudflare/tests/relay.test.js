@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { PhoneTunnel } from "../phone-relay.js";
 
-const ORIGIN = "https://tv.jcruzhoovertesla.workers.dev";
+const ORIGIN = "https://tv.jch76.workers.dev";
 const SECRET = "test-secret-not-a-production-credential";
 const tick = () => new Promise(resolve => setTimeout(resolve, 25));
 

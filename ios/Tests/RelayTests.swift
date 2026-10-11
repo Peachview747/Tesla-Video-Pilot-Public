@@ -3,7 +3,7 @@ import XCTest
 @testable import MK8Core
 
 final class RelayTests: XCTestCase {
-    private let url = URL(string: "https://tv.jcruzhoovertesla.workers.dev")!
+    private let url = URL(string: "https://tv.jch76.workers.dev")!
 
     func testWorkerProbeRetriesTemporaryAvailabilityFailures() throws {
         for status in [408, 429, 500, 502, 503, 504, 522] {

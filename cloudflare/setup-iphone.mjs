@@ -6,7 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { parse } from "dotenv";
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
-const publicURL = "https://tv.jcruzhoovertesla.workers.dev";
+const publicURL = "https://tv.jch76.workers.dev";
 
 function runWrangler(args, env, input, capture = false) {
   const result = spawnSync(process.execPath, [path.join(directory, "node_modules/wrangler/bin/wrangler.js"), ...args], {

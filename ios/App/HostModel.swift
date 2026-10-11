@@ -52,7 +52,7 @@ import Network
             if tunnelEnabled { connectTunnel() } else { tunnel?.stop() }
         }
     }
-    let publicURL = URL(string: "https://tv.jcruzhoovertesla.workers.dev")!
+    let publicURL = URL(string: "https://tv.jch76.workers.dev")!
     @Published var mediaQuality = MediaQuality(rawValue: UserDefaults.standard.integer(forKey: "mediaQuality")) ?? .balanced {
         didSet { UserDefaults.standard.set(mediaQuality.rawValue, forKey: "mediaQuality") }
     }
