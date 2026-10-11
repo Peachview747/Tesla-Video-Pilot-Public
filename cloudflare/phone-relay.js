@@ -82,7 +82,7 @@ export class PhoneTunnel {
       this.send({ type: "hello", protocol: PROTOCOL, window: this.window });
       return new Response(null, { status: 101, webSocket: client });
     }
-    if (!this.connected()) return json({ error: "iPhone is disconnected" }, 503, { "x-mk8-phone": "offline" });
+    if (!this.connected()) return json({ error: "Video Pilot host is disconnected" }, 503, { "x-mk8-phone": "offline" });
     if (!["GET", "POST"].includes(request.method)) return json({ error: "Method not allowed" }, 405);
     if (request.headers.has("origin") && request.headers.get("origin") !== url.origin)
       return json({ error: "Use this page to submit requests" }, 403);
@@ -99,7 +99,7 @@ export class PhoneTunnel {
     try { body = await boundedBody(request); }
     catch { return json({ error: "Request body is too large" }, 413); }
     // Recheck after awaiting the body; disconnects and simultaneous requests can race.
-    if (!this.connected()) return json({ error: "iPhone is disconnected" }, 503, { "x-mk8-phone": "offline" });
+    if (!this.connected()) return json({ error: "Video Pilot host is disconnected" }, 503, { "x-mk8-phone": "offline" });
     if (this.pending.size >= MAX_REQUESTS) return json({ error: "iPhone is busy" }, 429);
     if (request.signal.aborted) return json({ error: "Request cancelled" }, 499);
     const id = crypto.randomUUID();

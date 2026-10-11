@@ -1,0 +1,22 @@
+[Unit]
+Description=Video Pilot Raspberry Pi host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=video-pilot
+Group=video-pilot
+EnvironmentFile=/etc/video-pilot.env
+WorkingDirectory=/opt/video-pilot/pi-host
+ExecStart=/usr/bin/node /opt/video-pilot/pi-host/src/main.mjs
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/video-pilot
+
+[Install]
+WantedBy=multi-user.target
