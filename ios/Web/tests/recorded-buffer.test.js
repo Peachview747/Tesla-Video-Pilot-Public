@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-import {installRecordedBufferWindow, installRecordedAudioOutput, installRecordedPlayerPause} from '../http-source.js';
+import {installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause} from '../http-source.js';
 
 function library(AudioContext) {
   let clock = 0;
@@ -127,4 +127,46 @@ test('actual recorded Player.pause rewinds to the audible position before cancel
   assert.equal(audio.decodedTime, 100, 'Pause must rewind the queued tail to the earlier PTS');
   assert.equal(player.paused, true);
   output.destroy();
+});
+
+test('late audio chunks are counted as underruns and reported', () => {
+  const {AudioContext} = mockAudioContext();
+  const {JSMpeg,now,setClock} = library(AudioContext);
+  const output = new JSMpeg.AudioOutput.WebAudio({});
+  output.unlocked = true;
+  const reports = [];
+  globalThis.videoPilotDiagnostics = (event, fields) => reports.push({event, ...fields});
+  try {
+    installRecordedAudioOutput(output, now);
+    const samples = new Float32Array(1152);
+    output.play(48000, samples, samples);
+    output.play(48000, samples, samples);
+    assert.equal(output.underruns, 0, 'back-to-back chunks are not gaps');
+    output.context.currentTime = 0.2; setClock(10);
+    output.play(48000, samples, samples);
+    assert.equal(output.underruns, 1);
+    assert.ok(output.underrunMs > 100);
+    assert.deepEqual(reports.map(r => r.event), ['audioUnderrun']);
+    output.stop();
+    output.context.currentTime = 0.5;
+    output.play(48000, samples, samples);
+    assert.equal(output.underruns, 1, 'the first chunk after Stop is a fresh start, not a gap');
+  } finally { delete globalThis.videoPilotDiagnostics; }
+});
+
+test('recorded playback keeps 0.75 s of audio decoded ahead instead of 0.25 s', () => {
+  const {AudioContext} = mockAudioContext();
+  const {JSMpeg} = library(AudioContext);
+  const audio = {canPlay:true, currentTime:10, decodedTime:10, decode() { this.decodedTime += 0.026; return true; }};
+  let resumed = null;
+  const player = Object.assign(Object.create(JSMpeg.Player.prototype), {
+    audio, video:null, demuxer:{currentTime:20}, source:{completed:false, resume:headroom => { resumed = headroom; }},
+    options:{}, loop:false,
+  });
+  player.updateForStaticFile();
+  assert.ok(audio.decodedTime - audio.currentTime < 0.3, 'stock JSMpeg lead');
+  installRecordedAudioLead(player);
+  player.updateForStaticFile();
+  assert.ok(audio.decodedTime - audio.currentTime >= 0.75);
+  assert.equal(resumed, 10);
 });

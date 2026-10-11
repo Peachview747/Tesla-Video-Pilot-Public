@@ -12,12 +12,19 @@ enum Keychain {
               let data = item as? Data else { return "" }
         return String(data: data, encoding: .utf8) ?? ""
     }
+    /// Items saved by older builds used WhenUnlocked, which cannot be read while
+    /// the phone is locked. Rewrite them once so background hosting can read the key.
+    static func migrateToAfterFirstUnlock(_ account: String) {
+        let value = read(account)
+        guard !value.isEmpty else { return }
+        try? write(value, account: account)
+    }
     static func write(_ value: String, account: String) throws {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service, kSecAttrAccount as String: account]
         if value.isEmpty { SecItemDelete(query as CFDictionary); return }
         let attributes: [String: Any] = [kSecValueData as String: Data(value.utf8),
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
         var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
             status = SecItemAdd(query.merging(attributes, uniquingKeysWith: { _, value in value }) as CFDictionary, nil)

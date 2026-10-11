@@ -47,3 +47,64 @@ export class DiagnosticsJournal {
       JSON.stringify({...entry, timestamp:occurredAt, component:'browser'})).join('\n') + (this.events.length ? '\n' : '');
   }
 }
+
+// Live playback/connection numbers for the Settings → Diagnostics card. Fed
+// from the same events the journal records (see reportDiagnostic in app.js),
+// so it needs no extra hooks in the stream reader. Values are numbers or null.
+export class LiveStats {
+  constructor(now = () => Date.now()) { this.now = now; this.apiErrors = 0; this.rttMs = null; this.resetVideo(); }
+  resetVideo() {
+    this.stalls = 0; this.reconnects = 0; this.bufferSeconds = null; this.throughputMbps = null;
+    this.receivedBytes = 0; this.firstFrameMs = null; this.startedAt = null; this.sample = null;
+  }
+  record(event, fields = {}) {
+    const number = value => { const n = Number(value); return Number.isFinite(n) ? n : null; };
+    const now = this.now();
+    switch (event) {
+      case 'playerStart':
+        if (this.firstFrameMs === null) this.startedAt = now;
+        this.sample = null;
+        break;
+      case 'playerDecode':
+        if (this.startedAt !== null && this.firstFrameMs === null) { this.firstFrameMs = Math.max(0, now - this.startedAt); this.startedAt = null; }
+        break;
+      case 'sourceProgress': {
+        const bytes = number(fields.receivedBytes), elapsed = number(fields.elapsedMs);
+        if (bytes === null || elapsed === null) break;
+        const last = this.sample;
+        // A smaller byte count means a new stream (seek/reconnect): new baseline.
+        if (!last || bytes < last.bytes || elapsed < last.elapsed) {
+          this.receivedBytes += Math.max(0, bytes);
+          if (elapsed > 0 && bytes > 0) this.throughputMbps = bytes * 8 / elapsed / 1000;
+        } else {
+          const delta = bytes - last.bytes, dt = elapsed - last.elapsed;
+          this.receivedBytes += delta;
+          if (dt > 0) {
+            const rate = delta * 8 / dt / 1000;
+            this.throughputMbps = this.throughputMbps === null ? rate : this.throughputMbps * 0.6 + rate * 0.4;
+          }
+        }
+        this.sample = {bytes, elapsed};
+        const headroom = number(fields.headroomSeconds);
+        if (headroom !== null) this.bufferSeconds = headroom;
+        break;
+      }
+      case 'sourceBuffer': { const value = number(fields.bufferSeconds); if (value !== null) this.bufferSeconds = value; break; }
+      case 'playerStalled': this.stalls += 1; break;
+      case 'playerError': case 'playerBusyRetry': this.reconnects += 1; break;
+      case 'apiError': this.apiErrors += 1; break;
+      case 'browserRTT': {
+        const value = number(fields.elapsedMs);
+        if (value !== null) this.rttMs = this.rttMs === null ? value : Math.round(this.rttMs * 0.7 + value * 0.3);
+        break;
+      }
+      default: break;
+    }
+  }
+  snapshot(liveBufferSeconds = null) {
+    const live = Number(liveBufferSeconds);
+    return {bufferSeconds:Number.isFinite(live) && liveBufferSeconds !== null ? live : this.bufferSeconds,
+      throughputMbps:this.throughputMbps, receivedBytes:this.receivedBytes, stalls:this.stalls, reconnects:this.reconnects,
+      firstFrameMs:this.firstFrameMs, apiErrors:this.apiErrors, rttMs:this.rttMs};
+  }
+}

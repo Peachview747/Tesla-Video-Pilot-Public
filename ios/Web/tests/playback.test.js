@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedPlayerPause} from '../http-source.js';
-import {DiagnosticsJournal} from '../diagnostics.js';
+import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause} from '../http-source.js';
+import {DiagnosticsJournal, LiveStats} from '../diagnostics.js';
 
 // Run the shipped UI against small DOM/player doubles. Decoder callbacks are
 // driven separately from network establishment, just as in recorded JSMpeg.
@@ -37,8 +37,8 @@ function setup({recoveryDelay} = {}) {
   }
   const context = vm.createContext({
     JSMpegHttpSource,
-    installRecordedBufferWindow, installRecordedAudioOutput, installRecordedPlayerPause,
-    DiagnosticsJournal,
+    installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause,
+    DiagnosticsJournal, LiveStats,
     document:{getElementById:element},
     window:{JSMpeg:{Player}, addEventListener() {}},
     // The library refresh is outside these focused playback tests.
@@ -50,6 +50,8 @@ function setup({recoveryDelay} = {}) {
     element, players,
     play:(video = {id:'video', title:'Test video'}) => { context.testVideo = video; vm.runInContext('play(testVideo)', context); },
     tick:() => intervals[0]?.(),
+    evaluate:code => vm.runInContext(code, context),
+    advanceClock:ms => vm.runInContext(`{ const now = Date.now(); Date.now = () => now + ${ms}; }`, context),
     close:() => element('close').onclick(),
     preparation:status => {
       context.testPreparation = status;
@@ -143,7 +145,7 @@ test('seeking keeps the user mute preference across decoder replacement', async 
   f.element('mute').onclick();
   assert.equal(f.players[0].volume, 0);
   f.element('forward10').onclick();
-  await new Promise(resolve => setTimeout(resolve, 380));
+  await new Promise(resolve => setTimeout(resolve, 650));
   assert.equal(f.players.length, 2);
   assert.equal(f.players[1].volume, 0);
   assert.equal(f.element('mute').textContent, 'Unmute');
@@ -196,7 +198,7 @@ test('repeated seeks serialize teardown and keep one relay player identity', asy
   const first = f.players[0];
   const seek = value => f.element('timeline').onchange({target:{value:String(value)}});
   seek(12);
-  await new Promise(resolve => setTimeout(resolve, 320));
+  await new Promise(resolve => setTimeout(resolve, 650));
   assert.equal(f.players.length, 2);
   const second = f.players[1];
   assert.equal(first.destroyed, true);
@@ -206,7 +208,7 @@ test('repeated seeks serialize teardown and keep one relay player identity', asy
   // A newer target supersedes a seek that is still waiting for its old source
   // to settle; only the final target may create another JSMpeg instance.
   seek(2); await new Promise(resolve => setTimeout(resolve, 30)); seek(24);
-  await new Promise(resolve => setTimeout(resolve, 360));
+  await new Promise(resolve => setTimeout(resolve, 650));
   assert.equal(second.destroyed, true);
   assert.equal(second.sourceDestroyed, true);
   assert.equal(f.players.length, 3);
@@ -224,4 +226,81 @@ test('a seek that never decodes gets one bounded retry and a recoverable state',
   assert.equal(f.players[1].paused, true);
   assert.match(f.element('playback-status').textContent, /could not resume after seeking/);
   assert.equal(f.element('pause').textContent, 'Retry');
+});
+
+test('HTTP 429 from a busy relay is retried with backoff instead of failing playback', async () => {
+  const f = setup(); f.play({id:'video', title:'Test video', duration:100});
+  const status = f.element('playback-status');
+  f.players[0].options.onSourceError('Video stream failed (HTTP 429).');
+  assert.equal(status.textContent, 'iPhone is busy. Retrying…');
+  await new Promise(resolve => setTimeout(resolve, 500));
+  assert.equal(f.players.length, 2, 'the same target is reopened after the first backoff');
+  assert.equal(f.players[0].destroyed, true);
+  assert.equal(status.textContent, 'Buffering…');
+  f.close();
+});
+test('other HTTP 4xx stream errors remain fatal and offer Retry', async () => {
+  const f = setup(); f.play({id:'video', title:'Test video', duration:100});
+  f.players[0].options.onSourceError('Video stream failed (HTTP 404).');
+  await new Promise(resolve => setTimeout(resolve, 500));
+  assert.equal(f.players.length, 1);
+  assert.equal(f.element('pause').textContent, 'Retry');
+  assert.match(f.element('playback-status').textContent, /HTTP 404/);
+  f.close();
+});
+test('resuming after a long pause reopens the stream at the paused position', async () => {
+  const f = setup(); f.play({id:'video', title:'Test video', duration:100});
+  f.element('pause').onclick();
+  assert.equal(f.element('pause').textContent, 'Play');
+  f.advanceClock(31000);
+  f.element('pause').onclick();
+  await new Promise(resolve => setTimeout(resolve, 650));
+  assert.equal(f.players.length, 2, 'a fresh stream replaces the idle one');
+  assert.equal(f.players[0].destroyed, true);
+  assert.equal(f.element('pause').textContent, 'Pause');
+  f.close();
+});
+test('resuming after a short pause keeps the same stream', async () => {
+  const f = setup(); f.play({id:'video', title:'Test video', duration:100});
+  f.element('pause').onclick();
+  f.element('pause').onclick();
+  await new Promise(resolve => setTimeout(resolve, 650));
+  assert.equal(f.players.length, 1);
+  assert.equal(f.element('pause').textContent, 'Pause');
+  f.close();
+});
+
+test('library sorts by release date and groups by channel, undated videos last', () => {
+  const f = setup();
+  f.evaluate(`globalThis.testVideos = [
+    {id:'a', title:'A', channel:'zeta', publishedAt:'2021-05-01T10:00:00-07:00'},
+    {id:'b', title:'B', channel:'Alpha', publishedAt:'2024-01-02T00:00:00Z'},
+    {id:'c', title:'C'},
+    {id:'d', title:'D', channel:'alpha', publishedAt:'2019-07-04T00:00:00+02:00'}]`);
+  const order = mode => f.evaluate(`sortLibrary(testVideos, '${mode}').map(v => v.id).join('')`);
+  assert.equal(order('added'), 'abcd');
+  assert.equal(order('newest'), 'badc');
+  assert.equal(order('oldest'), 'dabc');
+  assert.equal(order('channel'), 'bdac', 'channels A-Z ignoring case, newest first inside, no channel last');
+});
+
+test('search box recognises pasted YouTube links and bare IDs but not ordinary words', () => {
+  const f = setup();
+  const id = text => f.evaluate(`linkedVideoID(${JSON.stringify(text)})`);
+  assert.equal(id('https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42'), 'dQw4w9WgXcQ');
+  assert.equal(id('https://youtu.be/dQw4w9WgXcQ'), 'dQw4w9WgXcQ');
+  assert.equal(id('https://youtube.com/shorts/dQw4w9WgXcQ'), 'dQw4w9WgXcQ');
+  assert.equal(id('dQw4w9WgXcQ'), 'dQw4w9WgXcQ');
+  assert.equal(id('minecraftxx'), null);
+  assert.equal(id('tesla model 3'), null);
+});
+
+test('long videos show hours, and undated videos keep the order they were added', () => {
+  const f = setup();
+  assert.equal(f.evaluate('formatTime(3725)'), '1:02:05');
+  assert.equal(f.evaluate('formatTime(125)'), '2:05');
+  f.evaluate(`globalThis.undated = [{id:'new', createdAt:300}, {id:'old', createdAt:100}, {id:'mid', createdAt:200},
+    {id:'dated', publishedAt:'2020-01-01T00:00:00Z', createdAt:50}]`);
+  assert.equal(f.evaluate(`sortLibrary(undated, 'oldest').map(v => v.id).join(',')`), 'dated,old,mid,new');
+  assert.equal(f.evaluate(`sortLibrary(undated, 'newest').map(v => v.id).join(',')`), 'dated,new,mid,old');
 });

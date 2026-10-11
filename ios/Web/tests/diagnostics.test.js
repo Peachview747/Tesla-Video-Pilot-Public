@@ -37,3 +37,27 @@ test('browser evidence redacts credentials before storage/export and bounds UTF-
   assert.ok(batch.length > 0);
   assert.ok(new TextEncoder().encode(JSON.stringify({events:batch})).byteLength <= 12000);
 });
+test('live stats: throughput from stream progress, new streams rebaseline, counters', async () => {
+  const {LiveStats} = await import('../diagnostics.js');
+  let now = 1000;
+  const stats = new LiveStats(() => now);
+  stats.record('playerStart', {});
+  now = 1800; stats.record('playerDecode', {});
+  stats.record('sourceProgress', {receivedBytes:1_000_000, elapsedMs:1000, headroomSeconds:4});
+  assert.equal(stats.snapshot().throughputMbps, 8);
+  stats.record('sourceProgress', {receivedBytes:1_500_000, elapsedMs:2000, headroomSeconds:9});
+  let snap = stats.snapshot();
+  assert.ok(Math.abs(snap.throughputMbps - 6.4) < 1e-9, 'smoothed 8 → 4 Mb/s');
+  assert.equal(snap.receivedBytes, 1_500_000);
+  assert.equal(snap.bufferSeconds, 9);
+  assert.equal(snap.firstFrameMs, 800);
+  // A seek opens a new stream whose counters restart from zero.
+  stats.record('sourceProgress', {receivedBytes:200_000, elapsedMs:500});
+  assert.equal(stats.snapshot().receivedBytes, 1_700_000);
+  stats.record('playerStalled'); stats.record('playerStalled'); stats.record('playerError'); stats.record('apiError');
+  stats.record('browserRTT', {elapsedMs:100}); stats.record('browserRTT', {elapsedMs:200});
+  snap = stats.snapshot(2.5);
+  assert.deepEqual([snap.stalls, snap.reconnects, snap.apiErrors, snap.rttMs, snap.bufferSeconds], [2, 1, 1, 130, 2.5]);
+  stats.resetVideo();
+  assert.deepEqual([stats.snapshot().stalls, stats.snapshot().throughputMbps, stats.snapshot().apiErrors], [0, null, 1]);
+});

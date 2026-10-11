@@ -59,11 +59,17 @@ import Network
     @Published var backgroundPreparation = (UserDefaults.standard.object(forKey: "backgroundPreparation") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(backgroundPreparation, forKey: "backgroundPreparation") }
     }
-    let version = "0.1.32"
-    let build = "44"
+    let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+    let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
     var preparingTitle: String { videos.first { $0.id == preparingID }?.title ?? "Your video" }
     var queuedCount: Int { videos.filter { $0.state == "preparing" && $0.id != preparingID }.count }
     private var library: Library?
+    /// Channel pages, watch history and the "For you" feed (YouTubeBrowse.swift).
+    private lazy var browse: BrowseService = {
+        let service = BrowseService()
+        service.libraryChanged = { [weak self] in self?.refresh() }
+        return service
+    }()
     private var server: HTTPServer?
     private var tunnel: PhoneTunnel?
     private var localStreams = 0
@@ -96,7 +102,8 @@ import Network
         self.meter = meter
         youtubeSignedIn = youtubeOAuth.signedIn
         diagnosticsLogger.record(component: "app", event: "launch")
-        do { library = try Library(); refresh() }
+        Keychain.migrateToAfterFirstUnlock("tunnel-key")
+        do { library = try Library(); refresh(); fillMissingDetails() }
         catch { message = "Could not open the local library: \(error.localizedDescription)" }
         networkMonitor.pathUpdateHandler = { [weak self] path in
             let state = PhoneConnection(path: path)
@@ -233,7 +240,9 @@ import Network
             let generation = UUID()
             backgroundGeneration = generation
             backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "MK8 active work") { [weak self] in
-                Task { @MainActor in
+                // iOS calls this on the main thread and suspends right after it
+                // returns; end the task synchronously or the app is terminated.
+                MainActor.assumeIsolated {
                     guard self?.backgroundGeneration == generation else { return }
                     self?.expireBackgroundTime()
                 }
@@ -257,7 +266,7 @@ import Network
         if busy, !BackgroundPreparation.shared.isRunning { requestBackgroundPreparation() }
         if resumeHostingOnReturn, server == nil { start() }
         resumeHostingOnReturn = false
-        if running { refreshAddresses(); connectTunnel() }
+        if running { refreshAddresses(); connectTunnel(force: false) }
         updateIdleTimer()
     }
     private func expireBackgroundTime() {
@@ -335,19 +344,28 @@ import Network
         }
         catch { message = "Could not save the search key: \(error.localizedDescription)" }
     }
+    /// Shown next to the Sign in button; `message` only appears on the Dashboard.
+    @Published private(set) var youtubeAuthStatus = ""
+    @Published private(set) var youtubeSigningIn = false
     func signInYouTube() {
-        message = "Complete Google sign-in in the secure browser window."
+        guard !youtubeSigningIn else { return }
+        youtubeSigningIn = true
+        youtubeAuthStatus = "Complete Google sign-in in the secure browser window."
+        message = youtubeAuthStatus
         Task { @MainActor in
+            defer { youtubeSigningIn = false }
             do {
                 try await youtubeOAuth.signIn()
                 youtubeSignedIn = youtubeOAuth.signedIn
-                message = "YouTube account connected."
-            } catch { message = error.localizedDescription }
+                youtubeAuthStatus = "YouTube account connected."
+            } catch { youtubeAuthStatus = error.localizedDescription }
+            message = youtubeAuthStatus
         }
     }
     func signOutYouTube() {
         youtubeOAuth.signOut()
         youtubeSignedIn = false
+        youtubeAuthStatus = ""
         message = "YouTube account disconnected."
     }
     func saveTunnelKey() {
@@ -370,9 +388,14 @@ import Network
             }
         } catch { tunnelMessage = "Could not save the tunnel key: \(error.localizedDescription)" }
     }
-    func connectTunnel() {
+    /// `force: false` leaves a connected or already-connecting tunnel alone, so
+    /// returning to the foreground does not drop every active stream.
+    func connectTunnel(force: Bool = true) {
         guard running, tunnelEnabled else { return }
-        let key = Keychain.read("tunnel-key")
+        // A locked phone cannot read the Keychain; fall back to the key already
+        // loaded in memory rather than stopping the tunnel as "not configured".
+        var key = Keychain.read("tunnel-key")
+        if key.isEmpty { key = tunnelKey.trimmingCharacters(in: .whitespacesAndNewlines) }
         guard !key.isEmpty else {
             tunnel?.stop()
             tunnelState = .notConfigured
@@ -395,6 +418,8 @@ import Network
             relay.streamsChanged = { [weak self] in self?.tunnelStreams = $0; self?.updateStreams() }
             tunnel = relay
         }
+        if !force, tunnel != nil,
+           tunnelState == .connected || tunnelState == .connecting || tunnelState == .reconnecting { return }
         tunnel?.start(secret: key)
     }
     private func updateStreams() { activeStreams = localStreams + tunnelStreams }
@@ -454,6 +479,9 @@ import Network
             guard let existingID = $0.youtubeID else { return false }
             return existingID == id
         }) {
+            // Adding a failed or paused video again retries it instead of
+            // refusing; the Tesla has no other way to restart a download.
+            if existing.state == "failed" || existing.state == "paused" { return requeue(existing.id) }
             message = existing.state == "preparing"
                 ? "That video is already in the preparation queue."
                 : "That video is already in your library. Use Play or Retry instead."
@@ -466,16 +494,34 @@ import Network
         else { message = "Added to the preparation queue. It will start automatically." }
         return video
     }
+    /// Retry now when idle, otherwise put the item back in the preparation queue.
+    @discardableResult func requeue(_ id: UUID) -> LibraryVideo? {
+        guard let library, let video = library.videos.first(where: { $0.id == id }) else { return nil }
+        guard video.youtubeID != nil || (try? MediaPipeline.store.load(id)) != nil else {
+            message = "Import this file again from Files."
+            return nil
+        }
+        if busy {
+            resetForRetry(id)
+            try? library.update(id, state: "preparing", message: "Waiting to retry")
+            refresh()
+            message = "Queued to retry. It will start automatically."
+        } else { retry(id) }
+        return library.videos.first(where: { $0.id == id })
+    }
     func retry(_ id: UUID) {
         guard !busy, let library, let video = library.videos.first(where: { $0.id == id }) else { return }
         let job = try? MediaPipeline.store.load(id)
         guard job != nil || video.youtubeID != nil else { message = "Import this file again from Files."; return }
+        resetForRetry(id)
+        launchPreparation(video: video, restored: job)
+    }
+    private func resetForRetry(_ id: UUID) {
         seekIndexes.removeValue(forKey: id)
         seekIndexTasks.removeValue(forKey: id)?.cancel()
         seekIndexGenerations.removeValue(forKey: id)
         MediaPipeline.store.clearFailures(id)
         MediaDownloader.shared.forget(jobID: id)
-        launchPreparation(video: video, restored: job)
     }
     func pausePreparation() { preparationTask?.cancel() }
     func diagnostics(for id: UUID) -> URL? {
@@ -489,6 +535,33 @@ import Network
     private func requestBackgroundPreparation() {
         BackgroundPreparation.shared.begin(title: preparingTitle, enabled: backgroundPreparation) { [weak self] in
             self?.pausePreparation()
+        }
+    }
+    /// Channel and release date power the Tesla library's sort options. They
+    /// are fetched once per video; older library items are filled at launch.
+    private func fillDetails(_ id: UUID, youtubeID: String) {
+        Task { @MainActor [weak self] in
+            let details = await YouTubeDetails.fetch(youtubeID)
+            guard let self, details.channel != nil || details.publishedAt != nil else { return }
+            try? self.library?.setDetails(id, channel: details.channel, publishedAt: details.publishedAt)
+            self.refresh()
+        }
+    }
+    private func fillMissingDetails() {
+        let missing = (library?.videos ?? []).compactMap { video -> (UUID, String)? in
+            guard let youtubeID = video.youtubeID, video.channel == nil || video.publishedAt == nil else { return nil }
+            return (video.id, youtubeID)
+        }
+        guard !missing.isEmpty else { return }
+        Task { @MainActor [weak self] in
+            for (id, youtubeID) in missing {
+                let details = await YouTubeDetails.fetch(youtubeID)
+                guard let self else { return }
+                if details.channel != nil || details.publishedAt != nil {
+                    try? self.library?.setDetails(id, channel: details.channel, publishedAt: details.publishedAt)
+                }
+            }
+            self?.refresh()
         }
     }
     private func launchPreparation(video: LibraryVideo, imported: URL? = nil, restored: MediaPreparationJob? = nil) {
@@ -523,6 +596,7 @@ import Network
                 try Task.checkCancellation()
                 try library.update(video.id, title: prepared.title, state: "ready", duration: prepared.duration)
                 try? MediaPipeline.store.remove(video.id)
+                if let youtubeID = video.youtubeID { fillDetails(video.id, youtubeID: youtubeID) }
                 message = "\(prepared.title) is ready in the Tesla library."
                 notify(title: prepared.title, body: "Ready to play in Video Pilot.")
                 succeeded = true
@@ -679,7 +753,19 @@ import Network
                 return .json(["error": "Web assets missing. Run prepare_web.py before building."], status: 503)
             }
             return HTTPResponse(status: 200, contentType: type, body: data,
-                headers: ["Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https://i.ytimg.com; connect-src 'self'; object-src 'none'; frame-ancestors 'none'"])
+                headers: ["Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https://i.ytimg.com https://yt3.ggpht.com https://yt3.googleusercontent.com; connect-src 'self'; object-src 'none'; frame-ancestors 'none'"])
+        }
+        // Browse routes: /api/channel, /api/history, /api/foryou. Also notes
+        // plays on /api/stream/ and fills channel IDs on /api/library.
+        var subscriptions: BrowseService.Subscriptions?
+        if youtubeSignedIn {
+            let oauth = youtubeOAuth
+            subscriptions = {
+                try await oauth.retryUnauthorized { token in try await YouTubeSearch.subscriptions(accessToken: token) }
+            }
+        }
+        if let response = await browse.respond(to: request, library: library, subscriptions: subscriptions) {
+            return response
         }
         if request.path == "/api/library", request.method == "GET" {
             return HTTPResponse(status: 200, contentType: "application/json", body: (try? JSONEncoder().encode(videos)) ?? Data("[]".utf8))
@@ -687,8 +773,9 @@ import Network
         if request.path == "/api/status", request.method == "GET" {
             let progressValue: Any
             if let progress = preparation?.fraction { progressValue = progress } else { progressValue = NSNull() }
+            let lastPreparation: Any = PreparationStats.last.map { $0.json as Any } ?? NSNull()
             return .json(["hosting": running, "busy": busy, "publicAccess": true, "authentication": "faceID-on-start",
-                          "youtubeSearch": !searchKey.isEmpty || youtubeSignedIn, "youtubeExplore": !searchKey.isEmpty || youtubeSignedIn,
+                          "youtubeSearch": true, "youtubeExplore": !searchKey.isEmpty || youtubeSignedIn,
                           "youtubeSignedIn": youtubeSignedIn,
                           "tunnel": tunnelState.rawValue, "version": version, "build": build,
                           "activeStreams": activeStreams, "queuedCount": queuedCount, "downloadMbps": traffic.downloadMbps,
@@ -699,7 +786,8 @@ import Network
                           "preparationSecondsRemaining": preparation?.secondsRemaining.map { $0 as Any } ?? NSNull(),
                           "preparingID": preparingID?.uuidString ?? "",
                           "diagnosticsEnabled": diagnosticsLogger.enabled,
-                          "diagnosticsEventCount": diagnosticsLogger.eventCount])
+                          "diagnosticsEventCount": diagnosticsLogger.eventCount,
+                          "lastPreparation": lastPreparation])
         }
         if request.path == "/api/diagnostics/export", request.method == "GET" {
             guard let data = diagnosticsLogger.exportData() else {
@@ -735,7 +823,22 @@ import Network
                 return .json(["error": "Enter a valid YouTube URL or video ID."], status: 400)
             }
             guard let video = queue(id: id, imported: nil) else { return .json(["error": message], status: 409) }
+            browse.adopt(channelId: body["channelId"], channel: body["channel"], for: video.id, library: library)
             return .json(["id": video.id.uuidString], status: 202)
+        }
+        if request.path == "/api/library/retry", request.method == "POST" {
+            guard let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: String],
+                  let rawID = body["id"], let id = UUID(uuidString: rawID) else {
+                return .json(["error": "Choose a library item to retry."], status: 400)
+            }
+            guard let video = library?.videos.first(where: { $0.id == id }) else {
+                return .json(["error": "That library item no longer exists."], status: 404)
+            }
+            guard video.state == "failed" || video.state == "paused" else {
+                return .json(["error": "That video is not waiting for a retry."], status: 409)
+            }
+            guard requeue(id) != nil else { return .json(["error": message], status: 409) }
+            return .json(["queued": true], status: 202)
         }
         if request.path == "/api/library/remove", request.method == "POST" {
             guard let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: String],
@@ -749,23 +852,45 @@ import Network
             return .json(["removed": !removalsRequested.contains(id), "pending": removalsRequested.contains(id)])
         }
         if request.path == "/api/search", request.method == "GET" {
-            let query = request.query.first(where: { $0.name == "q" })?.value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !query.isEmpty, query.count <= 200 else { return .json(["error": "Enter a search of up to 200 characters."], status: 400) }
-            do {
-                let results: [SearchVideo]
-                if youtubeSignedIn {
-                    results = try await youtubeOAuth.retryUnauthorized { token in
-                        try await YouTubeSearch.search(query, accessToken: token)
-                    }
-                } else {
-                    guard !searchKey.isEmpty else { return .json(["error": "Sign in with Google on the iPhone or add a YouTube Data API key in Settings."], status: 503) }
-                    results = try await YouTubeSearch.search(query, apiKey: searchKey)
-                }
-                return HTTPResponse(status: 200, contentType: "application/json", body: try JSONEncoder().encode(results))
-            } catch {
-                youtubeSignedIn = youtubeOAuth.signedIn
-                return .json(["error": "YouTube search failed: \(error.localizedDescription)"], status: 503)
+            let value = { (name: String) in request.query.first(where: { $0.name == name })?.value ?? "" }
+            let query = value("q").trimmingCharacters(in: .whitespacesAndNewlines)
+            let continuation = value("continuation")
+            let filter = YouTubeInnerTube.filters[value("filter")] == nil ? "any" : value("filter")
+            guard !query.isEmpty, query.count <= 200, continuation.count <= 3000 else {
+                return .json(["error": "Enter a search of up to 200 characters."], status: 400)
             }
+            do {
+                let page = try await YouTubeInnerTube.search(query, filter: filter, continuation: continuation.isEmpty ? nil : continuation)
+                return HTTPResponse(status: 200, contentType: "application/json", body: try JSONEncoder().encode(page))
+            } catch {
+                // Fall back to the Data API when the account or key allows it.
+                guard continuation.isEmpty, youtubeSignedIn || !searchKey.isEmpty else {
+                    return .json(["error": error.localizedDescription], status: 503)
+                }
+                do {
+                    let results: [SearchVideo]
+                    if youtubeSignedIn {
+                        results = try await youtubeOAuth.retryUnauthorized { token in
+                            try await YouTubeSearch.search(query, accessToken: token)
+                        }
+                    } else { results = try await YouTubeSearch.search(query, apiKey: searchKey) }
+                    let page = YouTubeInnerTube.Page(results: results.map {
+                        YouTubeInnerTube.Hit(id: $0.id, title: $0.title, channel: $0.channel,
+                                             thumbnail: $0.thumbnail ?? "https://i.ytimg.com/vi/\($0.id)/mqdefault.jpg",
+                                             duration: nil, views: nil, published: nil)
+                    }, continuation: nil)
+                    return HTTPResponse(status: 200, contentType: "application/json", body: try JSONEncoder().encode(page))
+                } catch {
+                    youtubeSignedIn = youtubeOAuth.signedIn
+                    return .json(["error": "YouTube search failed: \(error.localizedDescription)"], status: 503)
+                }
+            }
+        }
+        if request.path == "/api/suggest", request.method == "GET" {
+            let query = (request.query.first(where: { $0.name == "q" })?.value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !query.isEmpty, query.count <= 120 else { return .json([String]()) }
+            let suggestions = (try? await YouTubeInnerTube.suggestions(query)) ?? []
+            return HTTPResponse(status: 200, contentType: "application/json", body: (try? JSONEncoder().encode(suggestions)) ?? Data("[]".utf8))
         }
         if request.path == "/api/explore", request.method == "GET" {
             do {

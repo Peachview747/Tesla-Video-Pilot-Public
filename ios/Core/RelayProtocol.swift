@@ -10,6 +10,11 @@ public enum RelayProtocol {
     // allowance. The last partial frame is still permitted for exact bytes.
     public static let fileChunk = maximumChunk / 188 * 188
     public static let maximumRequests = 8
+    // Credits a windowed Worker may hold outstanding per response. The phone
+    // advertises this on connect; the Worker picks its own smaller window.
+    // Legacy Workers never send a credit count and stay at one per pull.
+    public static let maximumWindow = 16
+    public static let windowHeader = "x-mk8-relay-window"
     // A 16 KiB body expands to ~22 KiB when base64 encoded, on top of the
     // Worker's allowed 12 KiB header envelope. Valid requests can exceed the
     // old 32 KiB control-message limit without exceeding HTTP's body limit.

@@ -6,6 +6,14 @@ export const PROTOCOL = "mk8-relay-v1";
 // ahead without allowing unbounded buffering.
 const MAX_CHUNK = 131056;
 const MAX_REQUESTS = 8;
+// Windowed pulls: a phone that advertises x-mk8-relay-window may keep this
+// many frames in flight per response, so throughput is no longer one 128 KiB
+// frame per phone<->Cloudflare round trip. Still bounded: at most WINDOW
+// frames are queued ahead of the browser's reader per stream.
+const WINDOW = 6;
+const STALL_MS = 12000;
+// The web app waits up to 30 s for /api/foryou and /api/channel.
+const API_FIRST_BYTE_MS = 32000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PLAYER = /^[A-Za-z0-9_-]{8,128}$/;
 const HOP_HEADERS = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "content-encoding"]);
@@ -47,6 +55,9 @@ export class PhoneTunnel {
     this.env = env;
     this.pending = new Map();
     this.phone = ctx.getWebSockets("phone").find(socket => socket.readyState === 1) ?? null;
+    // Hibernation rebuilds this object; the phone's capability rides on its socket.
+    this.window = 1;
+    try { this.window = this.phone?.deserializeAttachment?.()?.window ?? 1; } catch { this.window = 1; }
   }
 
   connected() { return this.phone?.readyState === 1; }
@@ -65,7 +76,10 @@ export class PhoneTunnel {
       const [client, phone] = Object.values(new WebSocketPair());
       this.ctx.acceptWebSocket(phone, ["phone"]);
       this.phone = phone;
-      this.send({ type: "hello", protocol: PROTOCOL });
+      const advertised = Number.parseInt(request.headers.get("x-mk8-relay-window") ?? "", 10);
+      this.window = Number.isSafeInteger(advertised) && advertised > 1 ? Math.min(WINDOW, advertised) : 1;
+      try { phone.serializeAttachment?.({ window: this.window }); } catch { /* not hibernatable */ }
+      this.send({ type: "hello", protocol: PROTOCOL, window: this.window });
       return new Response(null, { status: 101, webSocket: client });
     }
     if (!this.connected()) return json({ error: "iPhone is disconnected" }, 503, { "x-mk8-phone": "offline" });
@@ -99,8 +113,21 @@ export class PhoneTunnel {
       return json({ error: "Request headers are too large" }, 431);
     const phone = this.phone;
     return new Promise(resolve => {
-      const entry = { resolve, phone, client, controller: null, pullResolve: null, remaining: null, waiting: false, timer: null, signal: request.signal, abort: null };
-      const stream = new ReadableStream({
+      const window = this.window;
+      const entry = { resolve, phone, client, controller: null, pullResolve: null, remaining: null, waiting: false, timer: null, signal: request.signal, abort: null,
+        window, outstanding: 0 };
+      const stream = window > 1 ? new ReadableStream({
+        start: controller => { entry.controller = controller; },
+        // The queue holds at most `window` frames. Each reader pull tops the
+        // phone's credit back up to the free queue space, then waits for the
+        // next frame so the runtime does not spin on an unchanged queue.
+        pull: () => new Promise(pulled => {
+          entry.pullResolve = pulled;
+          if (!this.pending.has(id)) { pulled(); return; }
+          this.topUp(id);
+        }),
+        cancel: () => this.cleanup(id, true),
+      }, { highWaterMark: window }) : new ReadableStream({
         start: controller => { entry.controller = controller; },
         pull: () => new Promise(pulled => {
           entry.pullResolve = pulled;
@@ -118,12 +145,27 @@ export class PhoneTunnel {
       entry.abort = () => this.fail(id, "Browser disconnected");
       this.pending.set(id, entry);
       request.signal.addEventListener("abort", entry.abort, { once: true });
-      entry.timer = setTimeout(() => this.fail(id, "iPhone did not respond"), 15000);
+      // Media streams answer fast; browse calls (/api/foryou, /api/channel)
+      // make several YouTube requests on the phone and can need longer cold.
+      const firstByteMs = url.pathname.startsWith("/api/") && !url.pathname.startsWith("/api/stream/") ? API_FIRST_BYTE_MS : 15000;
+      entry.timer = setTimeout(() => this.fail(id, "iPhone did not respond"), firstByteMs);
       try {
         this.send({ type: "request", id, method: request.method, target: url.pathname + url.search,
           headers, body: btoa(String.fromCharCode(...body)) });
       } catch { this.fail(id, "iPhone disconnected"); }
     });
+  }
+
+  // Grant the phone enough credits to fill the stream's free queue space.
+  topUp(id) {
+    const entry = this.pending.get(id);
+    if (!entry || entry.window <= 1 || entry.remaining === null || entry.remaining <= 0) return;
+    const room = Math.max(0, entry.controller.desiredSize ?? 0) - entry.outstanding;
+    if (room <= 0) return;
+    entry.outstanding += room;
+    entry.waiting = true;
+    if (!entry.timer) entry.timer = setTimeout(() => this.fail(id, "iPhone stream timed out"), STALL_MS);
+    try { this.send({ type: "pull", id, credits: room }); } catch { this.fail(id, "iPhone disconnected"); }
   }
 
   cleanup(id, notify = false) {
@@ -187,7 +229,9 @@ export class PhoneTunnel {
             if (!HOP_HEADERS.has(name.toLowerCase()) && name.toLowerCase() !== "content-length") headers.set(name, header);
           }
           headers.set("content-length", String(value.length));
-          headers.set("cache-control", "no-store");
+          // The phone marks bundled web assets "private, no-cache" with an
+          // ETag so browsers revalidate (304) instead of re-downloading them.
+          if (!headers.has("cache-control")) headers.set("cache-control", "no-store");
           headers.set("x-mk8-source", "iphone");
           const response = new Response(value.length ? entry.stream : null, { status: value.status, headers });
           clearTimeout(entry.timer);
@@ -195,6 +239,9 @@ export class PhoneTunnel {
           entry.remaining = value.length;
           entry.resolve(response);
           if (!value.length) this.cleanup(value.id, true);
+          // Windowed: start the first frames now instead of waiting a round trip
+          // for the browser's first read.
+          else this.topUp(value.id);
         } else if (value.type === "end") {
           if (entry.remaining !== 0) { this.fail(value.id, "Incomplete iPhone response"); return; }
           entry.controller.close();
@@ -212,7 +259,11 @@ export class PhoneTunnel {
           throw new Error("Unrequested or oversized chunk");
         clearTimeout(entry.timer);
         entry.timer = null;
-        entry.waiting = false;
+        if (entry.window > 1) {
+          entry.outstanding -= 1;
+          entry.waiting = entry.outstanding > 0;
+          if (entry.waiting) entry.timer = setTimeout(() => this.fail(id, "iPhone stream timed out"), STALL_MS);
+        } else entry.waiting = false;
         entry.remaining -= payload.length;
         entry.controller.enqueue(payload);
         entry.pullResolve?.();

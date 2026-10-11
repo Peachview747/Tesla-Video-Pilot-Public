@@ -56,6 +56,9 @@ export function installRecordedAudioOutput(output, now) {
   if (!output?.context?.createBufferSource || output.recordedSources) return;
   const sources = output.recordedSources = new Set();
   const destroy = output.destroy;
+  // A chunk scheduled after the previous one already finished leaves a gap,
+  // which is audible as a click. Count them so the log shows real crackle.
+  output.underruns = 0; output.underrunMs = 0; output.lastUnderrunReport = 0; output.scheduled = false;
   output.play = function(sampleRate, left, right) {
     if (!this.enabled) return;
     if (!this.unlocked) {
@@ -68,8 +71,17 @@ export function installRecordedAudioOutput(output, now) {
     const source = this.context.createBufferSource();
     source.buffer = buffer; source.connect(this.destination);
     if (this.startTime < this.context.currentTime) {
+      if (this.scheduled) {
+        this.underruns += 1; this.underrunMs += (this.context.currentTime - this.startTime) * 1000;
+        const at = now();
+        if (at - this.lastUnderrunReport >= 2) {
+          this.lastUnderrunReport = at;
+          reportDiagnostic('audioUnderrun', {underruns:this.underruns, gapMs:Math.round(this.underrunMs)});
+        }
+      }
       this.startTime = this.context.currentTime; this.wallclockStartTime = now();
     }
+    this.scheduled = true;
     sources.add(source);
     source.onended = () => { sources.delete(source); try { source.disconnect(); } catch {} };
     source.start(this.startTime);
@@ -82,10 +94,33 @@ export function installRecordedAudioOutput(output, now) {
       try { source.disconnect(); } catch {}
     }
     sources.clear();
+    this.scheduled = false;
     this.startTime = this.context.currentTime; this.wallclockStartTime = now();
     this.gain.gain.value = 0;
   };
   output.destroy = function() { this.stop(); return destroy?.call(this); };
+}
+
+// JSMpeg decodes recorded audio only 0.25 s ahead of the speaker. A Tesla
+// browser busy decoding video for longer than that starves WebAudio and every
+// gap clicks. Same loop as Player.updateForStaticFile, with a deeper lead.
+// Pause, seek and volume changes are unaffected: pause rewinds by seeking to
+// the audible position and volume is applied on the shared gain node.
+export function installRecordedAudioLead(player, lead = 0.75) {
+  if (!player || typeof player.updateForStaticFile !== 'function' || player.recordedAudioLead) return;
+  player.recordedAudioLead = lead;
+  const update = player.updateForStaticFile;
+  player.updateForStaticFile = function() {
+    if (!this.audio?.canPlay) return update.call(this);
+    let notEnoughData = false;
+    while (!notEnoughData && this.audio.decodedTime - this.audio.currentTime < lead) notEnoughData = !this.audio.decode();
+    if (this.video && this.video.currentTime < this.audio.currentTime) notEnoughData = !this.video.decode();
+    this.source.resume(this.demuxer.currentTime - this.audio.currentTime);
+    if (notEnoughData && this.source.completed) {
+      if (this.loop) this.seek(0);
+      else { this.pause(); this.options.onEnded?.(this); }
+    } else if (notEnoughData) this.options.onStalled?.(this);
+  };
 }
 
 // The shipped Player pauses by stopping output and then reading currentTime.
@@ -124,6 +159,9 @@ export class JSMpegHttpSource {
   stoppedPromise;
   lastProgressReport = 0;
   lastBufferState = null;
+  receivedBytes = 0;
+  expectedBytes = 0;
+  readStartedAt = null;
   // Keep enough media queued to absorb cellular/Cloudflare jitter. The
   // previous 8/3-second gate made 5G playback underrun and crackle; this
   // 12/6-second hysteresis is still bounded and is released on Pause/seek.
@@ -134,6 +172,14 @@ export class JSMpegHttpSource {
     this.stoppedPromise = new Promise(resolve => { this.stoppedResolve = resolve; });
   }
   connect(destination) { this.destination = destination; }
+  // Live delivery numbers for the diagnostics panel: bytes so far, average
+  // throughput since the request started, and buffered playback headroom.
+  stats(now = globalThis.performance?.now?.() ?? Date.now()) {
+    const elapsedMs = this.readStartedAt === null ? 0 : Math.max(0, Math.round(now - this.readStartedAt));
+    return {receivedBytes:this.receivedBytes, expectedBytes:this.expectedBytes, elapsedMs,
+      kbps:elapsedMs > 0 ? Math.round(this.receivedBytes * 8 / elapsedMs) : 0,
+      headroomSeconds:this.headroom, buffered:this.buffered, paused:this.paused, completed:this.completed};
+  }
   start() { if (!this.started) void this.read(); }
   // JSMpeg reports buffered playback seconds on every recorded-video frame.
   // Keep this separate from the user's Pause so a frame cannot undo a pause.
@@ -202,6 +248,7 @@ export class JSMpegHttpSource {
     let reader;
     let received = 0;
     const startedAt = globalThis.performance?.now?.() ?? Date.now();
+    this.readStartedAt = startedAt;
     try {
       const response = await fetch(this.url, {credentials:'same-origin',cache:'no-store',signal:this.controller.signal,
         headers:this.options.headers || undefined});
@@ -217,6 +264,7 @@ export class JSMpegHttpSource {
       const duration = Number(response.headers.get('x-video-duration'));
       if (Number.isFinite(duration) && duration > 0) this.options.onSourceDuration?.(duration);
       const expected = Number(response.headers.get('content-length'));
+      this.expectedBytes = Number.isSafeInteger(expected) && expected > 0 ? expected : 0;
       reader = response.body.getReader();
       this.reader = reader;
       while (!this.controller.signal.aborted) {
@@ -229,7 +277,8 @@ export class JSMpegHttpSource {
         if (this.controller.signal.aborted) break;
         if (value?.byteLength) {
           if (!this.established) { this.established = true; this.options.onSourceEstablished?.(this); }
-          received += value.byteLength; this.destination?.write(value.slice().buffer);
+          received += value.byteLength; this.receivedBytes = received;
+          this.destination?.write(value.slice().buffer);
           const now = globalThis.performance?.now?.() ?? Date.now();
           if (now - this.lastProgressReport >= 1000) {
             this.lastProgressReport = now;

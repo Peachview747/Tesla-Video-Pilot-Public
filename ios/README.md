@@ -1,6 +1,6 @@
-# Video Pilot iPhone distribution — native prototype 0.1.32
+# Video Pilot iPhone distribution — native prototype 0.1.31
 
-Build 44 moves Video Pilot to the production Worker address `https://tv.jch76.workers.dev`. Build 43 added an opt-in experimental silent-audio hosting test with interruption recovery and PiP audio coordination. See [BUILD_43_REVIEW.md](BUILD_43_REVIEW.md) for limits and device test steps.
+Build 43 adds an opt-in experimental silent-audio hosting test with interruption recovery and PiP audio coordination. See [BUILD_43_REVIEW.md](BUILD_43_REVIEW.md) for limits and device test steps.
 
 Build 42 adds an experimental native Picture in Picture player for real movies from Files, with PiP/background lifecycle diagnostics. See [BUILD_42_REVIEW.md](BUILD_42_REVIEW.md) for the device test steps and limits.
 

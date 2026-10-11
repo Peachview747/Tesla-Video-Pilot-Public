@@ -1,10 +1,10 @@
 {
   "name": "Video Pilot",
-  "version": "0.1.32",
-  "build": "44",
+  "version": "0.1.39",
+  "build": "51",
   "iconVersion": "0.1.28",
   "artifactPrefix": "Tesla-Video-Pilot",
-  "releaseNotes": "Build 44 moves the production iPhone relay and Tesla browser address to https://tv.jch76.workers.dev. It retains Build 43's opt-in silent-audio background hosting experiment and lifecycle diagnostics. No AI Room code or address is embedded in Video Pilot.",
+  "releaseNotes": "Build 51 moves Video Pilot to https://tv.jch76.workers.dev while preserving all Build 50 browse, diagnostics, queue, relay-windowing, retry, and performance improvements.",
   "packaging": "arm64-only-adhoc-signature-template",
   "stage": "native-prototype",
   "branch": "iphone-native",

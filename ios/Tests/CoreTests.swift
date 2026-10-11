@@ -63,6 +63,33 @@ final class CoreTests: XCTestCase {
         XCTAssertFalse(TranscodeArguments.make(video: "/tmp/source.mp4", output: "/tmp/out.ts").contains("videotoolbox"))
     }
 
+    func testParallelSegmentsUseWholeSecondsAndExactFrameCounts() {
+        XCTAssertEqual(TranscodeArguments.segments(duration: 59, maximum: 4), []) // Too short to split.
+        XCTAssertEqual(TranscodeArguments.segments(duration: 600, maximum: 1), [])
+        XCTAssertEqual(TranscodeArguments.segments(duration: 61, maximum: 4),
+                       [TranscodeSegment(start: 0, frames: 930), TranscodeSegment(start: 31, frames: nil)])
+        let plan = TranscodeArguments.segments(duration: 600.4, maximum: 4)
+        XCTAssertEqual(plan.map(\.start), [0, 151, 302, 453])
+        XCTAssertEqual(plan.map(\.frames), [4530, 4530, 4530, nil])
+        let first = TranscodeArguments.videoSegment(video: "/tmp/v.mp4", output: "/tmp/p0.m1v", quality: .balanced,
+                                                    hardwareDecode: true, segment: plan[0])
+        XCTAssertFalse(first.contains("-ss"))
+        XCTAssertLessThan(first.firstIndex(of: "-hwaccel")!, first.firstIndex(of: "-i")!)
+        XCTAssertEqual(first[first.firstIndex(of: "-frames:v")! + 1], "4530")
+        XCTAssertEqual(first.suffix(3), ["-f", "mpeg1video", "/tmp/p0.m1v"])
+        let last = TranscodeArguments.videoSegment(video: "/tmp/v.mp4", output: "/tmp/p3.m1v", quality: .balanced,
+                                                   hardwareDecode: false, segment: plan[3])
+        XCTAssertLessThan(last.firstIndex(of: "-ss")!, last.firstIndex(of: "-i")!)
+        XCTAssertFalse(last.contains("-frames:v"))
+        XCTAssertTrue(last.contains("-an"))
+        let single = TranscodeArguments.make(video: "/tmp/v.mp4", output: "/tmp/o.ts", quality: .balanced)
+        XCTAssertEqual(last[last.firstIndex(of: "-vf")! + 1], single[single.firstIndex(of: "-vf")! + 1])
+        let mux = TranscodeArguments.mux(video: "/tmp/v.m1v", audio: "/tmp/a.mp2", output: "/tmp/o.ts")
+        XCTAssertEqual(mux[mux.firstIndex(of: "-c")! + 1], "copy")
+        XCTAssertEqual(mux.last, "/tmp/o.ts")
+        XCTAssertTrue(TranscodeArguments.audioTrack(audio: "/tmp/a.m4a", output: "/tmp/a.mp2", duration: 61).contains("62.000"))
+    }
+
     func testMPEGTSIndexUsesTimestampsInsteadOfByteRatio() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

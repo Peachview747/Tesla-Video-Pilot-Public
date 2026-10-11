@@ -54,6 +54,8 @@ import MK8Core
                     components.scheme = "wss"
                     request.url = components.url
                     request.setValue(secret, forHTTPHeaderField: "x-secret")
+                    // Advertise windowed pulls; an older Worker ignores the header.
+                    request.setValue(String(RelayProtocol.maximumWindow), forHTTPHeaderField: RelayProtocol.windowHeader)
                     let socket = self.session.webSocketTask(with: request)
                     socket.maximumMessageSize = RelayProtocol.maximumChunk + 16
                     self.socket = socket
@@ -142,6 +144,7 @@ import MK8Core
                     socket.cancel(with: .goingAway, reason: nil)
                     return
                 }
+                await self.reapIdlePeers(socket: socket)
                 let id = UUID().uuidString.lowercased()
                 self.pingStartedAt[id] = ProcessInfo.processInfo.systemUptime
                 do { try await self.send(["type": "ping", "id": id], socket: socket) }
@@ -161,6 +164,8 @@ import MK8Core
             guard !sawHello, value["protocol"] as? String == RelayProtocol.name else { throw RelayError.protocolMismatch }
             sawHello = true
             lastPong = ProcessInfo.processInfo.systemUptime
+            SessionDiagnostics.shared.record(component: "tunnel", event: "hello",
+                fields: ["window": String((value["window"] as? Int) ?? 1)])
             changeState(.connected, "Connected. Open the public address in the Tesla browser.")
             return
         }
@@ -180,14 +185,21 @@ import MK8Core
         if type == "pull" {
             guard let peer = peers[id] else { return }
             guard peer.ready else { throw RelayError.protocolMismatch }
+            // A windowed Worker sends several credits per pull so frames stay in
+            // flight across the Cloudflare round trip. Legacy pulls carry none.
+            let windowed = value["credits"] as? Int
             let startDrain: Bool
-            do { startDrain = try peer.credits.grant() }
-            catch {
+            do {
+                if let windowed {
+                    startDrain = try peer.credits.grant(windowed, limit: RelayProtocol.maximumWindow)
+                } else { startDrain = try peer.credits.grant() }
+            } catch {
                 // A late/duplicate pull can race a seek cancellation. It is
                 // local to this peer; tearing down the whole tunnel would
                 // strand every other browser request.
                 return
             }
+            peer.lastPull = ProcessInfo.processInfo.systemUptime
             guard startDrain else { return }
             peer.transferTask = Task { [weak self, weak peer] in
                 guard let self, let peer else { return }
@@ -198,6 +210,7 @@ import MK8Core
                         if !chunk.isEmpty {
                             let frame = try RelayProtocol.frame(id: id, payload: chunk)
                             try await self.send(frame, socket: socket)
+                            peer.sentBytes += Int64(chunk.count)
                         }
                         // Cancel/reconnect can run while a WebSocket send awaits
                         // completion. Never send another frame or remove its successor.
@@ -247,14 +260,14 @@ import MK8Core
         peers[id] = peer
         peer.preparationTask = Task { [weak self, weak peer] in
             guard let self, let peer else { return }
-            let response = await self.route(request)
+            let response = await self.route(request).revalidated(for: request)
             guard !Task.isCancelled, self.socket === socket, self.peers[id] === peer else { return }
             do {
                 try peer.prepare(response)
                 self.updateStreams()
                 var headers = response.headers
                 headers["Content-Type"] = response.contentType
-                headers["Cache-Control"] = "no-store"
+                headers["Cache-Control"] = response.headers["Cache-Control"] ?? "no-store"
                 headers["X-Content-Type-Options"] = "nosniff"
                 headers["Referrer-Policy"] = "no-referrer"
                 try await self.send(["type": "response", "id": rawID, "status": response.status,
@@ -312,7 +325,35 @@ import MK8Core
         guard !Task.isCancelled, self.socket === socket, peers[id] === peer else { return }
         remove(id)
     }
-    private func remove(_ id: UUID) { peers.removeValue(forKey: id)?.close(); updateStreams() }
+    /// A Worker entry is freed only by an end, error or browser abort that it
+    /// actually observes. Cloudflare does not reliably forward Tesla browser
+    /// aborts, so an abandoned seek stream would otherwise hold one of the
+    /// eight relay slots until the tunnel reconnects. Streams the browser is
+    /// still reading pull every few seconds; a paused player reopens after 30 s.
+    private func reapIdlePeers(socket: URLSessionWebSocketTask) async {
+        let now = ProcessInfo.processInfo.systemUptime
+        let idle = peers.filter { $0.value.ready && $0.value.transferTask == nil && now - $0.value.lastPull > 45 }
+        for (id, peer) in idle {
+            SessionDiagnostics.shared.record(component: "tunnel", event: "peerReaped",
+                fields: ["idleSeconds": String(Int(now - peer.lastPull))])
+            await fail(id, peer: peer, socket: socket)
+        }
+    }
+    private func remove(_ id: UUID) {
+        if let peer = peers.removeValue(forKey: id) {
+            if peer.isFile, peer.sentBytes > 0 { Self.recordStreamSummary(peer) }
+            peer.close()
+        }
+        updateStreams()
+    }
+    /// One line per media stream: how fast the relay actually delivered it.
+    private static func recordStreamSummary(_ peer: RelayPeer) {
+        let seconds = max(0.001, ProcessInfo.processInfo.systemUptime - peer.startedAt)
+        SessionDiagnostics.shared.record(component: "tunnel", event: "streamSummary",
+            fields: ["bytes": String(peer.sentBytes), "expectedBytes": String(peer.length),
+                     "complete": String(peer.finished), "elapsedMs": String(format: "%.0f", seconds * 1000),
+                     "mbps": String(format: "%.2f", Double(peer.sentBytes) * 8 / seconds / 1_000_000)])
+    }
     private func updateStreams() { streamsChanged?(peers.values.filter(\.isFile).count) }
 }
 
@@ -320,6 +361,9 @@ import MK8Core
     var preparationTask: Task<Void, Never>?
     var transferTask: Task<Void, Never>?
     var ready = false
+    var lastPull = ProcessInfo.processInfo.systemUptime
+    let startedAt = ProcessInfo.processInfo.systemUptime
+    var sentBytes: Int64 = 0
     var credits = RelayCredits()
     private var body: RelayBody?
     var length: Int { body?.length ?? 0 }
@@ -328,6 +372,7 @@ import MK8Core
     func prepare(_ response: HTTPResponse) throws {
         if let url = response.file { body = try RelayBody(file: url, range: response.fileRange) }
         else { body = RelayBody(data: response.body) }
+        lastPull = ProcessInfo.processInfo.systemUptime
         ready = true
     }
     func nextChunk() throws -> Data {
