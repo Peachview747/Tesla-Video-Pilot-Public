@@ -9,7 +9,7 @@ const projectDir = path.dirname(appDir);
 config({ path: path.join(appDir, ".env"), quiet: true });
 const rootEnv = config({ path: path.join(projectDir, ".env"), processEnv: {}, quiet: true }).parsed || {};
 const workerUrl = rootEnv.TV_URL?.replace(/\/$/, "");
-if (workerUrl !== "https://tv.jcruzhoovertesla.workers.dev" || !rootEnv.TV_SECRET) {
+if (workerUrl !== "https://tv.jch76.workers.dev" || !rootEnv.TV_SECRET) {
   throw new Error("Set the requested TV_URL and TV_SECRET in the root .env.");
 }
 const localDir = path.join(appDir, ".local");

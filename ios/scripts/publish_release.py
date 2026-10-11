@@ -110,7 +110,7 @@ def main() -> None:
                 "run Setup-iPhone-Tunnel.cmd on your Windows PC, and select the original MK8 folder containing .env. "
                 "The setup reuses/tests your existing TV_SECRET and preserves the laptop route. "
                 "In the app, save that TV_SECRET under Settings > Cloudflare tunnel, start hosting, and wait for Connected. "
-                "Approve Face ID once when starting hosting, then open https://tv.jcruzhoovertesla.workers.dev in the Tesla browser; no browser code is required, so keep the public address private. "
+                "Approve Face ID once when starting hosting, then open https://tv.jch76.workers.dev in the Tesla browser; no browser code is required, so keep the public address private. "
                 "Keep the app open for continuous hosting; iOS allows only limited background tunnel/server time. "
                 "The Worker has not been deployed by this build. Physical iPhone/Tesla playback and network handoff remain device checks.\n\n"
                 f"Source commit: `{commit}`.\n\nSHA-256:\n```text\n{digest}\n```\n\n"

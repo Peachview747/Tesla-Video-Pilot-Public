@@ -14,9 +14,9 @@ Background setup logs: `app/.local/dev.log` and `app/.local/dev-error.log`.
 
 ## Push to the main URL
 
-The `tv` Worker is deployed in the account owning `jcruzhoovertesla.workers.dev`. Cloudflare credentials are stored in the ignored root `.env`; they are not included in release snapshots. **MK8: Set up Cloudflare Worker** can deploy the Worker again and securely update its `SECRET` from the root `TV_SECRET`. It uses `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` when configured. **MK8: Cloudflare login** is an alternative for signing in through the browser.
+The `tv` Worker is deployed in the account owning `jch76.workers.dev`. Cloudflare credentials are stored in the ignored root `.env`; they are not included in release snapshots. **MK8: Set up Cloudflare Worker** can deploy the Worker again and securely update its `SECRET` from the root `TV_SECRET`. It uses `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` when configured. **MK8: Cloudflare login** is an alternative for signing in through the browser.
 
-Use **Terminal > Run Task > MK8: Push to main URL** when local changes are ready. It builds a snapshot of the frontend and API, checks the new server, creates a Cloudflare tunnel, and updates the existing Worker using `TV_URL` and `TV_SECRET` from the root `.env`. The public address is <https://tv.jcruzhoovertesla.workers.dev>.
+Use **Terminal > Run Task > MK8: Push to main URL** when local changes are ready. It builds a snapshot of the frontend and API, checks the new server, creates a Cloudflare tunnel, and updates the existing Worker using `TV_URL` and `TV_SECRET` from the root `.env`. The public address is <https://tv.jch76.workers.dev>.
 
 The public site serves a saved release with no file watcher. Source edits continue to appear only at <http://localhost:5173> until the next push. Development and main currently use the same local database and uploads; database changes affect both. The database runs independently of the editing servers.
 
