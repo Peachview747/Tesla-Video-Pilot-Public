@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: public-iphone-build-${{ github.ref }}
@@ -71,14 +71,3 @@ jobs:
           path: ios/build/Tesla-Video-Pilot-Ver-*-Build-*.ipa
           if-no-files-found: error
           retention-days: 7
-      - name: Create temporary private draft transfer
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tag="private-transfer-${GITHUB_RUN_ID}"
-          gh release create "$tag" "$IPA_PATH" \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "Temporary private transfer for run ${GITHUB_RUN_ID}" \
-            --notes "Draft transfer used to move a verified Actions artifact into private release storage." \
-            --draft
