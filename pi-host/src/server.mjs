@@ -41,6 +41,12 @@ export function createVideoPilotServer({ library, webRoot, port = 5001, host = "
       });
       if (url.pathname === "/api/library" && req.method === "GET") return send(res, 200, library.videos);
       if (url.pathname === "/api/queue" && req.method === "GET") return send(res, 200, library.queueView());
+      if (url.pathname === "/api/queue/move" && req.method === "POST") {
+        const body = await bodyJSON(req); await library.move(body.id, body.to); return send(res, 200, { moved: true });
+      }
+      if (url.pathname === "/api/queue/cancel" && req.method === "POST") {
+        const body = await bodyJSON(req); await library.cancelQueued(body.id); return send(res, 200, { cancelled: true });
+      }
       if (url.pathname === "/api/settings" && req.method === "GET") return send(res, 200, library.settings);
       if (url.pathname === "/api/settings" && req.method === "POST") {
         const body = await bodyJSON(req); await library.setQuality(body.quality); return send(res, 200, library.settings);
@@ -54,6 +60,16 @@ export function createVideoPilotServer({ library, webRoot, port = 5001, host = "
       if (url.pathname === "/api/library/remove" && req.method === "POST") {
         const body = await bodyJSON(req); return send(res, 200, { removed: await library.remove(body.id), pending: false });
       }
+      if (url.pathname === "/api/library/upgrade" && req.method === "POST") {
+        const body = await bodyJSON(req);
+        if (body.id) return send(res, 202, { queued: await library.upgrade(body.id) ? 1 : 0 });
+        let queued = 0;
+        for (const video of library.videos) {
+          if (video.state === "ready" && (video.quality || 0) < library.settings.quality)
+            queued += await library.upgrade(video.id) ? 1 : 0;
+        }
+        return send(res, 202, { queued });
+      }
       if (url.pathname === "/api/diagnostics" && req.method === "POST") return send(res, 200, { accepted: false, count: 0 });
       if (url.pathname === "/api/diagnostics/export" && req.method === "GET") return send(res, 404, { error: "Diagnostics are available in journalctl on the Pi." });
       if (url.pathname === "/api/suggest" && req.method === "GET") return send(res, 200, []);
@@ -61,10 +77,18 @@ export function createVideoPilotServer({ library, webRoot, port = 5001, host = "
       if (url.pathname === "/api/explore" && req.method === "GET") return send(res, 200, await library.search("trending videos", 20));
       if (url.pathname === "/api/foryou" && req.method === "GET") {
         const videos = await library.search("trending videos", 20);
-        return send(res, 200, { rows: [{ title: "Trending now", kind: "trending", videos }], errors: [] });
+        const continuing = library.historyView(20).items
+          .filter(item => item.inLibrary && item.position > 0 && item.progress < 0.95)
+          .map(item => ({ id: item.libraryId, title: item.title, channel: item.channel, channelId: item.channelId,
+            duration: item.duration, position: item.position, progress: item.progress, youtube: false,
+            libraryId: item.libraryId, libraryState: item.state }));
+        const rows = [];
+        if (continuing.length) rows.push({ title: "Continue watching", kind: "continue", videos: continuing });
+        rows.push({ title: "Trending now", kind: "trending", videos });
+        return send(res, 200, { rows, errors: [] });
       }
       if (url.pathname === "/api/channel" && req.method === "GET")
-        return send(res, 503, { error: "Channel pages are not available on the Raspberry Pi yet." });
+        return send(res, 200, await library.channel(url.searchParams.get("id")));
       if (url.pathname === "/api/history" && req.method === "GET") return send(res, 200, library.historyView(Number(url.searchParams.get("limit")) || 50));
       if (url.pathname === "/api/history" && req.method === "POST") { await library.recordHistory(await bodyJSON(req)); return send(res, 200, { recorded: true }); }
       if (url.pathname === "/api/history/clear" && req.method === "POST") { library.history = []; await library.saveHistory(); return send(res, 200, { cleared: true }); }

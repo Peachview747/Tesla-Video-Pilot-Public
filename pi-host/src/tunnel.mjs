@@ -46,7 +46,11 @@ export class PiTunnel {
           this.sendJSON({ type: "ping", id: randomUUID() });
         }, 5_000);
       });
-      socket.on("message", (data, binary) => { if (binary) return this.closeWithError("Unexpected binary control frame"); this.handle(JSON.parse(data.toString())).catch(error => this.closeWithError(error.message)); });
+      socket.on("message", (data, binary) => {
+        if (binary) return this.closeWithError("Unexpected binary control frame");
+        try { this.handle(JSON.parse(data.toString())).catch(error => this.closeWithError(error.message)); }
+        catch (error) { this.closeWithError(error.message); }
+      });
       socket.on("error", error => { if (!opened) reject(error); });
       socket.on("close", () => { clearInterval(this.heartbeat); this.heartbeat = null; this.cancelAll(); if (this.socket === socket) this.socket = null; resolve(); });
     });

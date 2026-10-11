@@ -39,3 +39,14 @@ test("turns interrupted preparation into a retryable item", async () => {
   const library = await new Library({ dataDir }).init();
   assert.equal(library.videos[0].state, "paused");
 });
+
+test("maps yt-dlp search results for the existing Tesla cards", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-search-"));
+  const runner = async () => ({ stdout: JSON.stringify({ entries: [
+    { id: "dQw4w9WgXcQ", title: "Result", channel: "Channel", duration: 62 },
+  ] }) });
+  const library = await new Library({ dataDir, runner }).init();
+  assert.deepEqual(await library.search("music"), [{ id: "dQw4w9WgXcQ", title: "Result", channel: "Channel",
+    channelId: null, thumbnail: "https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg",
+    duration: "1:02", views: null, published: null }]);
+});

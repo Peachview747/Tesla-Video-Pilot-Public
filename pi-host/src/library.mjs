@@ -82,6 +82,7 @@ export class Library {
       id, title: details.title || `YouTube ${youtubeID}`, youtubeID, state: "preparing",
       message: "Waiting on the Raspberry Pi…", duration: null, createdAt: new Date().toISOString(),
       channel: details.channel || null, publishedAt: null, channelId: details.channelId || null,
+      quality: this.settings.quality,
     };
     this.videos.unshift(video);
     this.queue.push(id);
@@ -98,6 +99,38 @@ export class Library {
     this.queue.push(video.id);
     await this.save();
     this.drain();
+  }
+
+  async upgrade(id) {
+    const video = this.get(id);
+    if (!video || video.state !== "ready") throw new Error("That video is not ready to upgrade.");
+    if ((video.quality || 0) >= this.settings.quality) return false;
+    video.state = "preparing";
+    video.message = `Waiting to upgrade to ${this.settings.quality}p…`;
+    this.queue.push(video.id);
+    await this.save();
+    this.drain();
+    return true;
+  }
+
+  async move(id, to) {
+    const index = this.queue.indexOf(id);
+    if (index < 0) throw new Error("That item is no longer queued.");
+    const [item] = this.queue.splice(index, 1);
+    this.queue.splice(Math.max(0, Math.min(this.queue.length, Number(to) || 0)), 0, item);
+    this.notify();
+  }
+
+  async cancelQueued(id) {
+    const index = this.queue.indexOf(id);
+    if (index < 0) throw new Error("Only a waiting item can be cancelled.");
+    this.queue.splice(index, 1);
+    const video = this.get(id);
+    if (video) {
+      video.state = "paused";
+      video.message = "Preparation paused. Tap Retry when ready.";
+      await this.save();
+    }
   }
 
   async remove(id) {
@@ -147,13 +180,16 @@ export class Library {
     if (!text || text.length > 200) throw new Error("Enter a search of up to 200 characters.");
     const result = await this.runner(this.ytDlp, ["--flat-playlist", "--dump-single-json", `ytsearch${limit}:${text}`]);
     const object = JSON.parse(result.stdout);
-    return (object.entries || []).filter(entry => /^[A-Za-z0-9_-]{11}$/.test(entry.id || "")).map(entry => ({
-      id: entry.id, title: entry.title || entry.id, channel: entry.channel || entry.uploader || "",
-      channelId: entry.channel_id || null, thumbnail: `https://i.ytimg.com/vi/${entry.id}/mqdefault.jpg`,
-      duration: formatDuration(entry.duration),
-      views: entry.view_count ? Number(entry.view_count).toLocaleString("en-US") + " views" : null,
-      published: null,
-    }));
+    return mapEntries(object.entries);
+  }
+
+  async channel(id) {
+    if (!/^UC[A-Za-z0-9_-]{20,30}$/.test(String(id || ""))) throw new Error("That channel could not be found.");
+    const result = await this.runner(this.ytDlp, ["--flat-playlist", "--playlist-end", "30", "--dump-single-json",
+      `https://www.youtube.com/channel/${id}/videos`]);
+    const object = JSON.parse(result.stdout);
+    return { channel: { id, name: object.channel || object.uploader || object.title || "YouTube channel",
+      handle: object.channel_url || null, avatar: null, subscribers: null }, videos: mapEntries(object.entries), continuation: null };
   }
 
   drain() {
@@ -181,6 +217,7 @@ export class Library {
       video.message = "Downloading to the Raspberry Pi…";
       await this.save();
       const height = this.settings.quality;
+      video.quality = height;
       const format = `bestvideo[height<=${height}][vcodec^=avc1]+bestaudio[ext=m4a]/best[height<=${height}][ext=mp4]/best[height<=${height}]`;
       await this.runner(this.ytDlp, ["--no-playlist", "--no-progress", "--format", format,
         "--merge-output-format", "mp4", "--output", files.source, url]);
@@ -250,4 +287,14 @@ function formatDuration(value) {
   const parts = [Math.floor(seconds / 3600), Math.floor(seconds % 3600 / 60), seconds % 60];
   if (parts[0] === 0) parts.shift();
   return parts.map((part, index) => index ? String(part).padStart(2, "0") : String(part)).join(":");
+}
+
+function mapEntries(entries = []) {
+  return entries.filter(entry => /^[A-Za-z0-9_-]{11}$/.test(entry.id || "")).map(entry => ({
+    id: entry.id, title: entry.title || entry.id, channel: entry.channel || entry.uploader || "",
+    channelId: entry.channel_id || null, thumbnail: `https://i.ytimg.com/vi/${entry.id}/mqdefault.jpg`,
+    duration: formatDuration(entry.duration),
+    views: entry.view_count ? Number(entry.view_count).toLocaleString("en-US") + " views" : null,
+    published: null,
+  }));
 }
