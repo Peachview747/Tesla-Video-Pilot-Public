@@ -122,7 +122,10 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
         res.writeHead(200, { "content-type": "video/mp2t", "content-length": info.size - offset,
           "cache-control": "no-store", "accept-ranges": "none", "x-mk8-seek-offset": String(offset),
           "x-video-seek-time": String(seekTime), "x-video-duration": String(video.duration || 0) });
-        createReadStream(files.media, { start: offset }).pipe(res);
+        const stream = createReadStream(files.media, { start: offset });
+        res.once("close", () => stream.destroy());
+        stream.once("error", () => res.destroy());
+        stream.pipe(res);
         return;
       }
       return send(res, 404, { error: "Not found." });
