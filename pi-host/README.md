@@ -33,3 +33,9 @@ Save your hotspot through NetworkManager under the connection name `car-hotspot`
 The installer also enables `pi-hotspot-watch.timer`. When Wi-Fi is disconnected, it searches for `car-hotspot` every 20 seconds after the preceding attempt finishes. It leaves an active Wi-Fi connection alone and respects a disabled Wi-Fi radio. The timer starts 10 seconds after boot. Check it with `systemctl status pi-hotspot-watch.timer`.
 
 The player serves the repository's decoder from `app/client/public/jsmpeg.min.js`; it does not depend on an untracked copy inside `ios/Web`.
+
+## Playback quality and hotspot data
+
+Use the player's Quality menu to choose 360p, 540p, 720p, or 1080p. Switching resumes near the same timestamp and preserves pause, mute, and fullscreen. Lower resolutions use separately encoded lower-bitrate files and their own seek indexes, so changing quality reduces the bytes sent through the hotspot. The Pi prepares and caches smaller copies locally; the current stream continues while a missing copy is prepared.
+
+Settings → Download quality controls the maximum resolution of future YouTube downloads. Selecting a player quality above the saved maximum queues an upgrade download and keeps the old copy playable until the new one is ready. The downloader checks the actual source resolution rather than labeling an upscaled low-resolution source as HD. Data saver defaults playback to 360p. The Default player choice otherwise uses the highest saved quality; it is not automatic bandwidth detection.

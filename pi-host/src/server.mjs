@@ -2,6 +2,7 @@ import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
+import {QUALITIES, parseQuality} from "./quality.mjs";
 
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8" };
 const ASSETS = new Set(["/", "/index.html", "/app.js", "/http-source.js", "/diagnostics.js", "/style.css", "/jsmpeg.min.js"]);
@@ -47,7 +48,7 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
       if (url.pathname === "/api/queue/cancel" && req.method === "POST") {
         const body = await bodyJSON(req); await library.cancelQueued(body.id); return send(res, 200, { cancelled: true });
       }
-      if (url.pathname === "/api/settings" && req.method === "GET") return send(res, 200, library.settings);
+      if (url.pathname === "/api/settings" && req.method === "GET") return send(res, 200, {...library.settings, playbackQualities:QUALITIES});
       if (url.pathname === "/api/settings" && req.method === "POST") {
         const body = await bodyJSON(req); await library.setQuality(body.quality); return send(res, 200, library.settings);
       }
@@ -62,7 +63,7 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
       }
       if (url.pathname === "/api/library/upgrade" && req.method === "POST") {
         const body = await bodyJSON(req);
-        if (body.id) return send(res, 202, { queued: await library.upgrade(body.id) ? 1 : 0 });
+        if (body.id) return send(res, 202, { queued: await library.upgrade(body.id, body.quality) ? 1 : 0 });
         let queued = 0;
         for (const video of library.videos) {
           if (video.state === "ready" && (video.quality || 0) < library.settings.quality)
@@ -70,6 +71,13 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
         }
         return send(res, 202, { queued });
       }
+      if (url.pathname === "/api/library/quality" && req.method === "POST") {
+        const body = await bodyJSON(req);
+        const status = await library.requestQuality(body.id, body.quality);
+        return send(res, status.ready ? 200 : 202, status);
+      }
+      if (url.pathname === "/api/library/quality" && req.method === "GET")
+        return send(res, 200, await library.qualityStatus(url.searchParams.get("id"), url.searchParams.get("quality")));
       if (url.pathname === "/api/diagnostics" && req.method === "POST") return send(res, 200, { accepted: false, count: 0 });
       if (url.pathname === "/api/diagnostics/export" && req.method === "GET") return send(res, 404, { error: "Diagnostics are available in journalctl on the Pi." });
       if (url.pathname === "/api/suggest" && req.method === "GET") return send(res, 200, []);
@@ -96,20 +104,24 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
       if (match && req.method === "GET") {
         const video = library.get(match[1]);
         if (!video || video.state !== "ready") return send(res, 404, { error: "Video is not ready or no longer exists." });
-        const files = library.paths(video.id);
+        const requestedQuality = url.searchParams.has("quality") ? parseQuality(url.searchParams.get("quality")) : null;
+        if (requestedQuality !== null && !(await library.qualityStatus(video.id, requestedQuality)).ready)
+          return send(res, 409, {error:"That quality is still being prepared. Keep playing the current quality."});
+        const files = library.paths(video.id, requestedQuality);
         if (!library.history.some(item => item.libraryId === video.id)) await library.recordHistory({ id: video.id, position: 0 });
         const info = await stat(files.media);
-        let offset = 0;
+        let offset = 0, seekTime = 0;
         const seek = Number(url.searchParams.get("seek"));
         if (Number.isFinite(seek) && seek > 0) {
           try {
             const index = JSON.parse(await readFile(files.seek, "utf8"));
             const point = index.points.filter(item => item.time <= seek).at(-1);
-            if (point) offset = Math.max(0, Math.min(info.size - 1, point.offset));
+            if (point) { offset = Math.max(0, Math.min(info.size - 1, point.offset)); seekTime = point.time; }
           } catch {}
         }
         res.writeHead(200, { "content-type": "video/mp2t", "content-length": info.size - offset,
-          "cache-control": "no-store", "accept-ranges": "none", "x-mk8-seek-offset": String(offset) });
+          "cache-control": "no-store", "accept-ranges": "none", "x-mk8-seek-offset": String(offset),
+          "x-video-seek-time": String(seekTime), "x-video-duration": String(video.duration || 0) });
         createReadStream(files.media, { start: offset }).pipe(res);
         return;
       }

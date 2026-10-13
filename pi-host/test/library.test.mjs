@@ -17,8 +17,9 @@ test("persists queue state and creates a seekable prepared item", async () => {
   let library;
   const runner = async (command, args) => {
     if (args.includes("--dump-single-json")) return { stdout: JSON.stringify({ title: "Test video", duration: 42, channel: "Channel", channel_id: "UC123", upload_date: "20260102" }) };
-    if (command === "yt-dlp") { await writeFile(library.paths(library.active).source, "source"); return { stdout: "" }; }
-    if (command === "ffmpeg") { await writeFile(library.paths(library.active).temporary, Buffer.alloc(188 * 10, 0x47)); return { stdout: "" }; }
+    if (command === "yt-dlp") { await writeFile(args[args.indexOf("--output") + 1], "source"); return { stdout: "" }; }
+    if (command === "ffmpeg") { await writeFile(args.at(-1), Buffer.alloc(188 * 10, 0x47)); return { stdout: "" }; }
+    if (command === "ffprobe" && args.includes("json")) return {stdout:JSON.stringify({streams:[{width:1280,height:720}]})};
     if (command === "ffprobe") return { stdout: "0.000000,0,K_\n10.000000,940,K_\n" };
     throw new Error(`unexpected ${command}`);
   };
@@ -49,4 +50,54 @@ test("maps yt-dlp search results for the existing Tesla cards", async () => {
   assert.deepEqual(await library.search("music"), [{ id: "dQw4w9WgXcQ", title: "Result", channel: "Channel",
     channelId: null, thumbnail: "https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg",
     duration: "1:02", views: null, published: null }]);
+});
+
+test("1080p upgrades preserve the playable 720p copy and create smaller local qualities", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-quality-"));
+  let downloads = 0;
+  const runner = async (command, args) => {
+    if (args.includes("--dump-single-json")) return {stdout:JSON.stringify({title:"Test",duration:30})};
+    if (command === "yt-dlp") { downloads++; await writeFile(args[args.indexOf("--output")+1], "source"); return {stdout:""}; }
+    if (command === "ffmpeg") { await writeFile(args.at(-1), "new encoded copy"); return {stdout:""}; }
+    if (args.includes("json")) return {stdout:JSON.stringify({streams:[{height:1080}]})};
+    return {stdout:"0,0,K_\n10,188,K_\n"};
+  };
+  const library = await new Library({dataDir,runner}).init();
+  const video = {id:"00000000-0000-4000-8000-000000000001", youtubeID:"dQw4w9WgXcQ",state:"ready",quality:720};
+  library.videos.push(video);
+  const original = library.paths(video.id);
+  await writeFile(original.media,"old playable video"); await writeFile(original.seek,'{"points":[{"time":0,"offset":0}]}');
+  await library.setQuality("1080p");
+  assert.equal(await library.upgrade(video.id),true);
+  assert.equal(video.state,"ready"); assert.equal(video.quality,720);
+  assert.equal(await library.upgrade(video.id),false, "an upgrade is queued only once");
+  while(library.active || library.queue.length) await new Promise(resolve=>setTimeout(resolve,10));
+  assert.equal(video.state,"ready"); assert.equal(video.quality,1080); assert.equal(video.upgrading,false);
+  assert.equal((await library.qualityStatus(video.id,1080)).ready,true);
+  assert.equal((await library.qualityStatus(video.id,720)).ready,true);
+  assert.equal(await readFile(original.media,"utf8"),"old playable video");
+  await library.requestQuality(video.id,360);
+  while(!(await library.qualityStatus(video.id,360)).ready) await new Promise(resolve=>setTimeout(resolve,10));
+  assert.equal(downloads,1, "lower qualities are prepared locally without another download");
+  assert.notEqual(library.paths(video.id,360).seek,library.paths(video.id,1080).seek);
+});
+
+test("an unavailable 1080p source leaves the existing video ready", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(),"vp-quality-fail-"));
+  const runner = async (command,args) => {
+    if(args.includes("--dump-single-json")) return {stdout:'{"duration":30}'};
+    if(command === "yt-dlp") {await writeFile(args[args.indexOf("--output")+1],"source"); return {stdout:""};}
+    if(args.includes("json")) return {stdout:'{"streams":[{"height":720}]}'};
+    throw new Error("Should not re-encode a low-resolution source as 1080p");
+  };
+  const library = await new Library({dataDir,runner}).init();
+  const video={id:"00000000-0000-4000-8000-000000000002",youtubeID:"dQw4w9WgXcQ",state:"ready",quality:720};
+  library.videos.push(video);
+  const files=library.paths(video.id);
+  await writeFile(files.media,"keep");await writeFile(files.seek,'{"points":[]}');
+  await library.upgrade(video.id,1080);
+  while(library.active || library.queue.length) await new Promise(resolve=>setTimeout(resolve,10));
+  assert.equal(video.state,"ready");assert.equal(video.quality,720);
+  assert.match(video.upgradeError,/only 720p/);
+  assert.equal(await readFile(files.media,"utf8"),"keep");
 });

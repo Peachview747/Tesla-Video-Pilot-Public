@@ -2,8 +2,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-
-const QUALITY = new Set([360, 540, 720]);
+import {QUALITIES, parseQuality, encodeArgs} from "./quality.mjs";
 
 export function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -34,6 +33,8 @@ export class Library {
     this.queue = [];
     this.active = null;
     this.listeners = new Set();
+    this.variantJobs = new Map();
+    this.mediaWork = Promise.resolve();
   }
 
   async init() {
@@ -42,6 +43,7 @@ export class Library {
     try { this.settings = { ...this.settings, ...JSON.parse(await readFile(this.settingsFile, "utf8")) }; } catch {}
     try { this.history = JSON.parse(await readFile(this.historyFile, "utf8")); } catch { this.history = []; }
     for (const video of this.videos) {
+      if (video.upgrading) { video.upgrading = false; video.upgradeError = "Upgrade interrupted. Select the quality again to retry."; }
       if (video.state === "preparing") {
         video.state = "paused";
         video.message = "The Pi restarted before preparation finished. Tap Retry.";
@@ -55,7 +57,7 @@ export class Library {
   notify() { for (const listener of this.listeners) listener(); }
 
   async atomicJSON(file, value) {
-    const temporary = `${file}.${process.pid}.tmp`;
+    const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
     await writeFile(temporary, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
     await rename(temporary, file);
   }
@@ -64,8 +66,11 @@ export class Library {
   async saveHistory() { await this.atomicJSON(this.historyFile, this.history.slice(0, 300)); this.notify(); }
 
   get(id) { return this.videos.find(video => video.id.toLowerCase() === String(id).toLowerCase()); }
-  paths(id) {
-    const safe = String(id).toLowerCase();
+  paths(id, quality = null) {
+    const video = this.get(id);
+    const selected = quality === null ? video?.mediaQuality : parseQuality(quality);
+    const legacy = selected === video?.legacyQuality || (!video?.mediaQuality && selected === video?.quality);
+    const safe = String(id).toLowerCase() + (selected && !legacy ? `.${selected}` : "");
     return {
       source: path.join(this.mediaDir, `${safe}.source.mp4`),
       temporary: path.join(this.mediaDir, `${safe}.working.ts`),
@@ -101,15 +106,17 @@ export class Library {
     this.drain();
   }
 
-  async upgrade(id) {
+  async upgrade(id, requested = this.settings.quality) {
     const video = this.get(id);
     if (!video || video.state !== "ready") throw new Error("That video is not ready to upgrade.");
-    if ((video.quality || 0) >= this.settings.quality) return false;
-    video.state = "preparing";
-    video.message = `Waiting to upgrade to ${this.settings.quality}p…`;
+    const quality = parseQuality(requested);
+    if ((video.quality || 0) >= quality || video.upgrading) return false;
+    video.upgrading = true; video.upgradeQuality = quality; video.upgradeError = null;
+    video.message = `Waiting to upgrade to ${quality}p…`;
     this.queue.push(video.id);
     await this.save();
     this.drain();
+    return true;
     return true;
   }
 
@@ -137,18 +144,67 @@ export class Library {
     const video = this.get(id);
     if (!video) return false;
     if (this.active === video.id) throw new Error("Wait for preparation to finish before removing this video.");
+    if ([...this.variantJobs.entries()].some(([key, job]) => key.startsWith(video.id + ":") && job.state === "preparing")) throw new Error("Wait for quality preparation to finish before removing this video.");
+    const files = [...Object.values(this.paths(video.id)), ...QUALITIES.flatMap(quality => Object.values(this.paths(video.id, quality)))];
     this.queue = this.queue.filter(item => item !== video.id);
     this.videos = this.videos.filter(item => item !== video);
-    await Promise.all(Object.values(this.paths(video.id)).map(file => rm(file, { force: true })));
+    await Promise.all([...new Set(files)].map(file => rm(file, { force: true })));
     await this.save();
     return true;
   }
 
   async setQuality(value) {
-    const quality = Number(value);
-    if (!QUALITY.has(quality)) throw new Error("Quality must be 360, 540, or 720.");
+    const quality = parseQuality(value);
     this.settings.quality = quality;
     await this.saveSettings();
+  }
+
+  mediaTask(task) {
+    const promise = this.mediaWork.then(task);
+    this.mediaWork = promise.catch(() => {});
+    return promise;
+  }
+
+  async qualityStatus(id, value) {
+    const video = this.get(id), quality = parseQuality(value);
+    if (!video || video.state !== "ready") throw new Error("Video is not ready.");
+    const job = this.variantJobs.get(`${video.id}:${quality}`);
+    const files = this.paths(video.id, quality);
+    const ready = quality <= video.quality && await Promise.all([stat(files.media), stat(files.seek)]).then(() => true, () => false);
+    return {quality, ready, maximum:video.quality, upgrading:Boolean(video.upgrading),
+      error:job?.error || (quality > video.quality ? video.upgradeError : null) || null,
+      requiresDownload:quality > video.quality};
+  }
+
+  async requestQuality(id, value) {
+    const video = this.get(id), status = await this.qualityStatus(id, value);
+    if (status.ready) return status;
+    if (status.requiresDownload) {
+      await this.upgrade(id, status.quality);
+      return {...status, upgrading:true, error:null};
+    }
+    const key = `${video.id}:${status.quality}`;
+    if (this.variantJobs.get(key)?.state === "preparing") return status;
+    const job = {state:"preparing", error:null}; this.variantJobs.set(key, job);
+    const input = this.paths(video.id).media, files = this.paths(video.id, status.quality);
+    job.promise = this.mediaTask(async () => {
+      await this.runner(this.ffmpeg, encodeArgs(input, files.temporary, status.quality));
+      await rename(files.temporary, files.media);
+      await this.buildSeekIndex(video, files);
+      job.state = "ready";
+      video.qualities = [...new Set([...(video.qualities || []), video.quality, status.quality])].sort((a,b) => a-b);
+      await this.save();
+    }).catch(async error => {
+      job.state = "failed"; job.error = String(error.message || error).slice(0,500);
+      await rm(files.temporary, {force:true});
+    });
+    return {...status, error:null};
+  }
+
+  warmQualities() {
+    for (const video of this.videos.filter(item => item.state === "ready")) {
+      for (const quality of QUALITIES.filter(value => value < video.quality)) this.requestQuality(video.id, quality).catch(() => {});
+    }
   }
 
   async recordHistory({ id, position, duration, finished }) {
@@ -202,7 +258,10 @@ export class Library {
   async prepare(id) {
     const video = this.get(id);
     if (!video) return;
-    const files = this.paths(id);
+    const targetQuality = video.upgradeQuality || video.quality || this.settings.quality;
+    const previousQuality = video.quality, previousMediaQuality = video.mediaQuality;
+    const wasReady = video.state === "ready";
+    let files = this.paths(id, targetQuality);
     const url = `https://www.youtube.com/watch?v=${video.youtubeID}`;
     try {
       video.message = "Reading YouTube details…";
@@ -216,28 +275,43 @@ export class Library {
       video.duration = Number(metadata.duration) || null;
       video.message = "Downloading to the Raspberry Pi…";
       await this.save();
-      const height = this.settings.quality;
-      video.quality = height;
+      let height = parseQuality(targetQuality);
       const format = `bestvideo[height<=${height}][vcodec^=avc1]+bestaudio[ext=m4a]/best[height<=${height}][ext=mp4]/best[height<=${height}]`;
       await this.runner(this.ytDlp, ["--no-playlist", "--no-progress", "--format", format,
         "--merge-output-format", "mp4", "--output", files.source, url]);
+      const source = files.source;
+      const probe = await this.runner(this.ffprobe, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", source]);
+      const sourceHeight = Number(JSON.parse(probe.stdout).streams?.[0]?.height);
+      if (!Number.isFinite(sourceHeight) || sourceHeight <= 0) throw new Error("Unable to read the downloaded video's resolution.");
+      if (sourceHeight < height) {
+        if (wasReady) throw new Error(`This source is only ${sourceHeight}p. The current ${previousQuality}p copy is still available.`);
+        height = QUALITIES.filter(value => value <= sourceHeight).at(-1) || 360;
+        files = this.paths(id, height);
+      }
+      video.sourceHeight = sourceHeight;
       video.message = `Preparing ${height}p for the Tesla browser…`;
       await this.save();
       await rm(files.temporary, { force: true });
-      await this.runner(this.ffmpeg, ["-y", "-hide_banner", "-loglevel", "error", "-i", files.source,
-        "-vf", `scale=${height === 360 ? 640 : height === 540 ? 960 : 1280}:${height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=${height === 360 ? 640 : height === 540 ? 960 : 1280}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`,
-        "-r", "30", "-pix_fmt", "yuv420p", "-c:v", "mpeg1video", "-b:v", height === 720 ? "1500k" : "1000k",
-        "-maxrate", height === 720 ? "1800k" : "1200k", "-bufsize", "800k", "-bf", "0", "-g", "30",
-        "-c:a", "mp2", "-b:a", "128k", "-ar", "44100", "-ac", "2", "-muxdelay", "0.001",
-        "-mpegts_flags", "+resend_headers", "-f", "mpegts", files.temporary]);
-      await rename(files.temporary, files.media);
-      await this.buildSeekIndex(video, files);
-      await rm(files.source, { force: true });
+      await this.mediaTask(async () => {
+        await this.runner(this.ffmpeg, encodeArgs(source, files.temporary, height));
+        await rename(files.temporary, files.media);
+        await this.buildSeekIndex(video, files);
+      });
+      await rm(source, { force: true });
       video.state = "ready";
+      video.quality = height;
+      video.mediaQuality = files.media === this.paths(id).media && !previousMediaQuality ? undefined : height;
+      if (wasReady && !previousMediaQuality) video.legacyQuality = previousQuality;
+      video.qualities = [...new Set([...(video.qualities || []), ...(wasReady ? [previousQuality] : []), height])].sort((a,b)=>a-b);
+      video.upgrading = false; video.upgradeQuality = null; video.upgradeError = null;
       video.message = null;
       await this.save();
+      this.warmQualities();
     } catch (error) {
-      video.state = "failed";
+      video.state = wasReady ? "ready" : "failed";
+      video.quality = previousQuality; video.mediaQuality = previousMediaQuality;
+      video.upgrading = false; video.upgradeQuality = null;
+      if (wasReady) video.upgradeError = String(error.message || error).slice(0,500);
       video.message = String(error.message || error).slice(0, 500);
       await rm(files.temporary, { force: true });
       await this.save();

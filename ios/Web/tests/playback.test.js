@@ -9,7 +9,7 @@ import {DiagnosticsJournal, LiveStats} from '../diagnostics.js';
 // driven separately from network establishment, just as in recorded JSMpeg.
 const app = readFileSync(new URL('../app.js', import.meta.url), 'utf8')
   .replace(/^import .*?;\n/gm, '');
-function setup({recoveryDelay} = {}) {
+function setup({recoveryDelay, fetchImpl} = {}) {
   const elements = new Map(), players = [], intervals = [];
   const element = id => {
     if (!elements.has(id)) elements.set(id, {textContent:'', hidden:false, dataset:{}, scrollIntoView() {},
@@ -18,6 +18,7 @@ function setup({recoveryDelay} = {}) {
   };
   class Player {
     constructor(url, options) {
+      this.url = url;
       this.options = options; this.paused = false; this.isPlaying = false; this.volume = 1;
       this.readingPaused = false; this.audioResumes = 0; this.audioUnlocks = 0;
       this.source = {
@@ -42,7 +43,7 @@ function setup({recoveryDelay} = {}) {
     document:{getElementById:element},
     window:{JSMpeg:{Player}, addEventListener() {}},
     // The library refresh is outside these focused playback tests.
-    fetch:() => new Promise(() => {}), setInterval:callback => { intervals.push(callback); }, setTimeout, clearTimeout, URL, Number,
+    fetch:fetchImpl || (() => new Promise(() => {})), setInterval:callback => { intervals.push(callback); }, setTimeout, clearTimeout, URL, Number,
     __VP_SEEK_RECOVERY_MS: recoveryDelay,
   });
   vm.runInContext(app, context);
@@ -72,6 +73,32 @@ test('network arrival stays buffering until decode, and decoder stalls recover v
   player.options.onVideoDecode();
   assert.equal(status.textContent, 'Playing from Raspberry Pi');
   assert.equal(player.audioResumes, 1);
+});
+
+test('quality switching preserves position, pause, mute, and fullscreen and uses a smaller stream', async () => {
+  const f=setup({fetchImpl:(url)=>String(url).startsWith('/api/library/quality')
+    ? Promise.resolve({ok:true,status:200,text:async()=>JSON.stringify({quality:360,ready:true,maximum:1080})})
+    : new Promise(()=>{})});
+  f.play({id:'video',title:'Test',duration:600,quality:1080,qualities:[360,720,1080]});
+  f.evaluate('currentOffset=123; playback.position=123');
+  f.element('pause').onclick();f.element('mute').onclick();
+  await f.element('fullscreen').onclick();
+  await f.evaluate("switchPlaybackQuality('360')");
+  await new Promise(resolve=>setTimeout(resolve,650));
+  const replacement=f.players.at(-1);
+  assert.match(replacement.url,/seek=123&quality=360/);
+  assert.equal(replacement.paused,true);
+  assert.equal(replacement.volume,0);
+  assert.equal(f.element('exit-fullscreen').hidden,false);
+  assert.equal(f.element('pause').textContent,'Play');
+  assert.equal(f.element('playback-quality').value,'360');
+});
+
+test('data saver chooses a prepared 360p copy instead of the saved HD maximum', () => {
+  const f=setup();
+  f.evaluate("playbackQuality='360'");
+  f.play({id:'video',title:'Test',quality:1080,qualities:[360,540,720,1080]});
+  assert.match(f.players[0].url,/quality=360/);
 });
 test('preparation shows measured processing rate and ETA without reusing stale stage values', () => {
   const f = setup();

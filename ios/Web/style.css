@@ -265,6 +265,10 @@ canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 250
 .timeline input { flex: 1; min-width: 0; height: 32px; margin: 0; accent-color: #8fb0cc; }
 .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 2px 2px; }
 .controls-spacer { flex: 1; }
+.playback-quality-label { display:flex; align-items:center; gap:8px; color:#e3e9ed; font-size:14px; }
+.playback-quality-label select { min-height:48px; max-width:190px; padding:8px 12px; border:1px solid #ffffff30; border-radius:12px; color:#e3e9ed; background:#232c33; font:inherit; }
+.quality-status { color:#c0cbd4; font-size:13px; margin:4px 8px; }
+.quality-status:empty { display:none; }
 .controls button { min-width: 96px; min-height: 52px; padding: 8px 18px; border: 1px solid #ffffff1c; border-radius: 12px; background: #232c33; color: #e3e9ed; font-size: 16px; font-weight: 650; }
 .controls button.primary { min-width: 130px; background: #8fb0cc; color: #10171c; border-color: transparent; }
 .controls button[aria-pressed="true"] { background: #3b4f5e; }

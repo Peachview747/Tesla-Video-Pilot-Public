@@ -165,13 +165,13 @@
               <label class="setting toggle"><span class="setting-label"><strong>Audio boost</strong><small>Gentle 115% volume with a limiter for quiet videos.</small></span><input id="pref-boost" type="checkbox"><span class="switch" aria-hidden="true"></span></label>
               <div class="setting"><div class="setting-label"><strong>Read-ahead buffer</strong><small>More buffer rides through weak cellular coverage.</small></div>
                 <div class="segmented" role="radiogroup" aria-label="Read-ahead buffer" id="buffer-choice"><button type="button" data-buffer="normal" aria-pressed="true">12 s</button><button type="button" data-buffer="large" aria-pressed="false">30 s</button></div></div>
-              <div id="quality-setting" class="setting" hidden><div class="setting-label"><strong>Download quality</strong><small>Applies to new downloads. 1080p uses about twice the data.</small></div>
-                <div class="segmented" role="radiogroup" aria-label="Download quality" id="quality-choice"><button type="button" data-quality="720p" aria-pressed="false">720p</button><button type="button" data-quality="1080p" aria-pressed="false">1080p</button></div></div>
+              <div id="quality-setting" class="setting" hidden><div class="setting-label"><strong>Download quality</strong><small>Maximum for new downloads. Change playback quality in the player to save hotspot data.</small></div>
+                <div class="segmented" role="radiogroup" aria-label="Download quality" id="quality-choice"><button type="button" data-quality="360p" aria-pressed="false">360p</button><button type="button" data-quality="540p" aria-pressed="false">540p</button><button type="button" data-quality="720p" aria-pressed="false">720p</button><button type="button" data-quality="1080p" aria-pressed="false">1080p</button></div></div>
             </article>
 
             <article class="settings-card">
               <h2>Data saver</h2>
-              <label class="setting toggle"><span class="setting-label"><strong>Data saver</strong><small>Smaller thumbnails and slower background checks.</small></span><input id="pref-datasaver" type="checkbox"><span class="switch" aria-hidden="true"></span></label>
+              <label class="setting toggle"><span class="setting-label"><strong>Data saver</strong><small>Defaults playback to 360p, with smaller thumbnails and slower background checks.</small></span><input id="pref-datasaver" type="checkbox"><span class="switch" aria-hidden="true"></span></label>
               <div class="stat-list">
                 <div><span>Status checks</span><strong id="stat-poll">every 2 s</strong></div>
                 <div><span>Thumbnails</span><strong id="stat-thumbs">Standard</strong></div>
@@ -269,10 +269,12 @@
           <button id="pause" class="primary" type="button">Pause</button>
           <button id="forward10" type="button">+10 s</button>
           <span class="controls-spacer"></span>
+          <label class="playback-quality-label">Quality <select id="playback-quality" aria-label="Playback quality"><option value="auto">Default</option><option value="360">360p · Save data</option><option value="540">540p</option><option value="720">720p HD</option><option value="1080">1080p HD</option></select></label>
           <button id="mute" type="button">Mute</button>
           <button id="audio-boost" type="button" aria-pressed="false" title="Enable a gentle 115% audio boost">Audio</button>
           <button id="fullscreen" type="button">Full screen</button>
         </div>
+        <p id="quality-status" class="quality-status" role="status" aria-live="polite"></p>
         <button id="exit-fullscreen" type="button" hidden>Exit full screen</button>
       </div>
     </div>

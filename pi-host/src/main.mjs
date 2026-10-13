@@ -15,8 +15,9 @@ const library = await new Library({
   ytDlp: process.env.YT_DLP || path.resolve(root, "pi-host/.venv/bin/yt-dlp"),
 }).init();
 const http = createVideoPilotServer({ library, webRoot: path.resolve(root, "ios/Web"),
-  decoderPath: path.resolve(root, "app/client/public/jsmpeg.min.js"), port, version: "0.1.39-pi" });
+  decoderPath: path.resolve(root, "app/client/public/jsmpeg.min.js"), port, version: "0.1.40-pi" });
 await http.start();
+library.warmQualities();
 const tunnel = new PiTunnel({ publicURL, secret, localURL: `http://127.0.0.1:${port}` });
 const shutdown = async () => { tunnel.stop(); await http.stop(); process.exit(0); };
 process.on("SIGTERM", shutdown); process.on("SIGINT", shutdown);

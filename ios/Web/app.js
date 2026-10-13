@@ -7,6 +7,8 @@ let playback = null;
 let refreshing = false;
 let seekGeneration = 0;
 let seekChain = Promise.resolve();
+let playbackQuality = 'auto', activeQuality = 0, qualityRequestSeq = 0;
+try { const saved = globalThis.localStorage?.getItem('vp-playback-quality'); if (['auto','360','540','720','1080'].includes(saved)) playbackQuality = saved; } catch {}
 // Tesla browsers can have a large system volume while the WebAudio output is
 // still quiet. Keep a modest, reversible gain boost in the browser rather
 // than changing the source file (which would require re-preparing videos and
@@ -876,7 +878,7 @@ function isUpgradable(video) {
 async function loadServerSettings() {
   try {
     const settings = await api('/api/settings');
-    qualitySetting = typeof settings?.quality === 'string' ? settings.quality : null;
+    qualitySetting = qualityHeight(settings?.quality) ? `${qualityHeight(settings.quality)}p` : null;
   } catch { qualitySetting = null; }
   $('quality-setting').hidden = !qualitySetting;
   syncChoice('data-quality', qualitySetting);
@@ -928,6 +930,62 @@ function playFromLibrary(entry, phonePosition) {
   if (!savedResume(entry) && Number.isFinite(position) && position >= 10 && resumeEnabled()) play(entry, position);
   else play(entry);
 }
+
+function defaultPlaybackQuality(video) {
+  const maximum = qualityHeight(video?.quality) || Number(video?.height) || 0;
+  if (!maximum) return 0;
+  const requested = playbackQuality === 'auto' ? (dataSaver() ? 360 : maximum) : Number(playbackQuality);
+  // New videos always open using an existing copy. Higher quality can be
+  // requested explicitly in the player without replacing a working stream.
+  const available = [...(video.qualities || []), maximum].map(Number).filter(value => value <= requested);
+  return available.length ? Math.max(...available) : maximum;
+}
+function syncPlaybackQuality() {
+  const choice = $('playback-quality'); if (!choice) return;
+  choice.value = playbackQuality;
+  const maximum = qualityHeight(current?.quality) || Number(current?.height) || 0;
+  choice.querySelectorAll?.('option').forEach(option => {
+    const quality = Number(option.value);
+    if (quality) option.textContent = `${quality}p${quality >= 720 ? ' HD' : quality === 360 ? ' · Save data' : ''}${maximum && quality > maximum ? ' (download)' : ''}`;
+  });
+}
+async function switchPlaybackQuality(value) {
+  if (!current || !['auto','360','540','720','1080'].includes(value)) return;
+  const video = current, previous = playbackQuality, request = ++qualityRequestSeq;
+  const quality = value === 'auto' ? (dataSaver() ? 360 : qualityHeight(video.quality)) : Number(value);
+  if (!quality) return;
+  $('quality-status').textContent = `Preparing ${quality}p… Your current video keeps playing.`;
+  try {
+    let status = await api('/api/library/quality', {id:video.id, quality});
+    const deadline = Date.now() + 30 * 60_000;
+    while (!status.ready) {
+      if (request !== qualityRequestSeq || current !== video || $('player-section').hidden) return;
+      if (status.error) throw new Error(status.error);
+      if (Date.now() > deadline) throw new Error('Quality preparation is still running. Try selecting it again shortly.');
+      $('quality-status').textContent = status.requiresDownload
+        ? `Downloading ${quality}p to the Pi… Current quality keeps playing.`
+        : `Preparing ${quality}p on the Pi… Current quality keeps playing.`;
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      status = await api(`/api/library/quality?id=${encodeURIComponent(video.id)}&quality=${quality}`);
+    }
+    if (request !== qualityRequestSeq || current !== video || $('player-section').hidden) return;
+    video.quality = status.maximum;
+    video.qualities = [...new Set([...(video.qualities || []), status.maximum, quality])];
+    playbackQuality = value;
+    try { globalThis.localStorage?.setItem('vp-playback-quality', value); } catch {}
+    syncPlaybackQuality();
+    if (activeQuality !== quality) {
+      activeQuality = quality;
+      requestSeek(currentOffset, {preservePaused:true, preserveFullscreen:true});
+    }
+    $('quality-status').textContent = `${quality}p${quality <= 540 ? ' · Lower hotspot data use' : ''}`;
+  } catch (error) {
+    if (request === qualityRequestSeq && current === video) {
+      playbackQuality = previous; syncPlaybackQuality(); $('quality-status').textContent = error.message;
+    }
+  }
+}
+$('playback-quality').onchange = event => { void switchPlaybackQuality(event.target.value); };
 // Search, feed and channel cards can show the same video; every button for
 // an ID follows the library state for that ID.
 const addingFromSearch = new Set();
@@ -1254,7 +1312,10 @@ function setupSettings() {
   };
   toggle('pref-resume', 'vp-pref-resume', 'on');
   toggle('pref-fullscreen', 'vp-pref-fullscreen', 'on');
-  toggle('pref-datasaver', 'vp-data-saver', 'on', () => { rerenderLibrary(); feedState.loadedAt = 0; });
+  toggle('pref-datasaver', 'vp-data-saver', 'on', enabled => {
+    rerenderLibrary(); feedState.loadedAt = 0;
+    if (current && !$('player-section').hidden && enabled) void switchPlaybackQuality('360');
+  });
   const boost = $('pref-boost');
   if (boost) { boost.checked = audioBoost; boost.onchange = () => { audioBoost = boost.checked; try { globalThis.localStorage?.setItem(audioBoostKey, audioBoost ? 'on' : 'off'); } catch {} applyAudioState(); }; }
   $('lib-retry-failed').onclick = async () => {
@@ -1393,10 +1454,10 @@ function syncCanvasAspect() {
   const height = Number(player?.video?.height || canvas?.height);
   if (width > 0 && height > 0) canvas.style?.setProperty?.('aspect-ratio', `${width} / ${height}`);
 }
-function closePlayer(resumePosition = null) {
+function closePlayer(resumePosition = null, preserveFullscreen = false) {
   if (resumePosition !== null && current) saveResume(current, resumePosition);
   else saveResume();
-  leaveFullscreen();
+  if (!preserveFullscreen) leaveFullscreen();
   const oldPlayback = playback;
   clearRecoveryTimer(oldPlayback);
   playback = null;
@@ -1518,6 +1579,9 @@ function boundDecoderBuffers() {
 }
 function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
   current = video;
+  syncPlaybackQuality();
+  const preferred = playbackQuality === 'auto' ? (dataSaver() ? 360 : qualityHeight(video.quality)) : Number(playbackQuality);
+  if (preferred && preferred < activeQuality) void switchPlaybackQuality(playbackQuality);
   const duration = finiteDuration(video.duration);
   const storedResume = seek === null && resumeEnabled() ? savedResume(video) : 0;
   currentOffset = Math.max(0, Number(seek ?? storedResume) || 0);
@@ -1618,7 +1682,10 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
   $('screen').style?.setProperty?.('aspect-ratio', 'auto');
   updateTimeline(currentOffset, duration);
   try {
-    const query = currentOffset > 0 ? `?seek=${encodeURIComponent(currentOffset)}` : '';
+    const queryParts = [];
+    if (currentOffset > 0) queryParts.push(`seek=${encodeURIComponent(currentOffset)}`);
+    if (activeQuality) queryParts.push(`quality=${activeQuality}`);
+    const query = queryParts.length ? '?' + queryParts.join('&') : '';
     player = new window.JSMpeg.Player(`/api/stream/${encodeURIComponent(video.id)}.ts${query}`, {
       headers:{'x-mk8-player': playbackClient},
       source:JSMpegHttpSource,canvas:$('screen'),autoplay:true,loop:false,disableWebAssembly:true,
@@ -1752,6 +1819,10 @@ function reportHistory(video = current, position = currentOffset, finished = fal
 }
 let playerReturn = null;
 function play(video, seek = null) {
+  ++qualityRequestSeq;
+  activeQuality = defaultPlaybackQuality(video);
+  $('quality-status').textContent = activeQuality ? `${activeQuality}p` : '';
+  // current is assigned by startPlayer; set the control after that as well.
   if ($('player-section').hidden) playerReturn = {tab:currentTab, y:globalThis.scrollY || 0};
   invalidateSeeks();
   lastHistoryAt = Date.now();
@@ -1804,6 +1875,7 @@ $('pause').onclick = () => {
 $('back10').onclick = () => { if (current) requestSeek(Math.max(0, currentOffset - 10)); };
 $('forward10').onclick = () => { if (current) requestSeek(Math.min(current.duration || Infinity, currentOffset + 10)); };
 $('close').onclick = () => {
+  ++qualityRequestSeq;
   invalidateSeeks();
   if (playback && !playback.ended) reportHistory();
   void closePlayer().then(() => {
@@ -1850,11 +1922,12 @@ document.addEventListener?.('fullscreenchange', () => {
   if (full) { fullscreenFallback = false; syncFullscreenControls(true); }
   else if (!fullscreenFallback) syncFullscreenControls(false);
 });
-function requestSeek(offset) {
+function requestSeek(offset, {preservePaused = false, preserveFullscreen = false} = {}) {
   if (!current) return;
   globalThis.clearTimeout?.(seekTimer);
   const target = Math.max(0, Number(offset) || 0);
   const video = current;
+  const paused = preservePaused && playback?.paused;
   const generation = ++seekGeneration;
   $('playback-status').textContent = 'Seeking…';
   reportDiagnostic('playerSeek', {seekTargetSeconds:target, positionSeconds:currentOffset});
@@ -1869,11 +1942,12 @@ function requestSeek(offset) {
       // A newer seek supersedes this one while the previous stream is being
       // cancelled. Do not create a player for an obsolete target.
       if (generation !== seekGeneration || current !== video) return;
-      await closePlayer(target);
+      await closePlayer(target, preserveFullscreen);
       // Short grace so the phone can release the old stream before the new one opens.
       await new Promise(resolve => setTimeout(resolve, 150));
       if (generation !== seekGeneration || current !== video) return;
       startPlayer(video, target);
+      if (paused) { playback.paused = true; player?.pause(); player?.source?.pauseReading(); $('pause').textContent = 'Play'; $('playback-status').textContent = 'Paused'; }
     }).catch(error => {
       if (generation === seekGeneration) $('playback-status').textContent = error?.message || 'Unable to seek.';
     });
