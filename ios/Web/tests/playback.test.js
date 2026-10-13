@@ -66,11 +66,11 @@ test('network arrival stays buffering until decode, and decoder stalls recover v
   player.options.onSourceEstablished?.();
   assert.equal(status.textContent, 'Buffering…');
   player.options.onVideoDecode();
-  assert.equal(status.textContent, 'Playing from your iPhone');
+  assert.equal(status.textContent, 'Playing from Raspberry Pi');
   player.options.onStalled();
   assert.equal(status.textContent, 'Buffering…');
   player.options.onVideoDecode();
-  assert.equal(status.textContent, 'Playing from your iPhone');
+  assert.equal(status.textContent, 'Playing from Raspberry Pi');
   assert.equal(player.audioResumes, 1);
 });
 test('preparation shows measured processing rate and ETA without reusing stale stage values', () => {
@@ -85,7 +85,7 @@ test('preparation shows measured processing rate and ETA without reusing stale s
   assert.equal(f.element('preparation-progress').value, undefined);
   f.preparation({busy:true, preparationStage:'waitingForApp', processingSpeed:2.5,
     preparationSecondsRemaining:90});
-  assert.equal(f.element('preparation-detail').textContent, 'Open Video Pilot on the iPhone to finish processing.');
+  assert.equal(f.element('preparation-detail').textContent, 'Video Pilot on the Pi is waiting to finish processing.');
 });
 test('Pause works before the first frame and callbacks cannot undo it', () => {
   const f = setup(); f.play();
@@ -101,7 +101,7 @@ test('Pause works before the first frame and callbacks cannot undo it', () => {
   assert.equal(player.readingPaused, false);
   assert.equal(status.textContent, 'Buffering…');
   player.options.onVideoDecode();
-  assert.equal(status.textContent, 'Playing from your iPhone');
+  assert.equal(status.textContent, 'Playing from Raspberry Pi');
   assert.equal(player.audioResumes, 2);
   f.element('mute').onclick(); f.element('mute').onclick();
   assert.equal(player.audioResumes, 3, 'Unmute retries audio context activation');
@@ -169,7 +169,7 @@ test('finished playback and replacement players ignore late callbacks', async ()
   first.options.onVideoDecode(); first.options.onSourceError('Old stream failed'); first.options.onEnded();
   assert.equal(status.textContent, 'Buffering…');
   f.players[1].options.onVideoDecode();
-  assert.equal(status.textContent, 'Playing from your iPhone');
+  assert.equal(status.textContent, 'Playing from Raspberry Pi');
   f.close(); first.options.onStalled();
   assert.equal(f.element('player-section').hidden, true);
 });
@@ -232,7 +232,7 @@ test('HTTP 429 from a busy relay is retried with backoff instead of failing play
   const f = setup(); f.play({id:'video', title:'Test video', duration:100});
   const status = f.element('playback-status');
   f.players[0].options.onSourceError('Video stream failed (HTTP 429).');
-  assert.equal(status.textContent, 'iPhone is busy. Retrying…');
+  assert.equal(status.textContent, 'Pi is busy. Retrying…');
   await new Promise(resolve => setTimeout(resolve, 500));
   assert.equal(f.players.length, 2, 'the same target is reopened after the first backoff');
   assert.equal(f.players[0].destroyed, true);

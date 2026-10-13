@@ -291,7 +291,7 @@ export class JSMpegHttpSource {
       if (!this.controller.signal.aborted) {
         if (!this.established) throw new Error('The server returned an empty video stream.');
         if (Number.isSafeInteger(expected) && expected > 0 && received !== expected)
-          throw new Error('Video stream interrupted. Reconnect the iPhone and restart playback.');
+          throw new Error('Video stream interrupted. Reconnect the Pi and restart playback.');
         this.completed = true; this.progress = 1;
         reportDiagnostic('sourceCompleted', {receivedBytes:received, expectedBytes:expected,
           elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - startedAt)});

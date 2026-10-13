@@ -110,7 +110,7 @@ async function api(path, body, timeout = 12000) {
     if (!response) reportDiagnostic('apiError', {responseStatus:0,
       elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - started),
       error:String(error?.message || 'network-failure')});
-    if (!response) throw new Error('The iPhone did not respond. Keep Video Pilot open on the iPhone.');
+    if (!response) throw new Error('The Raspberry Pi did not respond. Make sure Video Pilot is running on the Pi.');
     throw error;
   }
 }
@@ -266,7 +266,7 @@ function formatRelease(video) {
   try { return new Date(time).toLocaleDateString('en-US', {year:'numeric', month:'short', day:'numeric'}); }
   catch { return String(video.publishedAt).slice(0, 10); }
 }
-// Library order for the Tesla's Sort menu. The iPhone already lists videos
+// Library order for the Tesla's Sort menu. The Pi already lists videos
 // newest-added first; videos without a release date always sort last.
 function sortLibrary(videos, mode) {
   const byRelease = direction => (a, b) => {
@@ -487,7 +487,7 @@ function renderLibrary(videos, preparingID) {
   const filtered = query ? videos.filter(video => `${video.title} ${video.channel || ''}`.toLowerCase().includes(query)) : videos;
   const library = $('library'); library.replaceChildren();
   library.className = libraryView === 'channels' && !query ? 'channel-grid' : 'video-grid';
-  if (!videos.length) { library.append(messageCard('Your library is empty', 'Search on Home and tap Add to library. Videos you add download to the iPhone and play here.', {label:'Go to Home', run:() => goTo('home-tab')})); return; }
+  if (!videos.length) { library.append(messageCard('Your library is empty', 'Search on Home and tap Add to library. Videos you add download to the Pi and play here.', {label:'Go to Home', run:() => goTo('home-tab')})); return; }
   if (!filtered.length) { library.append(messageCard('No matches', `Nothing in your library matches “${libraryFilter}”.`)); return; }
   if (libraryView === 'all' || query) {
     let group = null;
@@ -725,7 +725,7 @@ function renderQueue(videos, activeID = '') {
   queueSignature = signature;
   $('queue-summary').textContent = count ? `${count} video${count === 1 ? '' : 's'} downloading or waiting` : 'Nothing downloading right now.';
   $('queue-list').replaceChildren(...(count ? entries.map(queueRow)
-    : [messageCard('All caught up', 'Videos you add are downloaded and converted on the iPhone, then appear in your library.')]));
+    : [messageCard('All caught up', 'Videos you add are downloaded and converted on the Pi, then appear in your library.')]));
   $('failed-panel').hidden = !failed.length;
   $('failed-list').replaceChildren(...failed.map((video, index) => {
     const row = queueRow({id:video.id, title:video.title, youtubeID:video.youtubeID, active:false, progress:null,
@@ -787,7 +787,7 @@ async function refresh(force = false) {
     updatePreparation(status, videos);
   } catch (error) {
     setConnection('offline', 'Offline');
-    refreshError = error.message || 'Open Video Pilot on the iPhone and start hosting.';
+    refreshError = error.message || 'Make sure Video Pilot is running on the Pi.';
     notice(refreshError);
   } finally {
     refreshing = false;
@@ -821,7 +821,7 @@ function updatePreparation(status, videos) {
     $('preparation-progress').removeAttribute('value'); $('preparation-percent').textContent = '';
   }
   let detail = 'It appears in your library when it is ready.';
-  if (status.preparationStage === 'waitingForApp') detail = 'Open Video Pilot on the iPhone to finish processing.';
+  if (status.preparationStage === 'waitingForApp') detail = 'Video Pilot on the Pi is waiting to finish processing.';
   if (status.preparationStage === 'processing') {
     const speed = status.processingSpeed, remaining = status.preparationSecondsRemaining;
     detail = typeof speed === 'number' && Number.isFinite(speed) && speed > 0
@@ -845,7 +845,7 @@ async function queueVideo(url, extra = {}) {
     if (extra.channelId) body.channelId = extra.channelId;
     if (extra.channel) body.channel = extra.channel;
     await api('/api/youtube', body); notice('');
-    toast('Added. Your iPhone is downloading it; it appears in the library when ready.');
+    toast('Added. Your Pi is downloading it; it appears in the library when ready.');
     await refresh(true); return true;
   } catch (error) { notice(error.message); return false; }
 }
@@ -859,7 +859,7 @@ async function removeVideo(id) {
 async function retryVideo(id) {
   try {
     await api('/api/library/retry', {id}); notice('');
-    toast('Retrying on your iPhone.');
+    toast('Retrying on the Pi.');
     await refresh(true); return true;
   } catch (error) { notice(error.message); return false; }
 }
@@ -943,7 +943,7 @@ function styleResultButton(button, id) {
     button.textContent = resume ? `Resume · ${formatTime(resume)}` : (isWatched(entry) ? 'Watch again' : 'Play');
     button.onclick = () => playFromLibrary(entry, context.position); return;
   }
-  if (entry?.state === 'preparing') { button.textContent = 'Downloading to iPhone…'; button.className = 'card-action quiet'; button.disabled = true; return; }
+  if (entry?.state === 'preparing') { button.textContent = 'Downloading to Pi…'; button.className = 'card-action quiet'; button.disabled = true; return; }
   if (queuedFromSearch.has(id)) { button.textContent = 'Added ✓'; button.className = 'card-action quiet'; button.disabled = true; return; }
   if (entry && (entry.state === 'failed' || entry.state === 'paused')) {
     button.textContent = 'Retry download';
@@ -1264,7 +1264,7 @@ function setupSettings() {
   $('lib-remove-watched').onclick = async () => {
     const watched = (lastLibrary?.videos || []).filter(video => video.state === 'ready' && isWatched(video));
     if (!watched.length) { $('lib-action-status').textContent = 'No watched videos to remove.'; return; }
-    if (globalThis.confirm && !globalThis.confirm(`Remove ${watched.length} watched video${watched.length === 1 ? '' : 's'} from the iPhone?`)) return;
+    if (globalThis.confirm && !globalThis.confirm(`Remove ${watched.length} watched video${watched.length === 1 ? '' : 's'} from the Pi?`)) return;
     let removed = 0;
     for (const video of watched) { try { await api('/api/library/remove', {id:video.id}); removed++; } catch {} }
     $('lib-action-status').textContent = `Removed ${removed} watched video${removed === 1 ? '' : 's'}.`;
@@ -1276,7 +1276,7 @@ function setupSettings() {
       await api('/api/history/clear', {});
       $('lib-action-status').textContent = 'Watch history cleared.';
       feedState.rows = null; feedState.loadedAt = 0;
-    } catch (error) { $('lib-action-status').textContent = error.status === 404 ? 'This iPhone build has no watch history yet.' : error.message; }
+    } catch (error) { $('lib-action-status').textContent = error.status === 404 ? 'This Pi host has no watch history yet.' : error.message; }
   };
 }
 const mbps = value => { const n = Number(value); return Number.isFinite(n) ? `${n.toFixed(n >= 10 ? 0 : 1)} Mb/s` : '—'; };
@@ -1556,7 +1556,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
     });
     return true;
   };
-  // The relay answers HTTP 429 ("iPhone is busy") while it is still releasing
+  // The relay answers HTTP 429 ("Pi is busy") while it is still releasing
   // the previous stream. That is transient after a seek, so retry the same
   // target with exponential backoff instead of treating it as fatal.
   const retryBusy = text => {
@@ -1569,7 +1569,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
     const generation = ++seekGeneration;
     session.failed = true; session.paused = true;
     reportDiagnostic('playerBusyRetry', {seekTargetSeconds:target, attempt, delayMs:delay});
-    $('playback-status').textContent = 'iPhone is busy. Retrying…';
+    $('playback-status').textContent = 'Pi is busy. Retrying…';
     seekChain = seekChain.then(async () => {
       if (generation !== seekGeneration || current !== videoAtError) return;
       await closePlayer(target);
@@ -1578,7 +1578,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
       startPlayer(videoAtError, target, session.recoveryAttempt, attempt);
     }).catch(error => {
       if (generation === seekGeneration) {
-        $('playback-status').textContent = error?.message || 'iPhone is busy.';
+        $('playback-status').textContent = error?.message || 'Pi is busy.';
         $('pause').textContent = 'Retry';
       }
     });
@@ -1688,7 +1688,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
           session.stallTimer?.unref?.();
         }
         reportDiagnostic('playerDecode', {positionSeconds:session.position || 0});
-        if (active()) $('playback-status').textContent = 'Playing from your iPhone';
+        if (active()) $('playback-status').textContent = 'Playing from Raspberry Pi';
       },
       onSourceError:message => {
         if (playback !== session) return;
@@ -1790,7 +1790,7 @@ $('pause').onclick = () => {
     if (!playback?.failed && !playback?.ended) $('playback-status').textContent = 'Paused';
     reportHistory();
   } else {
-    // The iPhone releases a relay stream nobody has read for 45 s, so after a
+    // The Pi releases a relay stream nobody has read for 45 s, so after a
     // long pause reopen at the same position instead of resuming a dead stream.
     if (current && playback?.pausedAt && Date.now() - playback.pausedAt > 30000) {
       $('pause').textContent = 'Pause'; requestSeek(currentOffset); return;
@@ -1894,7 +1894,7 @@ function browserDiagnosticsText() {
 async function combinedDiagnosticsText() {
   await flushDiagnostics();
   const {response, body:text} = await timedFetch('/api/diagnostics/export', {credentials:'same-origin', cache:'no-store'}, 5000, r => r.text());
-  if (!response.ok) throw new Error('The iPhone has no combined log yet.');
+  if (!response.ok) throw new Error('The Pi has no combined log yet.');
   // Include every locally retained browser event, including batches awaiting
   // delivery. De-duplicate ACKed entries already present in the phone journal.
   const merged = [], ids = new Set();
@@ -1923,7 +1923,7 @@ if ($('export-diagnostics')) $('export-diagnostics').onclick = async () => {
     const text = await combinedDiagnosticsText();
     downloadDiagnosticsText(text, `VideoPilot-diagnostics-${new Date().toISOString().replace(/:/g,'-')}.jsonl`);
     showDiagnosticsText(text);
-    status.textContent = 'Combined web + iPhone diagnostics downloaded.';
+    status.textContent = 'Combined web + Pi diagnostics downloaded.';
   } catch {
     // If the tunnel is down, still make the locally retained browser trace
     // available instead of losing the evidence that explains the outage.
@@ -1933,7 +1933,7 @@ if ($('export-diagnostics')) $('export-diagnostics').onclick = async () => {
         `VideoPilot-browser-diagnostics-${new Date().toISOString().replace(/:/g,'-')}.jsonl`);
       showDiagnosticsText(text);
       status.textContent = 'Tunnel unavailable; browser-only diagnostics downloaded. Reconnect and export again for the combined log.';
-    } else status.textContent = 'Reconnect the iPhone host, then try the export again.';
+    } else status.textContent = 'Reconnect the Pi host, then try the export again.';
   }
 };
 if ($('copy-diagnostics')) $('copy-diagnostics').onclick = async () => {
@@ -1942,7 +1942,7 @@ if ($('copy-diagnostics')) $('copy-diagnostics').onclick = async () => {
   let text = '';
   try { text = await combinedDiagnosticsText(); }
   catch { text = browserDiagnosticsText(); }
-  if (!text) { status.textContent = 'Reconnect the iPhone host, then try the export again.'; return; }
+  if (!text) { status.textContent = 'Reconnect the Pi host, then try the export again.'; return; }
   showDiagnosticsText(text);
   try {
     if (globalThis.navigator?.clipboard?.writeText) await globalThis.navigator.clipboard.writeText(text);

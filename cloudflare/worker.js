@@ -14,14 +14,13 @@ export default {
 
     if (url.pathname.startsWith("/__iphone/")) {
       if (!["/__iphone/connect", "/__iphone/status"].includes(url.pathname)) return new Response("Not found", { status: 404 });
-      if (!env.PHONE_TUNNEL) return Response.json({ error: "Deploy the iPhone Worker update" }, { status: 503 });
+      if (!env.PHONE_TUNNEL) return Response.json({ error: "Deploy the Video Pilot Worker update" }, { status: 503 });
       const relay = env.PHONE_TUNNEL.get(env.PHONE_TUNNEL.idFromName("mk8-iphone"));
       return relay.fetch(req);
     }
 
     // The Raspberry Pi uses the existing authenticated host tunnel. Internal
-    // endpoint names remain stable so an iPhone build can still be used during
-    // migration without changing the public URL.
+    // endpoint names remain stable for protocol compatibility.
     if (env.PHONE_TUNNEL) {
       const relay = env.PHONE_TUNNEL.get(env.PHONE_TUNNEL.idFromName("mk8-iphone"));
       const response = await relay.fetch(req.clone());
