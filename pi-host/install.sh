@@ -21,8 +21,11 @@ npm ci --omit=dev --no-audit --no-fund
 chown -R root:root /opt/video-pilot
 install -m 0755 video-pilot-configure /usr/local/sbin/video-pilot-configure
 install -m 0644 video-pilot.service /etc/systemd/system/video-pilot.service
+install -m 0755 pi-hotspot-watch /usr/local/sbin/pi-hotspot-watch
+install -m 0644 pi-hotspot-watch.service pi-hotspot-watch.timer /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable video-pilot.service
+systemctl enable --now pi-hotspot-watch.timer
 if [ ! -f /etc/video-pilot.env ]; then
   echo "Installed. Finish once with: sudo video-pilot-configure"
 else

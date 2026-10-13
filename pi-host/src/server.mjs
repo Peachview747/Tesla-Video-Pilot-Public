@@ -18,14 +18,14 @@ async function bodyJSON(req) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
 }
 
-export function createVideoPilotServer({ library, webRoot, port = 5001, host = "127.0.0.1", version = "Pi" }) {
+export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5001, host = "127.0.0.1", version = "Pi" }) {
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
       if (!["GET", "POST"].includes(req.method)) return send(res, 405, { error: "Method not allowed." });
       if (ASSETS.has(url.pathname) && req.method === "GET") {
         const name = url.pathname === "/" ? "index.html" : path.basename(url.pathname);
-        const file = path.join(webRoot, name);
+        const file = name === "jsmpeg.min.js" && decoderPath ? decoderPath : path.join(webRoot, name);
         const data = await readFile(file);
         return send(res, 200, data, TYPES[path.extname(file)] || "application/octet-stream", {
           "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https://i.ytimg.com https://yt3.ggpht.com https://yt3.googleusercontent.com; connect-src 'self'; object-src 'none'; frame-ancestors 'none'",

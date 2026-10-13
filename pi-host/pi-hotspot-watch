@@ -1,0 +1,16 @@
+#!/bin/sh
+# NetworkManager handles ordinary autoconnection. This bounded retry also
+# searches for the configured car hotspot when booted out of Wi-Fi range.
+set -eu
+profile=car-hotspot
+interface=wlan0
+[ "$(nmcli -g WIFI general)" = enabled ] || exit 0
+state=$(nmcli -g GENERAL.STATE device show "$interface")
+case "$state" in
+  '30 '*|'120 '*) ;;
+  *) exit 0 ;;
+esac
+ssid=$(nmcli -g 802-11-wireless.ssid connection show "$profile" 2>/dev/null) || exit 0
+[ -n "$ssid" ] || exit 0
+nmcli --wait 5 device wifi rescan ifname "$interface" ssid "$ssid" || true
+nmcli --wait 20 connection up id "$profile" ifname "$interface"

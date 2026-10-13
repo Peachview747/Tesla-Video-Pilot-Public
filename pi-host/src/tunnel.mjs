@@ -9,11 +9,12 @@ function uuidBytes(id) { return Buffer.from(id.replaceAll("-", ""), "hex"); }
 function websocketURL(publicURL) { const url = new URL("/__iphone/connect", publicURL); url.protocol = "wss:"; return url; }
 
 export class PiTunnel {
-  constructor({ publicURL, secret, localURL, WebSocketImpl = WebSocket, fetchImpl = fetch, logger = console }) {
+  constructor({ publicURL, secret, localURL, WebSocketImpl = WebSocket, fetchImpl = fetch, logger = console, connectTimeoutMs = 15_000 }) {
     this.publicURL = publicURL; this.secret = secret; this.localURL = localURL;
     this.WebSocketImpl = WebSocketImpl; this.fetch = fetchImpl; this.logger = logger;
     this.socket = null; this.peers = new Map(); this.stopped = false;
     this.lastPong = 0; this.heartbeat = null;
+    this.connectTimeoutMs = connectTimeoutMs;
   }
 
   async run() {
@@ -26,7 +27,7 @@ export class PiTunnel {
   }
 
   async check() {
-    const response = await this.fetch(new URL("/__iphone/status", this.publicURL), { headers: { "x-secret": this.secret } });
+    const response = await this.fetch(new URL("/__iphone/status", this.publicURL), { headers: { "x-secret": this.secret }, signal: AbortSignal.timeout(this.connectTimeoutMs) });
     if (response.status === 401) throw new Error("Cloudflare rejected VIDEO_PILOT_SECRET");
     if (!response.ok) throw new Error(`Cloudflare status check returned ${response.status}`);
     const body = await response.json();
@@ -36,7 +37,7 @@ export class PiTunnel {
   async connect() {
     await this.check();
     return new Promise((resolve, reject) => {
-      const socket = new this.WebSocketImpl(websocketURL(this.publicURL), { headers: { "x-secret": this.secret, "x-mk8-relay-window": String(MAX_WINDOW) } });
+      const socket = new this.WebSocketImpl(websocketURL(this.publicURL), { headers: { "x-secret": this.secret, "x-mk8-relay-window": String(MAX_WINDOW) }, handshakeTimeout: this.connectTimeoutMs });
       this.socket = socket;
       let opened = false;
       socket.on("open", () => {
@@ -126,6 +127,6 @@ export class PiTunnel {
   sendJSON(value) { if (this.socket?.readyState === this.WebSocketImpl.OPEN) this.socket.send(JSON.stringify(value)); }
   cancel(id, abort = true) { const peer = this.peers.get(id); if (!peer) return; this.peers.delete(id); if (abort) peer.controller.abort(); peer.reader?.cancel().catch(() => {}); }
   cancelAll() { for (const id of [...this.peers.keys()]) this.cancel(id); }
-  closeWithError(reason) { this.logger.error(reason); this.socket?.close(1002, String(reason).slice(0, 120)); }
+  closeWithError(reason) { this.logger.error(reason); this.socket?.terminate(); }
   stop() { this.stopped = true; clearInterval(this.heartbeat); this.heartbeat = null; this.cancelAll(); this.socket?.close(1000, "stopping"); }
 }

@@ -10,6 +10,16 @@ class Socket extends EventEmitter {
   close() { this.readyState = 3; this.emit("close"); }
 }
 
+test("a stalled cloud check times out so offline startup can retry", async () => {
+  const tunnel = new PiTunnel({ publicURL: "https://tv.example", secret: "test", connectTimeoutMs: 10,
+    fetchImpl: async (url, {signal}) => new Promise((resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), {once:true});
+    }) });
+  const keepAlive = setTimeout(() => {}, 1000);
+  try { await assert.rejects(tunnel.check(), {name:"TimeoutError"}); }
+  finally { clearTimeout(keepAlive); }
+});
+
 test("answers relay requests in bounded binary frames", async () => {
   const tunnel = new PiTunnel({ publicURL: "https://tv.example", secret: "test", localURL: "http://127.0.0.1:1",
     WebSocketImpl: Socket, fetchImpl: async () => new Response(Buffer.alloc(200000, 5), { headers: { "content-length": "200000", "content-type": "video/mp2t" } }), logger: { log() {}, error() {} } });

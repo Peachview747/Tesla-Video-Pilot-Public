@@ -3,7 +3,30 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 import { createVideoPilotServer } from "../src/server.mjs";
+
+test("the installed web page serves all scripts including a working video decoder", async t => {
+  const root = fileURLToPath(new URL("../../", import.meta.url));
+  const host = createVideoPilotServer({ library: {}, webRoot: path.join(root, "ios/Web"),
+    decoderPath: path.join(root, "app/client/public/jsmpeg.min.js"), port: 0 });
+  await host.start(); t.after(() => host.stop());
+  const origin = `http://127.0.0.1:${host.server.address().port}`;
+  const html = await (await fetch(origin)).text();
+  const scripts = [...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map(match => match[1]);
+  assert.ok(scripts.includes("/jsmpeg.min.js"));
+  for (const script of [...scripts, "/http-source.js", "/diagnostics.js"]) {
+    const response = await fetch(origin + script);
+    assert.equal(response.status, 200, script);
+    assert.match(response.headers.get("content-type"), /javascript/);
+    if (script === "/jsmpeg.min.js") {
+      const context = vm.createContext({ window: {}, document: {readyState:"loading", addEventListener() {}} });
+      vm.runInContext(await response.text(), context);
+      assert.equal(typeof context.JSMpeg.Player, "function");
+    }
+  }
+});
 
 test("serves the Tesla UI, library API, and indexed MPEG-TS seek", async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), "vp-server-"));

@@ -1,7 +1,8 @@
 [Unit]
 Description=Video Pilot Raspberry Pi host
-After=network-online.target
-Wants=network-online.target
+After=NetworkManager.service
+Wants=NetworkManager.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
