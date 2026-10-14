@@ -229,6 +229,16 @@ test('seeking and reconnecting keep full screen; only Exit leaves it', async () 
   assert.equal(f.element('player-shell').classList.contains('vp-fullscreen'), false);
   f.close();
 });
+test('audio plays through a context at the 44.1 kHz source rate', () => {
+  const f = setup();
+  f.evaluate(`globalThis.made = []; globalThis.AudioContext = class { constructor(options) { made.push(options); this.sampleRate = options.sampleRate; } };
+    window.JSMpeg.AudioOutput = {WebAudio:{CachedContext:null}}`);
+  f.evaluate('prepareAudioContext()');
+  assert.equal(f.evaluate('JSON.stringify(made)'), '[{"sampleRate":44100}]');
+  assert.equal(f.evaluate('window.JSMpeg.AudioOutput.WebAudio.CachedContext.sampleRate'), 44100);
+  f.evaluate('prepareAudioContext()');
+  assert.equal(f.evaluate('made.length'), 1, 'an existing context is reused');
+});
 test('seeking keeps the user mute preference across decoder replacement', async () => {
   const f = setup(); f.play({id:'video', title:'Test', duration:100});
   f.element('mute').onclick();

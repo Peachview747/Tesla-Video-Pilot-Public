@@ -1595,6 +1595,8 @@ function renderSettings() {
   $('yt-signin').textContent = status.youtubeSignedIn ? 'Switch account' : 'Sign in to YouTube';
   $('settings-search').textContent = status.youtubeSearch ? 'Enabled' : 'Unavailable';
   $('settings-screen').textContent = `${globalThis.innerWidth || '—'} × ${globalThis.innerHeight || '—'}`;
+  const audioRate = Number(globalThis.window?.JSMpeg?.AudioOutput?.WebAudio?.CachedContext?.sampleRate);
+  $('settings-audio').textContent = audioRate ? `${(audioRate / 1000).toFixed(1)} kHz` : 'Starts with the first video';
   // Named builds read "0.1.40 · Pi build"; numbered ones keep "(build 12)".
   const named = /^[a-z]+$/i.test(String(status.build || ''));
   const version = !status.version ? '—' : named
@@ -1844,6 +1846,21 @@ function boundDecoderBuffers() {
     audioBufferBytes:Number(player?.audio?.bits?.bytes?.length) || 0
   });
 }
+// Video Pilot's audio is 44.1 kHz MP2, delivered in ~26 ms chunks. In a
+// context at the car's native rate (usually 48 kHz) each chunk is resampled on
+// its own and its start lands between samples, so every boundary clicks: a
+// steady crackle while playing. JSMpeg reuses a cached context, so give it one
+// at the source rate; the browser then converts the whole stream smoothly.
+const SOURCE_SAMPLE_RATE = 44100;
+function prepareAudioContext() {
+  const WebAudio = globalThis.window?.JSMpeg?.AudioOutput?.WebAudio;
+  const Context = globalThis.AudioContext || globalThis.webkitAudioContext;
+  if (!WebAudio || WebAudio.CachedContext || !Context) return;
+  try {
+    WebAudio.CachedContext = new Context({sampleRate:SOURCE_SAMPLE_RATE});
+    reportDiagnostic('audioContext', {sampleRate:WebAudio.CachedContext.sampleRate});
+  } catch { /* An older browser without the option keeps JSMpeg's default context. */ }
+}
 function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
   current = video;
   syncPlaybackQuality();
@@ -1953,6 +1970,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
     if (currentOffset > 0) queryParts.push(`seek=${encodeURIComponent(currentOffset)}`);
     if (activeQuality) queryParts.push(`quality=${activeQuality}`);
     const query = queryParts.length ? '?' + queryParts.join('&') : '';
+    prepareAudioContext();
     player = new window.JSMpeg.Player(`/api/stream/${encodeURIComponent(video.id)}.ts${query}`, {
       headers:{'x-mk8-player': playbackClient},
       source:JSMpegHttpSource,canvas:$('screen'),autoplay:true,loop:false,disableWebAssembly:true,
