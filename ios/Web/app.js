@@ -1401,6 +1401,38 @@ function showSuggestions(items) {
   }));
   $('suggestions').hidden = !items.length;
 }
+// Searching a creator's name shows their channel first, like YouTube: the top
+// channel result when it plainly matches the words typed, plus similar ones.
+const squash = text => String(text || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+function channelMatches(name, query) {
+  const a = squash(name), b = squash(query);
+  return a.length >= 3 && b.length >= 3 && (a.includes(b) || b.includes(a));
+}
+function renderSearchChannels(channels, query) {
+  const box = $('search-channels');
+  const list = Array.isArray(channels) ? channels.filter(channel => channel?.id && channel?.name) : [];
+  if (!list.length || !channelMatches(list[0].name, query)) { box.hidden = true; box.replaceChildren(); return; }
+  const [top, ...similar] = list;
+  const card = element('button', 'search-channel-top'); card.type = 'button'; card.title = `Open ${top.name}`;
+  const text = element('span', 'search-channel-text');
+  text.append(element('strong', '', top.name));
+  if (top.subscribers) text.append(element('small', '', top.subscribers));
+  card.append(avatarNode(top.name, top.avatar), text, element('span', 'pill', 'View channel'));
+  card.onclick = () => openChannel({id:top.id, name:top.name});
+  const nodes = [card];
+  if (similar.length) {
+    const row = element('div', 'search-channel-similar');
+    row.append(element('span', 'chip-label', 'Similar channels'), ...similar.slice(0, 3).map(channel => {
+      const button = element('button', 'subs-channel'); button.type = 'button'; button.title = `Open ${channel.name}`;
+      button.append(avatarNode(channel.name, channel.avatar), element('strong', '', channel.name));
+      if (channel.subscribers) button.append(element('small', '', channel.subscribers.replace(' subscribers', '')));
+      button.onclick = () => openChannel({id:channel.id, name:channel.name});
+      return button;
+    }));
+    nodes.push(row);
+  }
+  box.replaceChildren(...nodes); box.hidden = false;
+}
 async function runSearch(rawQuery, append = false) {
   const query = String(rawQuery || '').trim();
   if (!query) return;
@@ -1420,6 +1452,7 @@ async function runSearch(rawQuery, append = false) {
     rememberSearch(query);
     $('query').blur?.();
     $('results').replaceChildren(...Array.from({length:8}, () => element('div', 'card skeleton')));
+    $('search-channels').hidden = true; $('search-channels').replaceChildren();
     $('search-summary').textContent = `Searching for “${query}”…`;
     window.scrollTo?.({top:0});
   }
@@ -1435,7 +1468,7 @@ async function runSearch(rawQuery, append = false) {
     const known = new Set(searchState.results.map(video => video.id));
     const fresh = results.filter(video => video?.id && !known.has(video.id));
     searchState.results.push(...fresh);
-    if (!append) $('results').replaceChildren();
+    if (!append) { $('results').replaceChildren(); renderSearchChannels(page?.channels, searchState.query); }
     $('results').append(...fresh.map(video => youtubeCard(video)));
     const filterLabel = document.querySelector?.(`[data-filter="${searchState.filter}"]`)?.textContent;
     $('search-summary').textContent = searchState.results.length

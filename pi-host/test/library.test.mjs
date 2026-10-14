@@ -135,6 +135,20 @@ test("upgrades stop at the source quality and downgrades keep the smaller copy",
   assert.equal(await library.downgrade(id, 720), false, "nothing to do at the target");
 });
 
+test("channel search uses YouTube's channel filter and keeps its order", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-chsearch-"));
+  const calls = [];
+  const runner = async (command, args) => { calls.push(args.at(-1)); return { stdout: JSON.stringify({ entries: [
+    { id: "UCtMVHI3AJD4Qk4hcbZnI9ZQ", title: "SomeOrdinaryGamers", channel_follower_count: 3820000, thumbnails: [{ url: "//yt3.googleusercontent.com/ytc/a=s88" }] },
+    { id: "UC6YomPM3PH7pvwM8QghMqHw", title: "SomeOrdinaryArchives" }, { id: "not-a-channel", title: "x" }] }) }; };
+  const library = await new Library({ dataDir, runner }).init();
+  const channels = await library.searchChannels("some ordinary gamers");
+  assert.deepEqual(channels.map(channel => channel.name), ["SomeOrdinaryGamers", "SomeOrdinaryArchives"]);
+  assert.equal(channels[0].avatar, "https://yt3.googleusercontent.com/ytc/a=s88");
+  assert.match(calls[0], /search_query=some\+ordinary\+gamers&sp=EgIQAg%3D%3D$/);
+  assert.deepEqual(await library.searchChannels(""), []);
+});
+
 test("turns interrupted preparation into a retryable item", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-restart-"));
   await writeFile(path.join(dataDir, "library.json"), JSON.stringify([{ id: "00000000-0000-4000-8000-000000000000", state: "preparing" }]));

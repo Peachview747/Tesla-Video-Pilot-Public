@@ -117,15 +117,7 @@ export class Library {
     if (!refresh && this.channelListCache && Date.now() - this.channelListCache.at < 30 * 60_000) return this.channelListCache.value;
     const result = await this.runner(this.ytDlp, [...this.ytArgs(), "--flat-playlist", "--playlist-end", "5000", "--dump-single-json",
       "https://www.youtube.com/feed/channels"]);
-    const channels = (JSON.parse(result.stdout).entries || [])
-      .filter(entry => /^UC[A-Za-z0-9_-]{20,30}$/.test(entry.channel_id || entry.id || ""))
-      .map(entry => {
-        const followers = Number(entry.channel_follower_count);
-        const thumb = (entry.thumbnails || []).at(-1)?.url || "";
-        return { id: entry.channel_id || entry.id, name: entry.title || entry.channel || "YouTube channel",
-          avatar: /^(https:)?\/\/yt3\.(googleusercontent|ggpht)\.com\//.test(thumb) ? thumb.replace(/^\/\//, "https://") : null,
-          subscribers: followers > 0 ? `${compactCount(followers)} subscribers` : null };
-      })
+    const channels = mapChannels(JSON.parse(result.stdout).entries)
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     const value = { signedIn: true, channels };
     this.channelListCache = { at: Date.now(), value };
@@ -346,6 +338,17 @@ export class Library {
     return mapEntries(object.entries);
   }
 
+  // Channels for a search, in YouTube's relevance order (closest match first),
+  // so searching a creator's name can lead straight to their channel.
+  async searchChannels(query, limit = 4) {
+    const text = String(query || "").trim();
+    if (!text || text.length > 200) return [];
+    const params = new URLSearchParams({ search_query: text, sp: "EgIQAg==" }); // YouTube's "Channels" filter
+    const result = await this.runner(this.ytDlp, [...this.ytArgs(), "--flat-playlist", "--playlist-end", String(limit), "--dump-single-json",
+      `https://www.youtube.com/results?${params}`]);
+    return mapChannels(JSON.parse(result.stdout).entries).slice(0, limit);
+  }
+
   // YouTube's own autocomplete, so the car never needs to paste a link.
   async suggest(query) {
     const text = String(query || "").trim().toLowerCase();
@@ -522,6 +525,16 @@ function formatDuration(value) {
   const parts = [Math.floor(seconds / 3600), Math.floor(seconds % 3600 / 60), seconds % 60];
   if (parts[0] === 0) parts.shift();
   return parts.map((part, index) => index ? String(part).padStart(2, "0") : String(part)).join(":");
+}
+
+function mapChannels(entries = []) {
+  return (entries || []).filter(entry => /^UC[A-Za-z0-9_-]{20,30}$/.test(entry.channel_id || entry.id || "")).map(entry => {
+    const followers = Number(entry.channel_follower_count);
+    const thumb = (entry.thumbnails || []).at(-1)?.url || "";
+    return { id: entry.channel_id || entry.id, name: entry.title || entry.channel || "YouTube channel",
+      avatar: /^(https:)?\/\/yt3\.(googleusercontent|ggpht)\.com\//.test(thumb) ? thumb.replace(/^\/\//, "https://") : null,
+      subscribers: followers > 0 ? `${compactCount(followers)} subscribers` : null };
+  });
 }
 
 // yt-dlp lists a channel's banner and avatar together; the avatar is the

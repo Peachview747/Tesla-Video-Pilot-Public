@@ -113,7 +113,12 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
       if (url.pathname === "/api/subscriptions" && req.method === "GET")
         return send(res, 200, await library.subscriptions({ refresh: url.searchParams.get("refresh") === "1" }));
       if (url.pathname === "/api/suggest" && req.method === "GET") return send(res, 200, await library.suggest(url.searchParams.get("q")).catch(() => []));
-      if (url.pathname === "/api/search" && req.method === "GET") return send(res, 200, { results: await library.search(url.searchParams.get("q")), continuation: null });
+      if (url.pathname === "/api/search" && req.method === "GET") {
+        const query = url.searchParams.get("q");
+        const [results, channels] = await Promise.all([library.search(query),
+          library.searchChannels?.(query).catch(() => []) ?? Promise.resolve([])]);
+        return send(res, 200, { results, channels, continuation: null });
+      }
       if (url.pathname === "/api/explore" && req.method === "GET") return send(res, 200, await library.search("trending videos", 20));
       if (url.pathname === "/api/foryou" && req.method === "GET") {
         // Signed in: the account's own YouTube home feed plus new uploads from

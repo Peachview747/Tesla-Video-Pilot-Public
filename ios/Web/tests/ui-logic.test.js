@@ -119,6 +119,13 @@ test('Continue watching can be dismissed as watched or cleared', () => {
   const history = f.requests.filter(request => String(request.url).endsWith('/api/history')).map(request => request.body);
   assert.deepEqual(history, [{id, position:1023, duration:1023, finished:true}, {id, position:0}]);
 });
+test('search shows a channel only when it plainly matches the words typed', () => {
+  const f = setup();
+  assert.equal(f.evaluate(`channelMatches('SomeOrdinaryGamers', 'some ordinary gamers')`), true);
+  assert.equal(f.evaluate(`channelMatches('Rich Rebuilds', 'rich rebuilds tesla')`), true);
+  assert.equal(f.evaluate(`channelMatches('Daily Dose Of Internet', 'funny cats')`), false);
+  assert.equal(f.evaluate(`channelMatches('AB', 'ab')`), false, 'too short to trust');
+});
 test('upgrades are offered only below the chosen quality', () => {
   const f = setup();
   assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', height:720})`), false, 'no quality setting from the phone');
