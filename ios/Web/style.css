@@ -311,14 +311,15 @@ canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 250
   border: 0; border-radius: 50%; background: #0b0e10b8; color: #fff; font-size: 18px; line-height: 1; }
 .card-dismiss:active { transform: scale(.94); }
 .quality-actions { display: inline-flex; flex-wrap: wrap; gap: 8px; }
-/* Subscribed channels: a swipeable strip of avatars that open the channel page. */
-.subs-channels { display: flex; gap: 6px; overflow-x: auto; overscroll-behavior-x: contain; margin: 0 0 18px; padding: 2px 0 4px; scrollbar-width: none; }
-.subs-channels::-webkit-scrollbar { display: none; }
-.subs-channel { display: flex; flex: none; flex-direction: column; align-items: center; gap: 6px; width: 124px; padding: 10px 4px; border: 0;
+/* Subscriptions: an A-to-Z directory of followed channels. */
+.subs-directory { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 4px 8px; }
+.subs-directory > .message-card { grid-column: 1 / -1; }
+.subs-channel { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; padding: 12px 4px; border: 0;
   border-radius: 16px; background: transparent; color: var(--text); text-align: center; }
+.subs-channel.skeleton { min-height: 128px; background: var(--surface); }
 .subs-channel:active { background: var(--surface-3); }
 .subs-channel .avatar { width: 72px; height: 72px; font-size: 28px; }
-.subs-channel strong { display: block; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 650; line-height: 1.25; }
+.subs-channel strong { display: block; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 650; }
 .subs-channel small { color: var(--muted); font-size: var(--fs-tiny); }
 /* ---------- Tesla half screen (and other mid-size windows) ----------
    The browser beside the map is roughly 800-1200 px wide. Keep the left rail

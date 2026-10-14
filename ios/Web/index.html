@@ -16,10 +16,6 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 10.5 12 3.8l8.5 6.7V20a1 1 0 0 1-1 1h-5v-6.2h-5V21h-5a1 1 0 0 1-1-1z"/></svg>
         <span>Home</span>
       </button>
-      <button class="nav-item" type="button" data-tab="subs-tab">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="6.5" width="17" height="13" rx="2"/><path d="M6 3.5h12M10.5 10v6l5-3z"/></svg>
-        <span>Subscriptions</span>
-      </button>
       <button class="nav-item" type="button" data-tab="library-tab">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4.5h4v15H4zM10 4.5h4v15h-4zM16.2 5.3l3.8-1 3 14.6-3.8.9z"/></svg>
         <span>Library</span>
@@ -28,6 +24,10 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v11M7.5 10l4.5 4.5 4.5-4.5M4 19.5h16"/></svg>
         <span>Downloads</span>
         <span id="nav-queue-badge" class="nav-badge" hidden></span>
+      </button>
+      <button class="nav-item" type="button" data-tab="subs-tab">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="6.5" width="17" height="13" rx="2"/><path d="M6 3.5h12M10.5 10v6l5-3z"/></svg>
+        <span>Subscriptions</span>
       </button>
       <button class="nav-item" type="button" data-tab="settings-tab">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2.2"/><circle cx="10" cy="17" r="2.2"/></svg>
@@ -129,14 +129,12 @@
         <section id="subs-tab" class="tab-panel" hidden>
           <div class="page-header">
             <div><h1 class="page-title">Subscriptions</h1><p id="subs-status" class="muted"></p></div>
-            <button id="subs-refresh" class="button quiet small" type="button">Refresh</button>
+            <div class="library-toolbar">
+              <span id="subs-filter-wrap" hidden><input id="subs-filter" class="filter-input" type="search" placeholder="Find a channel" aria-label="Find a channel" autocomplete="off" spellcheck="false"></span>
+              <button id="subs-refresh" class="button quiet small" type="button">Refresh</button>
+            </div>
           </div>
-          <div id="subs-channels" class="subs-channels" hidden></div>
-          <div id="subs-latest" class="section-header" hidden>
-            <h2>Latest uploads</h2>
-            <div class="segmented section-tools" role="tablist" aria-label="Show"><button id="subs-filter-all" type="button" role="tab" aria-selected="true">All</button><button id="subs-filter-videos" type="button" role="tab" aria-selected="false">Videos</button><button id="subs-filter-streams" type="button" role="tab" aria-selected="false">Streams</button></div>
-          </div>
-          <div id="subs-list" class="video-grid"></div>
+          <div id="subs-channels" class="subs-directory"></div>
         </section>
 
         <section id="signin-tab" class="tab-panel" hidden>

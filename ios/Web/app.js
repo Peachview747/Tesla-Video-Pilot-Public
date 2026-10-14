@@ -201,7 +201,7 @@ persistDiagnostics();
 // ---- Navigation ----
 // Persistent left rail (bottom bar on narrow screens). The channel page is a
 // sub-page: the rail keeps highlighting the section it was opened from.
-const NAV_TABS = ['home-tab', 'subs-tab', 'library-tab', 'queue-tab', 'settings-tab'];
+const NAV_TABS = ['home-tab', 'library-tab', 'queue-tab', 'subs-tab', 'settings-tab'];
 let currentTab = 'home-tab';
 let signinActive = false;
 let navParent = 'home-tab';
@@ -827,52 +827,46 @@ async function retryAll() {
 }
 
 // ---- Subscriptions ----
-// Newest uploads from channels the Pi's YouTube account follows. The Pi
-// caches the feed for a few minutes; Refresh asks it for a fresh copy.
-const subsState = {loadedAt:0, loading:false, seq:0, videos:[], filter:prefs.get('vp-subs-filter', 'all')};
-const SUBS_FILTERS = {all:() => true, videos:video => !video.stream && !video.live, streams:video => video.stream || video.live};
-function renderSubsVideos() {
-  const shown = subsState.videos.filter(SUBS_FILTERS[subsState.filter] || SUBS_FILTERS.all);
-  for (const name of Object.keys(SUBS_FILTERS)) $(`subs-filter-${name}`).setAttribute?.('aria-selected', name === subsState.filter ? 'true' : 'false');
-  $('subs-list').replaceChildren(...(shown.length ? shown.map(video => youtubeCard(video))
-    : [messageCard(subsState.videos.length ? 'Nothing here' : 'Nothing new', subsState.videos.length
-      ? 'No recent uploads match this filter.' : 'Channels you subscribe to have no recent uploads.')]));
+// A directory of every channel the account follows, A to Z, for finding a
+// specific person. New uploads live on Home; this tab shows no videos.
+const subsState = {loadedAt:0, loading:false, seq:0, channels:[]};
+function renderSubsChannels() {
+  const query = String($('subs-filter').value || '').trim().toLowerCase();
+  const shown = query ? subsState.channels.filter(channel => channel.name.toLowerCase().includes(query)) : subsState.channels;
+  $('subs-channels').replaceChildren(...(shown.length ? shown.map(channel => {
+    const button = element('button', 'subs-channel'); button.type = 'button'; button.title = `Open ${channel.name}`;
+    button.append(avatarNode(channel.name, channel.avatar), element('strong', '', channel.name));
+    if (channel.subscribers) button.append(element('small', '', channel.subscribers.replace(' subscribers', '')));
+    button.onclick = () => openChannel({id:channel.id, name:channel.name});
+    return button;
+  }) : [messageCard('No matches', `None of the channels you follow match “${$('subs-filter').value.trim()}”.`)]));
 }
-for (const name of Object.keys(SUBS_FILTERS)) $(`subs-filter-${name}`).onclick = () => {
-  subsState.filter = name; prefs.set('vp-subs-filter', name); renderSubsVideos();
-};
+$('subs-filter').oninput = () => { if (subsState.channels.length) renderSubsChannels(); };
 async function loadSubscriptions(refresh = false) {
-  if (subsState.loading || (!refresh && Date.now() - subsState.loadedAt < 5 * 60_000)) return;
+  if (subsState.loading || (!refresh && Date.now() - subsState.loadedAt < 15 * 60_000)) return;
   const seq = ++subsState.seq; subsState.loading = true;
-  $('subs-status').textContent = 'Loading your subscriptions…';
-  if (!$('subs-list').childNodes?.length) $('subs-list').replaceChildren(...Array.from({length:8}, () => element('div', 'card skeleton')));
+  $('subs-status').textContent = 'Loading your channels…';
+  if (!subsState.channels.length) $('subs-channels').replaceChildren(...Array.from({length:12}, () => element('div', 'subs-channel skeleton')));
   try {
-    const feed = await api('/api/subscriptions' + (refresh ? '?refresh=1' : ''), null, 60000);
+    const result = await api('/api/subscriptions/channels' + (refresh ? '?refresh=1' : ''), null, 60000);
     if (seq !== subsState.seq) return;
     subsState.loadedAt = Date.now();
-    if (!feed?.signedIn) {
-      $('subs-status').textContent = ''; $('subs-channels').hidden = true; $('subs-latest').hidden = true; subsState.videos = [];
-      $('subs-list').replaceChildren(messageCard('Sign in to see your subscriptions',
-        'Sign in to your YouTube account and the newest uploads from channels you follow show up here.',
+    $('subs-filter-wrap').hidden = !result?.signedIn;
+    if (!result?.signedIn) {
+      subsState.channels = []; $('subs-status').textContent = '';
+      $('subs-channels').replaceChildren(messageCard('Sign in to see your subscriptions',
+        'Sign in to your YouTube account and every channel you follow shows up here.',
         {label:'Sign in to YouTube', run:() => void startSignin()}));
       return;
     }
-    const videos = Array.isArray(feed.videos) ? feed.videos : [];
-    const channels = Array.isArray(feed.channels) ? feed.channels : [];
-    $('subs-status').textContent = channels.length ? `${channels.length} channel${channels.length === 1 ? '' : 's'}` : '';
-    $('subs-channels').hidden = !channels.length; $('subs-latest').hidden = !videos.length;
-    $('subs-channels').replaceChildren(...channels.map(channel => {
-      const button = element('button', 'subs-channel'); button.type = 'button'; button.title = `Open ${channel.name}`;
-      button.append(avatarNode(channel.name, channel.avatar), element('strong', '', channel.name));
-      if (channel.subscribers) button.append(element('small', '', channel.subscribers.replace(' subscribers', '')));
-      button.onclick = () => openChannel({id:channel.id, name:channel.name});
-      return button;
-    }));
-    subsState.videos = videos; renderSubsVideos();
+    subsState.channels = Array.isArray(result.channels) ? result.channels : [];
+    $('subs-status').textContent = `${subsState.channels.length} channel${subsState.channels.length === 1 ? '' : 's'}`;
+    if (subsState.channels.length) renderSubsChannels();
+    else $('subs-channels').replaceChildren(messageCard('No subscriptions yet', 'Channels you subscribe to on YouTube show up here.'));
   } catch (error) {
     if (seq !== subsState.seq) return;
     $('subs-status').textContent = '';
-    $('subs-list').replaceChildren(messageCard('Could not load subscriptions', error.message,
+    $('subs-channels').replaceChildren(messageCard('Could not load your channels', error.message,
       {label:'Try again', run:() => void loadSubscriptions(true)}));
   } finally { if (seq === subsState.seq) subsState.loading = false; }
 }

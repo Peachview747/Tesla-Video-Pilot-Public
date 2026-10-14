@@ -88,13 +88,13 @@ export class Library {
     const cookies = String(text || "").trim();
     if (!/\t(SAPISID|__Secure-3PSID)\t/.test(cookies)) throw new Error("Those cookies are not signed in to YouTube.");
     await writeFile(this.cookiesFile, cookies + "\n", { mode: 0o600 });
-    this.subscriptionCache = null; this.recommendedCache = null;
+    this.subscriptionCache = null; this.recommendedCache = null; this.channelListCache = null;
     this.notify();
   }
 
   async clearCookies() {
     await unlink(this.cookiesFile).catch(() => {});
-    this.subscriptionCache = null; this.recommendedCache = null;
+    this.subscriptionCache = null; this.recommendedCache = null; this.channelListCache = null;
     this.notify();
   }
 
@@ -103,11 +103,21 @@ export class Library {
   async subscriptions({ refresh = false } = {}) {
     if (!await this.signedIn()) return { signedIn: false, videos: [] };
     if (!refresh && this.subscriptionCache && Date.now() - this.subscriptionCache.at < 10 * 60_000) return this.subscriptionCache.value;
-    const feed = (url, end) => this.runner(this.ytDlp, [...this.ytArgs(), "--flat-playlist", "--playlist-end", end, "--dump-single-json", url]);
-    // The channel list is a nicety; the feed still shows if it fails.
-    const [uploads, following] = await Promise.all([feed("https://www.youtube.com/feed/subscriptions", "60"),
-      feed("https://www.youtube.com/feed/channels", "500").catch(() => null)]);
-    const channels = (following ? JSON.parse(following.stdout).entries || [] : [])
+    const result = await this.runner(this.ytDlp, [...this.ytArgs(), "--flat-playlist", "--playlist-end", "60", "--dump-single-json",
+      "https://www.youtube.com/feed/subscriptions"]);
+    const value = { signedIn: true, videos: mapEntries(JSON.parse(result.stdout).entries) };
+    this.subscriptionCache = { at: Date.now(), value };
+    return value;
+  }
+
+  // Every channel the account follows, A to Z: the Subscriptions tab is a
+  // directory for finding someone, so there is no cap.
+  async followedChannels({ refresh = false } = {}) {
+    if (!await this.signedIn()) return { signedIn: false, channels: [] };
+    if (!refresh && this.channelListCache && Date.now() - this.channelListCache.at < 30 * 60_000) return this.channelListCache.value;
+    const result = await this.runner(this.ytDlp, [...this.ytArgs(), "--flat-playlist", "--playlist-end", "5000", "--dump-single-json",
+      "https://www.youtube.com/feed/channels"]);
+    const channels = (JSON.parse(result.stdout).entries || [])
       .filter(entry => /^UC[A-Za-z0-9_-]{20,30}$/.test(entry.channel_id || entry.id || ""))
       .map(entry => {
         const followers = Number(entry.channel_follower_count);
@@ -117,8 +127,8 @@ export class Library {
           subscribers: followers > 0 ? `${compactCount(followers)} subscribers` : null };
       })
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
-    const value = { signedIn: true, channels, videos: mapEntries(JSON.parse(uploads.stdout).entries) };
-    this.subscriptionCache = { at: Date.now(), value };
+    const value = { signedIn: true, channels };
+    this.channelListCache = { at: Date.now(), value };
     return value;
   }
 

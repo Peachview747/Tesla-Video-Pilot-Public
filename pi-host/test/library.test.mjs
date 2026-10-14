@@ -98,12 +98,14 @@ test("subscriptions need sign-in cookies and then read the YouTube feed with the
   assert.deepEqual(feed.videos.map(video => [video.id, video.stream || false]), [["dQw4w9WgXcQ", false], ["aaaaaaaaaaa", true]],
     "finished streams are kept and marked; live ones are left out");
   assert.ok(calls[0].includes(library.cookiesFile) && calls[0].includes("https://www.youtube.com/feed/subscriptions"));
-  assert.deepEqual(feed.channels, [
+  const directory = await library.followedChannels();
+  assert.ok(calls.at(-1).includes("5000"), "the whole followed list is read");
+  assert.deepEqual(directory.channels, [
     { id: "UCOt5hVyS2-nbcJ3_FP41Ajg", name: "alpha", avatar: null, subscribers: null },
     { id: "UCmKLlnlZn3dBFu2UdKxhTXQ", name: "Zed", avatar: "https://yt3.googleusercontent.com/a=s176-c", subscribers: "78.3K subscribers" }],
     "followed channels are sorted by name and only YouTube image hosts are kept");
-  await library.subscriptions();
-  assert.equal(calls.length, 2, "the feed is cached");
+  await library.subscriptions(); await library.followedChannels();
+  assert.equal(calls.length, 2, "both lists are cached");
   const recommended = await library.recommended();
   assert.ok(calls.at(-1).includes(":ytrec") && calls.at(-1).includes(library.cookiesFile), "recommendations use the account's YouTube home");
   assert.deepEqual(recommended.map(video => video.id), ["dQw4w9WgXcQ", "aaaaaaaaaaa"], "live videos are left out");

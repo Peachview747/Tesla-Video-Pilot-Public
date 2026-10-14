@@ -108,6 +108,8 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
         return send(res, response.status, Buffer.from(await response.arrayBuffer()), response.headers.get("content-type") || "application/json");
       }
       if (url.pathname === "/api/youtube/signout" && req.method === "POST") { await library.clearCookies(); return send(res, 200, { signedOut: true }); }
+      if (url.pathname === "/api/subscriptions/channels" && req.method === "GET")
+        return send(res, 200, await library.followedChannels({ refresh: url.searchParams.get("refresh") === "1" }));
       if (url.pathname === "/api/subscriptions" && req.method === "GET")
         return send(res, 200, await library.subscriptions({ refresh: url.searchParams.get("refresh") === "1" }));
       if (url.pathname === "/api/suggest" && req.method === "GET") return send(res, 200, await library.suggest(url.searchParams.get("q")).catch(() => []));
