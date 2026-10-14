@@ -224,6 +224,12 @@ function showTab(id) {
   if (id === 'subs-tab') void loadSubscriptions();
   if (id !== 'signin-tab' && signinActive) void stopSignin();
 }
+// "#library", "#subs" etc. open that tab, so a Tesla bookmark can land on it.
+function hashTab() {
+  const id = String(globalThis.location?.hash || '').slice(1) + '-tab';
+  return NAV_TABS.includes(id) ? id : '';
+}
+globalThis.addEventListener?.('hashchange', () => { if (hashTab() && !$('host-ui').hidden) showTab(hashTab()); });
 function goTo(id) {
   if (id === currentTab && id === 'home-tab' && searchState.query) clearSearch();
   showTab(id); window.scrollTo?.({top:0, behavior:'smooth'});
@@ -880,7 +886,7 @@ async function refresh(force = false) {
     lastStatus = status;
     if ($('host-ui').hidden) {
       $('host-ui').hidden = false; $('connecting-panel').hidden = true;
-      showTab(NAV_TABS.includes(prefs.get('vp-tab')) ? prefs.get('vp-tab') : 'home-tab');
+      showTab(hashTab() || (NAV_TABS.includes(prefs.get('vp-tab')) ? prefs.get('vp-tab') : 'home-tab'));
       void loadServerSettings();
     }
     setConnection(status.tunnel === 'connected' || !status.tunnel ? 'online' : 'waiting',
@@ -1154,7 +1160,7 @@ function youtubeCard(video, {showChannel = true, badge = true} = {}) {
   const fraction = Number.isFinite(progress) && progress > 0 ? progress : (entry ? watchFraction(entry) : 0);
   const button = element('button', 'card-action'); button.type = 'button';
   node.append(videoThumb({title:video.title}, () => { if (!button.disabled) button.click(); },
-    {image:local ? '' : feedThumbnail(video), duration:typeof video.duration === 'string' ? video.duration : formatDuration(video.duration),
+    {image:local ? (entry?.youtubeID && !dataSaver() ? youtubeThumb(entry.youtubeID) : '') : feedThumbnail(video), duration:typeof video.duration === 'string' ? video.duration : formatDuration(video.duration),
       fraction, badge:badge && !local && libraryEntry(video.id)?.state === 'ready' ? 'In library' : ''}));
   const body = element('div', 'card-body');
   body.append(element('h3', '', video.title || 'Video'));
@@ -1484,6 +1490,7 @@ function renderSettings() {
   $('yt-signout').hidden = !status.youtubeSignedIn;
   $('yt-signin').textContent = status.youtubeSignedIn ? 'Switch account' : 'Sign in to YouTube';
   $('settings-search').textContent = status.youtubeSearch ? 'Enabled' : 'Unavailable';
+  $('settings-screen').textContent = `${globalThis.innerWidth || '—'} × ${globalThis.innerHeight || '—'}`;
   // Named builds read "0.1.40 · Pi build"; numbered ones keep "(build 12)".
   const named = /^[a-z]+$/i.test(String(status.build || ''));
   const version = !status.version ? '—' : named
