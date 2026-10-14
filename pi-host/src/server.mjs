@@ -121,7 +121,7 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
           library.subscriptions?.({ refresh }) ?? Promise.resolve(null)]);
         const forYou = recommended.status === "fulfilled" ? recommended.value : null;
         const newUploads = subscribed.status === "fulfilled" && subscribed.value?.signedIn
-          ? subscribed.value.videos.filter(video => !video.live).slice(0, 20) : [];
+          ? subscribed.value.videos.slice(0, 20) : [];
         const videos = forYou?.length ? null : await library.search("trending videos", 20);
         const continuing = library.historyView(20).items
           .filter(item => item.inLibrary && item.position > 0 && item.progress < 0.95)

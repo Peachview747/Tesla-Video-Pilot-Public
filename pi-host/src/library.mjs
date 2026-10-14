@@ -128,7 +128,7 @@ export class Library {
     if (!await this.signedIn()) return null;
     if (!refresh && this.recommendedCache && Date.now() - this.recommendedCache.at < 15 * 60_000) return this.recommendedCache.videos;
     const result = await this.runner(this.ytDlp, [...this.ytArgs(), "--flat-playlist", "--playlist-end", "40", "--dump-single-json", ":ytrec"]);
-    const videos = mapEntries(JSON.parse(result.stdout).entries).filter(video => !video.live);
+    const videos = mapEntries(JSON.parse(result.stdout).entries);
     this.recommendedCache = { at: Date.now(), videos };
     return videos;
   }
@@ -528,15 +528,17 @@ function compactCount(value) {
   return `${+(value / scale).toPrecision(3)}${unit}`;
 }
 
+// Live and upcoming broadcasts cannot be downloaded until they end, so they
+// are left out of every list (search, Home, Subscriptions, channel pages).
+// Finished broadcasts stay and are marked as streams.
 function mapEntries(entries = []) {
-  return entries.filter(entry => /^[A-Za-z0-9_-]{11}$/.test(entry.id || "")).map(entry => ({
+  return entries.filter(entry => /^[A-Za-z0-9_-]{11}$/.test(entry.id || "") && !["is_live", "is_upcoming"].includes(entry.live_status)).map(entry => ({
     id: entry.id, title: entry.title || entry.id, channel: entry.channel || entry.uploader || "",
     channelId: entry.channel_id || null, thumbnail: `https://i.ytimg.com/vi/${entry.id}/mqdefault.jpg`,
     duration: formatDuration(entry.duration),
     views: entry.view_count ? Number(entry.view_count).toLocaleString("en-US") + " views" : null,
     published: null,
-    // "live" cannot be downloaded until it ends; "stream" is a finished broadcast.
-    ...(["is_live", "is_upcoming"].includes(entry.live_status) ? { live: entry.live_status } : {}),
+    // A finished broadcast: watchable, but often hours long.
     ...(entry.live_status === "was_live" ? { stream: true } : {}),
   }));
 }

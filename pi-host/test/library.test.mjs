@@ -95,7 +95,8 @@ test("subscriptions need sign-in cookies and then read the YouTube feed with the
   assert.equal(await library.signedIn(), true);
   const feed = await library.subscriptions();
   assert.equal(feed.videos[0].title, "New upload");
-  assert.deepEqual(feed.videos.map(video => [video.stream || false, video.live || null]), [[false, null], [true, null], [false, "is_live"]]);
+  assert.deepEqual(feed.videos.map(video => [video.id, video.stream || false]), [["dQw4w9WgXcQ", false], ["aaaaaaaaaaa", true]],
+    "finished streams are kept and marked; live ones are left out");
   assert.ok(calls[0].includes(library.cookiesFile) && calls[0].includes("https://www.youtube.com/feed/subscriptions"));
   assert.deepEqual(feed.channels, [
     { id: "UCOt5hVyS2-nbcJ3_FP41Ajg", name: "alpha", avatar: null, subscribers: null },
