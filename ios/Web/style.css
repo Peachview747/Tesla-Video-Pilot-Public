@@ -271,7 +271,7 @@ canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 250
 .playback-quality-label select { min-height:48px; max-width:190px; padding:8px 12px; border:1px solid #ffffff30; border-radius:12px; color:#e3e9ed; background:#232c33; font:inherit; }
 .quality-status { color:#c0cbd4; font-size:13px; margin:4px 8px; }
 .quality-status:empty { display:none; }
-.controls button { min-width: 0; min-height: 52px; padding: 8px 18px; border: 1px solid #ffffff1c; border-radius: 12px; background: #232c33; color: #e3e9ed; font-size: 16px; font-weight: 650; white-space: nowrap; }
+.controls button { flex: none; min-width: 0; min-height: 52px; padding: 8px 18px; border: 1px solid #ffffff1c; border-radius: 12px; background: #232c33; color: #e3e9ed; font-size: 16px; font-weight: 650; white-space: nowrap; }
 .controls button.primary { min-width: 120px; background: #8fb0cc; color: #10171c; border-color: transparent; }
 .controls button[aria-pressed="true"] { background: #3b4f5e; }
 #exit-fullscreen { display: none; }
@@ -297,6 +297,12 @@ canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 250
   display: block; position: absolute; top: 14px; right: 14px; z-index: 4; min-height: 46px; padding: 8px 16px;
   border: 1px solid #ffffff55; border-radius: 12px; background: #151c21d9; color: #f1f1f1; font-size: 15px; font-weight: 650; transition: opacity .25s;
 }
+/* Full-screen picture shape: Fit shows everything, Fill crops the sides to
+   lose the bars, Stretch fills the screen by distorting the picture. */
+#fit-mode { display: none; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen) #fit-mode { display: inline-block; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen).vp-fit-fill canvas { object-fit: cover; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen).vp-fit-stretch canvas { object-fit: fill; }
 #player-shell.vp-chrome-hidden { cursor: none; }
 #player-shell.vp-chrome-hidden::after,
 #player-shell.vp-chrome-hidden .timeline,
@@ -367,7 +373,10 @@ canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 250
   .filter-input { width: 100%; }
   .controls-spacer { flex: 1 0 0; }
   .quality-word { display: none; }
-  .playback-quality-label select { max-width: 132px; }
+  .playback-quality-label select { max-width: 124px; padding: 6px 10px; }
+  /* The car's font is wider than most; buttons keep their label width and the
+     row wraps rather than squeezing text out of its box. */
+  .controls button { padding: 6px 12px; }
 }
 
 /* ---------- Short windows (the Model 3 half screen is 773 x 601) ----------

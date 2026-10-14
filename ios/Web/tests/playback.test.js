@@ -206,6 +206,18 @@ test('full-screen controls hide on a tap while playing and come back on the next
   f.element('exit-fullscreen').onclick();
   f.close();
 });
+test('full-screen picture cycles Fit, Fill and Stretch', async () => {
+  const f = setup(); f.play();
+  const shell = f.element('player-shell'), button = f.element('fit-mode');
+  assert.equal(button.textContent, 'Fit');
+  button.onclick();
+  assert.deepEqual([button.textContent, shell.classList.contains('vp-fit-fill'), shell.classList.contains('vp-fit-fit')], ['Fill', true, false]);
+  button.onclick();
+  assert.deepEqual([button.textContent, shell.classList.contains('vp-fit-stretch')], ['Stretch', true]);
+  button.onclick();
+  assert.equal(button.textContent, 'Fit');
+  f.close();
+});
 test('seeking keeps the user mute preference across decoder replacement', async () => {
   const f = setup(); f.play({id:'video', title:'Test', duration:100});
   f.element('mute').onclick();

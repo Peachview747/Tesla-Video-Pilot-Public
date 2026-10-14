@@ -1669,6 +1669,19 @@ function syncFullscreenControls(active) {
   $('exit-fullscreen').hidden = !active;
   showPlayerChrome();
 }
+// Full-screen picture shape, remembered per browser: Fit, Fill or Stretch.
+const FIT_MODES = ['fit', 'fill', 'stretch'];
+let fitMode = FIT_MODES.includes(prefs.get('vp-fit-mode')) ? prefs.get('vp-fit-mode') : 'fit';
+function applyFitMode() {
+  const shell = $('player-shell');
+  for (const mode of FIT_MODES) shell.classList?.[mode === fitMode ? 'add' : 'remove']?.(`vp-fit-${mode}`);
+  $('fit-mode').textContent = fitMode[0].toUpperCase() + fitMode.slice(1);
+}
+$('fit-mode').onclick = () => {
+  fitMode = FIT_MODES[(FIT_MODES.indexOf(fitMode) + 1) % FIT_MODES.length];
+  prefs.set('vp-fit-mode', fitMode); applyFitMode(); showPlayerChrome();
+};
+applyFitMode();
 // Full screen: controls fade out while playing and come back on a tap.
 const CHROME_IDLE_MS = 3500;
 let chromeTimer = null;
