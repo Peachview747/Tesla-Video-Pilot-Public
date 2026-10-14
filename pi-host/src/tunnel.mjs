@@ -74,6 +74,7 @@ export class PiTunnel {
     const controller = new AbortController();
     const headers = { ...message.headers };
     delete headers.host; delete headers["content-length"];
+    headers["x-video-pilot-relay"] = "1";
     const body = message.body ? Buffer.from(message.body, "base64") : undefined;
     const response = await this.fetch(new URL(message.target, this.localURL), {
       method: message.method, headers, body: body?.length ? body : undefined, signal: controller.signal,

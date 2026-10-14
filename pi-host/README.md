@@ -39,3 +39,19 @@ The player serves the repository's decoder from `app/client/public/jsmpeg.min.js
 Use the player's Quality menu to choose 360p, 540p, 720p, or 1080p. Switching resumes near the same timestamp and preserves pause, mute, and fullscreen. Lower resolutions use separately encoded lower-bitrate files and their own seek indexes, so changing quality reduces the bytes sent through the hotspot. The Pi prepares and caches smaller copies locally; the current stream continues while a missing copy is prepared.
 
 Settings → Download quality controls the maximum resolution of future YouTube downloads. Selecting a player quality above the saved maximum queues an upgrade download and keeps the old copy playable until the new one is ready. The downloader checks the actual source resolution rather than labeling an upscaled low-resolution source as HD. Data saver defaults playback to 360p. The Default player choice otherwise uses the highest saved quality; it is not automatic bandwidth detection.
+
+## YouTube sign-in (headless)
+
+Sign in to youtube.com once in Firefox on the Pi (its screen or VNC). A user
+timer copies that sign-in to Video Pilot every two minutes; it is used for
+downloads and the Subscriptions tab and never leaves the Pi. Install it as the
+desktop user, not root:
+
+```sh
+install -Dm755 pi-host/youtube-cookie-sync ~/.local/bin/youtube-cookie-sync
+install -Dm644 -t ~/.config/systemd/user pi-host/youtube-cookie-sync.service pi-host/youtube-cookie-sync.timer
+systemctl --user daemon-reload && systemctl --user enable --now youtube-cookie-sync.timer
+```
+
+The local API only accepts these cookies from the Pi itself; requests that
+arrive through the car relay are refused.

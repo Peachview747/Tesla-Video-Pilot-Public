@@ -104,6 +104,13 @@ test('queue uses the phone queue when present and the library otherwise', () => 
   assert.equal(entries[0].active, true);
 });
 
+test('library pages show only ready videos; the rest stay on Downloads', () => {
+  const f = setup();
+  f.evaluate(`lastLibrary = {videos:[{id:'r', title:'R', state:'ready'}, {id:'p', title:'P', state:'preparing'},
+    {id:'f', title:'F', state:'failed'}], preparingID:'p'}; channelState.spec = {name:'Other videos', libraryOnly:true}`);
+  assert.equal(f.evaluate(`channelLibraryVideos().map(video => video.id).join(',')`), 'r');
+  assert.equal(f.evaluate(`queueEntries(lastLibrary.videos, 'p').map(entry => entry.id).join(',')`), 'p');
+});
 test('upgrades are offered only below the chosen quality', () => {
   const f = setup();
   assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', height:720})`), false, 'no quality setting from the phone');

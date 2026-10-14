@@ -13,9 +13,9 @@ function send(res, status, body, type = "application/json; charset=utf-8", heade
   res.end(bytes);
 }
 
-async function bodyJSON(req) {
+async function bodyJSON(req, limit = 16384) {
   const chunks = []; let length = 0;
-  for await (const chunk of req) { length += chunk.length; if (length > 16384) throw new Error("Request is too large."); chunks.push(chunk); }
+  for await (const chunk of req) { length += chunk.length; if (length > limit) throw new Error("Request is too large."); chunks.push(chunk); }
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
 }
 
@@ -35,12 +35,12 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
       }
       if (url.pathname === "/api/status" && req.method === "GET") return send(res, 200, {
         hosting: true, busy: Boolean(library.active), publicAccess: true, authentication: "tunnel-key",
-        youtubeSearch: true, youtubeExplore: true, youtubeSignedIn: false, tunnel: "connected",
+        youtubeSearch: true, youtubeExplore: true, youtubeSignedIn: await library.signedIn(), tunnel: "connected",
         version, build: "Pi", activeStreams: 0, queuedCount: library.queue.length,
         preparationStage: library.active ? "processing" : "idle", preparationProgress: null,
         preparingID: library.active || "", diagnosticsEnabled: false, diagnosticsEventCount: 0,
       });
-      if (url.pathname === "/api/library" && req.method === "GET") return send(res, 200, library.videos);
+      if (url.pathname === "/api/library" && req.method === "GET") return send(res, 200, library.libraryView());
       if (url.pathname === "/api/queue" && req.method === "GET") return send(res, 200, library.queueView());
       if (url.pathname === "/api/queue/move" && req.method === "POST") {
         const body = await bodyJSON(req); await library.move(body.id, body.to); return send(res, 200, { moved: true });
@@ -80,7 +80,16 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
         return send(res, 200, await library.qualityStatus(url.searchParams.get("id"), url.searchParams.get("quality")));
       if (url.pathname === "/api/diagnostics" && req.method === "POST") return send(res, 200, { accepted: false, count: 0 });
       if (url.pathname === "/api/diagnostics/export" && req.method === "GET") return send(res, 404, { error: "Diagnostics are available in journalctl on the Pi." });
-      if (url.pathname === "/api/suggest" && req.method === "GET") return send(res, 200, []);
+      // Sign-in cookies are pushed by the Firefox sync on the Pi itself. The
+      // relay marks every request it forwards, so the car link cannot set them.
+      if (url.pathname === "/api/youtube/cookies" && req.method === "POST") {
+        if (req.headers["x-video-pilot-relay"]) return send(res, 403, { error: "Sign in with Firefox on the Pi." });
+        await library.saveCookies((await bodyJSON(req, 512 * 1024)).cookies); return send(res, 200, { saved: true });
+      }
+      if (url.pathname === "/api/youtube/signout" && req.method === "POST") { await library.clearCookies(); return send(res, 200, { signedOut: true }); }
+      if (url.pathname === "/api/subscriptions" && req.method === "GET")
+        return send(res, 200, await library.subscriptions({ refresh: url.searchParams.get("refresh") === "1" }));
+      if (url.pathname === "/api/suggest" && req.method === "GET") return send(res, 200, await library.suggest(url.searchParams.get("q")).catch(() => []));
       if (url.pathname === "/api/search" && req.method === "GET") return send(res, 200, { results: await library.search(url.searchParams.get("q")), continuation: null });
       if (url.pathname === "/api/explore" && req.method === "GET") return send(res, 200, await library.search("trending videos", 20));
       if (url.pathname === "/api/foryou" && req.method === "GET") {

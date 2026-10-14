@@ -34,6 +34,67 @@ test("persists queue state and creates a seekable prepared item", async () => {
   assert.equal(restored.get(video.id).state, "ready");
 });
 
+test("queue view lists the active video first in the shape the Downloads tab reads", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-queue-"));
+  const library = await new Library({ dataDir }).init();
+  library.videos.push({ id: "a", title: "A", youtubeID: "aaaaaaaaaaa", state: "preparing", message: "Preparing 720p for the Tesla browser…" },
+    { id: "b", title: "B", youtubeID: "bbbbbbbbbbb", state: "preparing", message: "Waiting on the Raspberry Pi…" });
+  library.active = "a"; library.queue = ["b"];
+  assert.deepEqual(library.queueView(), { items: [
+    { id: "a", title: "A", videoId: "aaaaaaaaaaa", stage: "transcoding" },
+    { id: "b", title: "B", videoId: "bbbbbbbbbbb", stage: "queued" }] });
+});
+
+test("search suggestions come from YouTube autocomplete and are cached", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-suggest-"));
+  const urls = [];
+  const fetcher = async url => { urls.push(url); return { ok: true, json: async () => ["tesla mod", ["tesla model y", "tesla model 3", 7]] }; };
+  const library = await new Library({ dataDir, fetcher }).init();
+  assert.deepEqual(await library.suggest("Tesla Mod"), ["tesla model y", "tesla model 3"]);
+  assert.deepEqual(await library.suggest("tesla mod"), ["tesla model y", "tesla model 3"]);
+  assert.equal(urls.length, 1);
+  assert.match(urls[0], /ds=yt&q=tesla%20mod$/);
+  assert.deepEqual(await library.suggest("t"), []);
+});
+
+test("library items gain their channel avatar after a background lookup", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-avatar-"));
+  const calls = [];
+  const runner = async (command, args) => {
+    calls.push(args.at(-1));
+    return { stdout: JSON.stringify({ channel: "Chan", channel_follower_count: 3820000, thumbnails: [
+      { id: "banner_uncropped", url: "https://yt3.googleusercontent.com/banner=s0" },
+      { id: "avatar_uncropped", url: "https://yt3.googleusercontent.com/ytc/abc=s0" }] }) };
+  };
+  const library = await new Library({ dataDir, runner }).init();
+  library.videos.push({ id: "v", channelId: "UCtMVHI3AJD4Qk4hcbZnI9ZQ", state: "ready" }); await library.save();
+  assert.equal(library.libraryView()[0].channelAvatar, undefined);
+  await library.channelLookup;
+  assert.equal(library.libraryView()[0].channelAvatar, "https://yt3.googleusercontent.com/ytc/abc=s176-c-k-c0x00ffffff-no-rj");
+  assert.equal(library.channels.UCtMVHI3AJD4Qk4hcbZnI9ZQ.subscribers, "3.8M subscribers");
+  assert.deepEqual(calls, ["https://www.youtube.com/channel/UCtMVHI3AJD4Qk4hcbZnI9ZQ"], "fresh entries are not looked up again");
+  const restored = await new Library({ dataDir, runner }).init();
+  assert.ok(restored.libraryView()[0].channelAvatar, "avatars persist across restarts");
+});
+
+test("subscriptions need sign-in cookies and then read the YouTube feed with them", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-subs-"));
+  const calls = [];
+  const runner = async (command, args) => { calls.push(args); return { stdout: JSON.stringify({ entries: [{ id: "dQw4w9WgXcQ", title: "New upload", channel: "Chan" }] }) }; };
+  const library = await new Library({ dataDir, runner }).init();
+  assert.deepEqual(await library.subscriptions(), { signedIn: false, videos: [] });
+  await assert.rejects(library.saveCookies(".youtube.com\tTRUE\t/\tTRUE\t0\tPREF\tx"), /not signed in/);
+  await library.saveCookies(".youtube.com\tTRUE\t/\tTRUE\t0\tSAPISID\tabc");
+  assert.equal(await library.signedIn(), true);
+  const feed = await library.subscriptions();
+  assert.equal(feed.videos[0].title, "New upload");
+  assert.ok(calls[0].includes(library.cookiesFile) && calls[0].includes("https://www.youtube.com/feed/subscriptions"));
+  await library.subscriptions();
+  assert.equal(calls.length, 1, "the feed is cached");
+  await library.clearCookies();
+  assert.equal(await library.signedIn(), false);
+});
+
 test("turns interrupted preparation into a retryable item", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-restart-"));
   await writeFile(path.join(dataDir, "library.json"), JSON.stringify([{ id: "00000000-0000-4000-8000-000000000000", state: "preparing" }]));

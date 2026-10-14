@@ -16,6 +16,10 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 10.5 12 3.8l8.5 6.7V20a1 1 0 0 1-1 1h-5v-6.2h-5V21h-5a1 1 0 0 1-1-1z"/></svg>
         <span>Home</span>
       </button>
+      <button class="nav-item" type="button" data-tab="subs-tab">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="6.5" width="17" height="13" rx="2"/><path d="M6 3.5h12M10.5 10v6l5-3z"/></svg>
+        <span>Subscriptions</span>
+      </button>
       <button class="nav-item" type="button" data-tab="library-tab">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4.5h4v15H4zM10 4.5h4v15h-4zM16.2 5.3l3.8-1 3 14.6-3.8.9z"/></svg>
         <span>Library</span>
@@ -86,7 +90,7 @@
           <div id="feed-view" class="feed-view">
             <div id="search-start" class="chip-row start-chips">
               <div id="recent-searches" class="chip-group" hidden></div>
-              <div class="chip-group" aria-label="Popular searches"><span class="chip-label">Try</span><button type="button" class="chip" data-query="trending now">Trending</button><button type="button" class="chip" data-query="music">Music</button><button type="button" class="chip" data-query="latest news">News</button><button type="button" class="chip" data-query="Tesla">Tesla</button></div>
+              
             </div>
             <div class="feed-header">
               <h1 class="page-title">For you</h1>
@@ -122,6 +126,14 @@
         </section>
 
         <!-- LIBRARY -->
+        <section id="subs-tab" class="tab-panel" hidden>
+          <div class="page-header">
+            <div><h1 class="page-title">Subscriptions</h1><p id="subs-status" class="muted"></p></div>
+            <button id="subs-refresh" class="button quiet small" type="button">Refresh</button>
+          </div>
+          <div id="subs-list" class="video-grid"></div>
+        </section>
+
         <section id="library-tab" class="tab-panel" hidden>
           <div class="page-header">
             <div><h1 class="page-title">Library</h1><p id="library-count" class="muted"></p></div>
@@ -162,7 +174,7 @@
               <h2>Playback</h2>
               <label class="setting toggle"><span class="setting-label"><strong>Resume where I left off</strong><small>Start videos at the last watched position.</small></span><input id="pref-resume" type="checkbox" checked><span class="switch" aria-hidden="true"></span></label>
               <label class="setting toggle"><span class="setting-label"><strong>Open player full screen</strong><small>Fill the screen as soon as a video starts.</small></span><input id="pref-fullscreen" type="checkbox"><span class="switch" aria-hidden="true"></span></label>
-              <label class="setting toggle"><span class="setting-label"><strong>Audio boost</strong><small>Gentle 115% volume with a limiter for quiet videos.</small></span><input id="pref-boost" type="checkbox"><span class="switch" aria-hidden="true"></span></label>
+              <label class="setting toggle"><span class="setting-label"><strong>Audio boost</strong><small>Louder, evened-out sound for quiet videos and road noise. Peaks are limited so it never distorts.</small></span><input id="pref-boost" type="checkbox"><span class="switch" aria-hidden="true"></span></label>
               <div class="setting"><div class="setting-label"><strong>Read-ahead buffer</strong><small>More buffer rides through weak cellular coverage.</small></div>
                 <div class="segmented" role="radiogroup" aria-label="Read-ahead buffer" id="buffer-choice"><button type="button" data-buffer="normal" aria-pressed="true">12 s</button><button type="button" data-buffer="large" aria-pressed="false">30 s</button></div></div>
               <div id="quality-setting" class="setting" hidden><div class="setting-label"><strong>Download quality</strong><small>Maximum for new downloads. Change playback quality in the player to save hotspot data.</small></div>
@@ -214,12 +226,20 @@
             </article>
 
             <article class="settings-card">
+              <h2>YouTube account</h2>
+              <div class="stat-list">
+                <div><span>Status</span><strong id="yt-account-status">—</strong></div>
+              </div>
+              <p class="muted small-text">To sign in, open Firefox on the Pi (its own screen, or over VNC) and sign in at youtube.com. Video Pilot picks up the sign-in within two minutes and uses it for downloads and your Subscriptions. It stays on the Pi.</p>
+              <div class="button-row"><button id="yt-signout" class="button quiet danger" type="button" hidden>Sign out on the Pi</button></div>
+            </article>
+
+            <article class="settings-card">
               <h2>About</h2>
               <div class="stat-list">
                 <div><span>Version</span><strong id="settings-version">—</strong></div>
                 <div><span>Search</span><strong id="settings-search">—</strong></div>
               </div>
-              <p class="muted small-text">Connect or disconnect Google in Video Pilot on Raspberry Pi. Google tokens never reach the car.</p>
             </article>
           </div>
             <article class="settings-card diagnostics-card">
@@ -271,7 +291,7 @@
           <span class="controls-spacer"></span>
           <label class="playback-quality-label">Quality <select id="playback-quality" aria-label="Playback quality"><option value="auto">Default</option><option value="360">360p · Save data</option><option value="540">540p</option><option value="720">720p HD</option><option value="1080">1080p HD</option></select></label>
           <button id="mute" type="button">Mute</button>
-          <button id="audio-boost" type="button" aria-pressed="false" title="Enable a gentle 115% audio boost">Audio</button>
+          <button id="audio-boost" type="button" aria-pressed="false" title="Boost quiet audio">Audio</button>
           <button id="fullscreen" type="button">Full screen</button>
         </div>
         <p id="quality-status" class="quality-status" role="status" aria-live="polite"></p>

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {QUALITIES, parseQuality, encodeArgs} from "./quality.mjs";
 
@@ -17,19 +18,26 @@ export function run(command, args, options = {}) {
 }
 
 export class Library {
-  constructor({ dataDir, ytDlp = "yt-dlp", ffmpeg = "ffmpeg", ffprobe = "ffprobe", runner = run }) {
+  constructor({ dataDir, ytDlp = "yt-dlp", ffmpeg = "ffmpeg", ffprobe = "ffprobe", runner = run, fetcher = globalThis.fetch }) {
     this.dataDir = dataDir;
     this.mediaDir = path.join(dataDir, "media");
     this.indexFile = path.join(dataDir, "library.json");
     this.settingsFile = path.join(dataDir, "settings.json");
     this.historyFile = path.join(dataDir, "history.json");
+    this.channelsFile = path.join(dataDir, "channels.json");
+    this.cookiesFile = path.join(dataDir, "youtube-cookies.txt");
     this.ytDlp = ytDlp;
     this.ffmpeg = ffmpeg;
     this.ffprobe = ffprobe;
     this.runner = runner;
+    this.fetcher = fetcher;
+    this.suggestCache = new Map();
+    this.subscriptionCache = null;
     this.videos = [];
     this.settings = { quality: 720 };
     this.history = [];
+    this.channels = {};
+    this.channelLookups = new Set();
     this.queue = [];
     this.active = null;
     this.listeners = new Set();
@@ -42,6 +50,7 @@ export class Library {
     try { this.videos = JSON.parse(await readFile(this.indexFile, "utf8")); } catch { this.videos = []; }
     try { this.settings = { ...this.settings, ...JSON.parse(await readFile(this.settingsFile, "utf8")) }; } catch {}
     try { this.history = JSON.parse(await readFile(this.historyFile, "utf8")); } catch { this.history = []; }
+    try { this.channels = JSON.parse(await readFile(this.channelsFile, "utf8")) || {}; } catch { this.channels = {}; }
     for (const video of this.videos) {
       if (video.upgrading) { video.upgrading = false; video.upgradeError = "Upgrade interrupted. Select the quality again to retry."; }
       if (video.state === "preparing") {
@@ -64,6 +73,42 @@ export class Library {
   async save() { await this.atomicJSON(this.indexFile, this.videos); this.notify(); }
   async saveSettings() { await this.atomicJSON(this.settingsFile, this.settings); this.notify(); }
   async saveHistory() { await this.atomicJSON(this.historyFile, this.history.slice(0, 300)); this.notify(); }
+
+  // Every yt-dlp call: Node solves YouTube's JavaScript challenges (without a
+  // runtime many formats 403), and the signed-in cookies are used when present.
+  ytArgs() {
+    return ["--js-runtimes", `node:${process.execPath}`, ...(existsSync(this.cookiesFile) ? ["--cookies", this.cookiesFile] : [])];
+  }
+
+  async signedIn() {
+    try { return /\t(SAPISID|__Secure-3PSID)\t/.test(await readFile(this.cookiesFile, "utf8")); } catch { return false; }
+  }
+
+  async saveCookies(text) {
+    const cookies = String(text || "").trim();
+    if (!/\t(SAPISID|__Secure-3PSID)\t/.test(cookies)) throw new Error("Those cookies are not signed in to YouTube.");
+    await writeFile(this.cookiesFile, cookies + "\n", { mode: 0o600 });
+    this.subscriptionCache = null;
+    this.notify();
+  }
+
+  async clearCookies() {
+    await unlink(this.cookiesFile).catch(() => {});
+    this.subscriptionCache = null;
+    this.notify();
+  }
+
+  // Newest uploads from subscribed channels; cached briefly because each
+  // fetch is a full YouTube page load on the Pi.
+  async subscriptions({ refresh = false } = {}) {
+    if (!await this.signedIn()) return { signedIn: false, videos: [] };
+    if (!refresh && this.subscriptionCache && Date.now() - this.subscriptionCache.at < 10 * 60_000) return this.subscriptionCache.value;
+    const result = await this.runner(this.ytDlp, [...this.ytArgs(), "--flat-playlist", "--playlist-end", "60", "--dump-single-json",
+      "https://www.youtube.com/feed/subscriptions"]);
+    const value = { signedIn: true, videos: mapEntries(JSON.parse(result.stdout).entries) };
+    this.subscriptionCache = { at: Date.now(), value };
+    return value;
+  }
 
   get(id) { return this.videos.find(video => video.id.toLowerCase() === String(id).toLowerCase()); }
   paths(id, quality = null) {
@@ -234,18 +279,68 @@ export class Library {
   async search(query, limit = 20) {
     const text = String(query || "").trim();
     if (!text || text.length > 200) throw new Error("Enter a search of up to 200 characters.");
-    const result = await this.runner(this.ytDlp, ["--flat-playlist", "--dump-single-json", `ytsearch${limit}:${text}`]);
+    const result = await this.runner(this.ytDlp, [...this.ytArgs(), "--flat-playlist", "--dump-single-json", `ytsearch${limit}:${text}`]);
     const object = JSON.parse(result.stdout);
     return mapEntries(object.entries);
   }
 
+  // YouTube's own autocomplete, so the car never needs to paste a link.
+  async suggest(query) {
+    const text = String(query || "").trim().toLowerCase();
+    if (text.length < 2 || text.length > 100) return [];
+    if (this.suggestCache.has(text)) return this.suggestCache.get(text);
+    const url = `https://suggestqueries.google.com/complete/search?client=firefox&ds=yt&q=${encodeURIComponent(text)}`;
+    const response = await this.fetcher(url, { signal: AbortSignal.timeout(4000) });
+    if (!response.ok) return [];
+    const body = await response.json();
+    const items = Array.isArray(body?.[1]) ? body[1].filter(item => typeof item === "string").slice(0, 8) : [];
+    if (this.suggestCache.size > 200) this.suggestCache.delete(this.suggestCache.keys().next().value);
+    this.suggestCache.set(text, items);
+    return items;
+  }
+
   async channel(id) {
     if (!/^UC[A-Za-z0-9_-]{20,30}$/.test(String(id || ""))) throw new Error("That channel could not be found.");
-    const result = await this.runner(this.ytDlp, ["--flat-playlist", "--playlist-end", "30", "--dump-single-json",
+    const result = await this.runner(this.ytDlp, [...this.ytArgs(), "--flat-playlist", "--playlist-end", "30", "--dump-single-json",
       `https://www.youtube.com/channel/${id}/videos`]);
     const object = JSON.parse(result.stdout);
-    return { channel: { id, name: object.channel || object.uploader || object.title || "YouTube channel",
-      handle: object.channel_url || null, avatar: null, subscribers: null }, videos: mapEntries(object.entries), continuation: null };
+    const info = await this.rememberChannel(id, object);
+    return { channel: { id, name: info.name || "YouTube channel", handle: object.uploader_id || object.channel_url || null,
+      avatar: info.avatar, subscribers: info.subscribers }, videos: mapEntries(object.entries), continuation: null };
+  }
+
+  async rememberChannel(id, object) {
+    const followers = Number(object.channel_follower_count);
+    const info = { name: object.channel || object.uploader || object.title || null, avatar: channelAvatar(object.thumbnails),
+      subscribers: followers > 0 ? `${compactCount(followers)} subscribers` : null, fetchedAt: Date.now() };
+    this.channels[id] = info;
+    await this.atomicJSON(this.channelsFile, this.channels);
+    return info;
+  }
+
+  // Library items carry their channel's avatar. Missing or week-old entries
+  // are looked up one at a time in the background so the list never waits.
+  libraryView() {
+    const stale = Date.now() - 7 * 86_400_000;
+    for (const id of new Set(this.videos.map(video => video.channelId).filter(Boolean))) {
+      if (!this.channels[id] || this.channels[id].fetchedAt < stale) this.channelLookups.add(id);
+    }
+    this.lookUpChannels();
+    return this.videos.map(video => {
+      const avatar = video.channelId ? this.channels[video.channelId]?.avatar : null;
+      return avatar ? { ...video, channelAvatar: avatar } : video;
+    });
+  }
+
+  lookUpChannels() {
+    if (this.channelLookup || !this.channelLookups.size) return;
+    const id = this.channelLookups.values().next().value;
+    this.channelLookups.delete(id);
+    this.channelLookup = this.runner(this.ytDlp, [...this.ytArgs(), "--flat-playlist", "--playlist-end", "1", "--dump-single-json",
+      `https://www.youtube.com/channel/${id}`])
+      .then(result => this.rememberChannel(id, JSON.parse(result.stdout)))
+      .catch(() => { this.channels[id] = { ...this.channels[id], fetchedAt: Date.now() }; })
+      .finally(() => { this.channelLookup = null; this.lookUpChannels(); });
   }
 
   drain() {
@@ -266,7 +361,7 @@ export class Library {
     try {
       video.message = "Reading YouTube details…";
       await this.save();
-      const metadataResult = await this.runner(this.ytDlp, ["--dump-single-json", "--no-playlist", url]);
+      const metadataResult = await this.runner(this.ytDlp, [...this.ytArgs(), "--dump-single-json", "--no-playlist", url]);
       const metadata = JSON.parse(metadataResult.stdout);
       video.title = metadata.title || video.title;
       video.channel = metadata.channel || metadata.uploader || video.channel;
@@ -277,7 +372,7 @@ export class Library {
       await this.save();
       let height = parseQuality(targetQuality);
       const format = `bestvideo[height<=${height}][vcodec^=avc1]+bestaudio[ext=m4a]/best[height<=${height}][ext=mp4]/best[height<=${height}]`;
-      await this.runner(this.ytDlp, ["--no-playlist", "--no-progress", "--format", format,
+      await this.runner(this.ytDlp, [...this.ytArgs(), "--no-playlist", "--no-progress", "--format", format,
         "--merge-output-format", "mp4", "--output", files.source, url]);
       const source = files.source;
       const probe = await this.runner(this.ffprobe, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", source]);
@@ -336,11 +431,15 @@ export class Library {
     await this.atomicJSON(files.seek, { duration: video.duration, size, points });
   }
 
+  // Shape the web app's Downloads tab expects: {items:[{id,title,videoId,stage}]}.
   queueView() {
-    return [this.active, ...this.queue].filter(Boolean).map((id, index) => {
+    const items = [this.active, ...this.queue].filter(Boolean).map((id, index) => {
       const video = this.get(id);
-      return { id, title: video?.title || id, state: index === 0 && this.active ? "active" : "queued", api: true };
+      const active = index === 0 && Boolean(this.active);
+      const stage = !active ? "queued" : (/^Preparing/.test(video?.message || "") ? "transcoding" : "downloading");
+      return { id, title: video?.title || id, videoId: video?.youtubeID || null, stage };
     });
+    return { items };
   }
 }
 
@@ -361,6 +460,18 @@ function formatDuration(value) {
   const parts = [Math.floor(seconds / 3600), Math.floor(seconds % 3600 / 60), seconds % 60];
   if (parts[0] === 0) parts.shift();
   return parts.map((part, index) => index ? String(part).padStart(2, "0") : String(part)).join(":");
+}
+
+// yt-dlp lists a channel's banner and avatar together; the avatar is the
+// "avatar_uncropped" entry. Ask the image CDN for a small square.
+function channelAvatar(thumbnails = []) {
+  const url = thumbnails.find(item => item?.id === "avatar_uncropped")?.url;
+  if (!url || !/^https:\/\/yt3\.(googleusercontent|ggpht)\.com\//.test(url)) return null;
+  return url.replace(/=[^/=]*$/, "") + "=s176-c-k-c0x00ffffff-no-rj";
+}
+
+function compactCount(value) {
+  return value >= 1e6 ? `${+(value / 1e6).toFixed(value < 1e7 ? 1 : 0)}M` : value >= 1e3 ? `${+(value / 1e3).toFixed(value < 1e4 ? 1 : 0)}K` : String(value);
 }
 
 function mapEntries(entries = []) {

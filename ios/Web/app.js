@@ -14,13 +14,15 @@ try { const saved = globalThis.localStorage?.getItem('vp-playback-quality'); if 
 // than changing the source file (which would require re-preparing videos and
 // could permanently clip loud sources).
 const audioBoostKey = 'video-pilot-audio-boost-v2';
-// Start at unity gain. A previous build enabled a 170%/135% boost by default;
-// that could clip already-hot sources on Tesla's WebAudio path. Audio + is
-// still available as a conservative, reversible 115% option.
-const audioBoostVolume = 1.15;
+// Start at unity gain. Audio boost is a loudness chain, not plain gain: 2x
+// (+6 dB) into a compressor that evens out loud and quiet parts, then a
+// brick-wall limiter so peaks never clip. 115% alone was inaudible once the
+// old limiter squashed it back down. Without WebAudio compressors, fall back
+// to the gentle plain gain that cannot clip much.
+const audioBoostVolume = 2, audioBoostFallbackVolume = 1.15;
 let audioBoost = false;
 let audioMuted = false;
-let audioLimiter = null;
+let audioLimiter = null; // [compressor, limiter] while the boost chain is wired
 try {
   const savedAudioBoost = globalThis.localStorage?.getItem(audioBoostKey);
   if (savedAudioBoost != null) audioBoost = savedAudioBoost === 'on';
@@ -199,7 +201,7 @@ persistDiagnostics();
 // ---- Navigation ----
 // Persistent left rail (bottom bar on narrow screens). The channel page is a
 // sub-page: the rail keeps highlighting the section it was opened from.
-const NAV_TABS = ['home-tab', 'library-tab', 'queue-tab', 'settings-tab'];
+const NAV_TABS = ['home-tab', 'subs-tab', 'library-tab', 'queue-tab', 'settings-tab'];
 let currentTab = 'home-tab';
 let navParent = 'home-tab';
 function showTab(id) {
@@ -218,6 +220,7 @@ function showTab(id) {
   if (id === 'settings-tab') { renderSettings(); renderLiveDiagnostics(); }
   if (id === 'queue-tab') void refreshQueueApi();
   if (id === 'library-tab') rerenderLibrary();
+  if (id === 'subs-tab') void loadSubscriptions();
 }
 function goTo(id) {
   if (id === currentTab && id === 'home-tab' && searchState.query) clearSearch();
@@ -343,7 +346,7 @@ function videoThumb(video, onPlay, {image = thumbnailFor(video), duration = form
 function videoAction(video, preparingID) {
   if (video.state === 'ready') {
     const resume = savedResume(video);
-    return {label:resume ? `Resume · ${formatTime(resume)}` : (isWatched(video) ? 'Watch again' : 'Play'), run:() => play(video), primary:true};
+    return {label:resume ? `Resume · ${formatTime(resume)}` : (isWatched(video) ? 'Watch again' : 'Play'), run:() => play(video), primary:true, remove:() => removeVideo(video.id)};
   }
   if (video.state === 'failed' || video.state === 'paused') return {label:'Retry', run:() => retryVideo(video.id), primary:true, remove:() => removeVideo(video.id)};
   const active = video.id?.toLowerCase() === preparingID?.toLowerCase();
@@ -421,7 +424,7 @@ function videoCard(video, preparingID, showChannel = true, number = 0) {
 function channelTile(name, videos) {
   const tile = element('button', 'channel-tile'); tile.type = 'button';
   const head = element('span', 'channel-tile-head');
-  head.append(avatarNode(name));
+  head.append(avatarNode(name, videos.find(video => video.channelAvatar)?.channelAvatar));
   const text = element('span', 'channel-tile-text');
   text.append(element('strong', '', name));
   const latest = sortLibrary(videos, 'newest')[0];
@@ -468,12 +471,17 @@ function groupByChannel(videos) {
   }
   return groups;
 }
-function renderLibrary(videos, preparingID) {
-  lastLibrary = {videos, preparingID};
+// Only finished videos belong in the library; queued, preparing and failed
+// ones live on the Downloads tab until they are ready to play.
+const inLibrary = video => video.state === 'ready';
+function renderLibrary(allVideos, preparingID) {
+  lastLibrary = {videos:allVideos, preparingID};
   if (currentTab !== 'library-tab' && librarySignature) return;
+  const videos = allVideos.filter(inLibrary);
+  const pending = allVideos.length - videos.length;
   const signature = JSON.stringify([videos.map(video => [video.id, video.state, video.title, video.message, video.channel,
-    video.publishedAt, video.duration, video.height, savedResume(video), isWatched(video)]), preparingID, librarySort, libraryView,
-    channelOrder, libraryFilter, qualitySetting, dataSaver()]);
+    video.publishedAt, video.duration, video.height, video.channelAvatar, savedResume(video), isWatched(video)]), preparingID, librarySort, libraryView,
+    channelOrder, libraryFilter, qualitySetting, dataSaver(), pending]);
   if (signature === librarySignature) return;
   librarySignature = signature;
   if ($('library-sort').value !== librarySort) $('library-sort').value = librarySort;
@@ -489,6 +497,7 @@ function renderLibrary(videos, preparingID) {
   const filtered = query ? videos.filter(video => `${video.title} ${video.channel || ''}`.toLowerCase().includes(query)) : videos;
   const library = $('library'); library.replaceChildren();
   library.className = libraryView === 'channels' && !query ? 'channel-grid' : 'video-grid';
+  if (!videos.length && pending) { library.append(messageCard('Nothing ready yet', `${pending} video${pending === 1 ? ' is' : 's are'} on the Downloads tab and will appear here once ${pending === 1 ? 'it is' : 'they are'} ready to play.`, {label:'Go to Downloads', run:() => goTo('queue-tab')})); return; }
   if (!videos.length) { library.append(messageCard('Your library is empty', 'Search on Home and tap Add to library. Videos you add download to the Pi and play here.', {label:'Go to Home', run:() => goTo('home-tab')})); return; }
   if (!filtered.length) { library.append(messageCard('No matches', `Nothing in your library matches “${libraryFilter}”.`)); return; }
   if (libraryView === 'all' || query) {
@@ -532,7 +541,7 @@ function channelLibraryVideos() {
   const spec = channelState.spec, channel = channelState.channel;
   if (!spec) return [];
   const names = new Set([spec.name, channel?.name].filter(Boolean).map(name => name.trim().toLowerCase()));
-  return videos.filter(video => {
+  return videos.filter(inLibrary).filter(video => {
     if (spec.libraryOnly) return !(video.channel || '').trim();
     if (channel?.id && video.channelId) return video.channelId === channel.id;
     if (spec.id && video.channelId) return video.channelId === spec.id;
@@ -572,7 +581,7 @@ function renderChannelHeader() {
   const name = channel?.name || spec.name || 'Channel';
   $('channel-name').textContent = name;
   $('channel-meta').textContent = [channel?.handle, channel?.subscribers].filter(Boolean).join(' · ');
-  const avatar = avatarNode(name, channel?.avatar, true);
+  const avatar = avatarNode(name, channel?.avatar || channelLibraryVideos().find(video => video.channelAvatar)?.channelAvatar, true);
   avatar.id = 'channel-avatar';
   $('channel-avatar').replaceWith?.(avatar);
 }
@@ -746,6 +755,44 @@ async function retryAll() {
   await refresh(true);
   return failed.length;
 }
+
+// ---- Subscriptions ----
+// Newest uploads from channels the Pi's YouTube account follows. The Pi
+// caches the feed for a few minutes; Refresh asks it for a fresh copy.
+const subsState = {loadedAt:0, loading:false, seq:0};
+async function loadSubscriptions(refresh = false) {
+  if (subsState.loading || (!refresh && Date.now() - subsState.loadedAt < 5 * 60_000)) return;
+  const seq = ++subsState.seq; subsState.loading = true;
+  $('subs-status').textContent = 'Loading your subscriptions…';
+  if (!$('subs-list').childNodes?.length) $('subs-list').replaceChildren(...Array.from({length:8}, () => element('div', 'card skeleton')));
+  try {
+    const feed = await api('/api/subscriptions' + (refresh ? '?refresh=1' : ''), null, 60000);
+    if (seq !== subsState.seq) return;
+    subsState.loadedAt = Date.now();
+    if (!feed?.signedIn) {
+      $('subs-status').textContent = '';
+      $('subs-list').replaceChildren(messageCard('Sign in to see your subscriptions',
+        'Open Firefox on the Pi (its screen or VNC) and sign in at youtube.com. Your subscriptions show up here a couple of minutes later.',
+        {label:'Account settings', run:() => goTo('settings-tab')}));
+      return;
+    }
+    const videos = Array.isArray(feed.videos) ? feed.videos : [];
+    $('subs-status').textContent = videos.length ? `${videos.length} newest uploads` : '';
+    $('subs-list').replaceChildren(...(videos.length ? videos.map(video => youtubeCard(video))
+      : [messageCard('Nothing new', 'Channels you subscribe to have no recent uploads.')]));
+  } catch (error) {
+    if (seq !== subsState.seq) return;
+    $('subs-status').textContent = '';
+    $('subs-list').replaceChildren(messageCard('Could not load subscriptions', error.message,
+      {label:'Try again', run:() => void loadSubscriptions(true)}));
+  } finally { if (seq === subsState.seq) subsState.loading = false; }
+}
+$('subs-refresh').onclick = () => void loadSubscriptions(true);
+$('yt-signout').onclick = async () => {
+  if (!globalThis.confirm?.('Sign the Pi out of YouTube? Downloads keep working without an account.')) return;
+  try { await api('/api/youtube/signout', {}); subsState.loadedAt = 0; toast('Signed out of YouTube on the Pi.'); await refresh(true); }
+  catch (error) { notice(error.message); }
+};
 
 // ---- Polling ----
 async function refresh(force = false) {
@@ -1367,9 +1414,15 @@ function renderSettings() {
   $('conn-down').textContent = mbps(status.downloadMbps); $('conn-up').textContent = mbps(status.uploadMbps);
   $('conn-streams').textContent = String(Number(status.activeStreams) || 0);
   $('settings-auth').textContent = status.authentication === 'faceID-on-start' ? 'Face ID per app session' : 'App authorization';
-  $('settings-youtube').textContent = status.youtubeSignedIn ? 'Google connected' : 'Not signed in';
+  $('settings-youtube').textContent = status.youtubeSignedIn ? 'Signed in' : 'Not signed in';
+  $('yt-account-status').textContent = status.youtubeSignedIn ? 'Signed in on the Pi' : 'Not signed in';
+  $('yt-signout').hidden = !status.youtubeSignedIn;
   $('settings-search').textContent = status.youtubeSearch ? 'Enabled' : 'Unavailable';
-  const version = status.version ? `${status.version}${status.build ? ` (build ${status.build})` : ''}` : '—';
+  // Named builds read "0.1.40 · Pi build"; numbered ones keep "(build 12)".
+  const named = /^[a-z]+$/i.test(String(status.build || ''));
+  const version = !status.version ? '—' : named
+    ? `${String(status.version).replace(new RegExp(`-${status.build}$`, 'i'), '')} · ${status.build} build`
+    : `${status.version}${status.build ? ` (build ${status.build})` : ''}`;
   $('settings-version').textContent = version;
   $('settings-version-line').textContent = status.version ? `Video Pilot ${version}` : 'Video Pilot';
   $('stat-poll').textContent = `every ${pollInterval() / 1000} s`;
@@ -1463,7 +1516,7 @@ function closePlayer(resumePosition = null, preserveFullscreen = false) {
   playback = null;
   globalThis.clearTimeout?.(seekTimer); seekTimer = null;
   const oldPlayer = player;
-  try { audioLimiter?.disconnect?.(); } catch {}
+  for (const node of audioLimiter || []) { try { node.disconnect(); } catch {} }
   audioLimiter = null;
   player = null; currentOffset = 0; $('player-section').hidden = true;
   const source = oldPlayer?.source;
@@ -1499,49 +1552,48 @@ function unlockAudio() {
     if (context?.state === 'suspended' || context?.state === 'interrupted') context.resume()?.catch(() => {});
   } catch { /* A later Play or Unmute gesture can retry audio activation. */ }
 }
+// Returns true when the boost chain carries the output.
 function configureAudioLimiter() {
   const output = player?.audioOut;
   const context = output?.context;
   const gain = output?.gain;
-  if (!context || !gain) return;
+  if (!context || !gain) return false;
+  const unwire = () => { for (const node of audioLimiter || []) { try { node.disconnect(); } catch {} } audioLimiter = null; };
   try {
     if (!audioBoost) {
-      // Unity gain is the clean baseline. Remove the compressor entirely when
-      // Audio + is off; some Tesla WebAudio builds introduce their own clicks
+      // Unity gain is the clean baseline. Remove the chain entirely when the
+      // boost is off; some Tesla WebAudio builds introduce their own clicks
       // when an unnecessary dynamics node sits in the output path.
-      audioLimiter?.disconnect?.();
-      audioLimiter = null;
+      unwire();
       gain.disconnect();
       gain.connect(context.destination);
-      return;
+      return false;
     }
-    if (typeof context.createDynamicsCompressor !== 'function') return;
-    if (audioLimiter?.context === context) return;
-    audioLimiter?.disconnect?.();
-    // JSMpeg normally connects its gain node directly to the destination.
-    // Replace that direct edge with a conservative compressor so the optional
-    // browser boost cannot clip loud source peaks into crackling distortion.
+    if (typeof context.createDynamicsCompressor !== 'function') return false;
+    if (audioLimiter?.[0]?.context === context) return true;
+    unwire();
     gain.disconnect();
+    const compressor = context.createDynamicsCompressor();
+    compressor.threshold.value = -20; compressor.knee.value = 10; compressor.ratio.value = 6;
+    compressor.attack.value = 0.003; compressor.release.value = 0.25;
     const limiter = context.createDynamicsCompressor();
-    limiter.threshold.value = -3;
-    limiter.knee.value = 6;
-    limiter.ratio.value = 8;
-    limiter.attack.value = 0.003;
-    limiter.release.value = 0.12;
-    gain.connect(limiter);
-    limiter.connect(context.destination);
-    audioLimiter = limiter;
+    limiter.threshold.value = -1.5; limiter.knee.value = 0; limiter.ratio.value = 20;
+    limiter.attack.value = 0.001; limiter.release.value = 0.05;
+    gain.connect(compressor); compressor.connect(limiter); limiter.connect(context.destination);
+    audioLimiter = [compressor, limiter];
+    return true;
   } catch {
     // Older Tesla WebAudio implementations may not support a compressor;
     // leave JSMpeg's direct, unmodified output intact in that case.
+    unwire();
     try { gain.disconnect(); gain.connect(context.destination); } catch {}
-    audioLimiter = null;
+    return false;
   }
 }
 function applyAudioState() {
   if (!player) return;
-  configureAudioLimiter();
-  const volume = audioMuted ? 0 : (audioBoost ? audioBoostVolume : 1);
+  const chained = configureAudioLimiter();
+  const volume = audioMuted ? 0 : (audioBoost ? (chained ? audioBoostVolume : audioBoostFallbackVolume) : 1);
   try {
     // JSMpeg exposes both the public volume property and its GainNode. Set
     // both so a gain change is audible immediately, including already queued
@@ -1558,7 +1610,7 @@ function applyAudioState() {
   if (boost) {
     boost.textContent = audioBoost ? 'Audio +' : 'Audio';
     boost.setAttribute?.('aria-pressed', audioBoost ? 'true' : 'false');
-    boost.title = audioBoost ? 'Audio boost on (115%)' : 'Audio boost off (100%)';
+    boost.title = audioBoost ? 'Audio boost on' : 'Audio boost off';
   }
   reportDiagnostic('audioState', {muted:audioMuted, boost:audioBoost, gain:volume});
 }

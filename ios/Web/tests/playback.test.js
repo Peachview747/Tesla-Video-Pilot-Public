@@ -138,13 +138,31 @@ test('quiet Tesla audio can be boosted without losing mute state', () => {
   const player = f.players[0];
   assert.equal(player.volume, 1, 'new playback starts at unity gain to avoid clipping');
   f.element('audio-boost').onclick();
-  assert.equal(player.volume, 1.15, 'Audio + enables a gentle boost');
+  assert.equal(player.volume, 1.15, 'without WebAudio compressors the boost falls back to gentle plain gain');
   f.element('mute').onclick();
   assert.equal(player.volume, 0, 'mute still wins over the gain setting');
   f.element('audio-boost').onclick();
   assert.equal(player.volume, 0, 'changing gain while muted stays silent');
   f.element('mute').onclick();
   assert.equal(player.volume, 1, 'unmute restores the selected unity gain');
+});
+test('audio boost routes through a compressor and limiter when WebAudio has them', () => {
+  const f = setup(); f.play();
+  const player = f.players[0];
+  const edges = [];
+  const node = name => ({name, threshold:{}, knee:{}, ratio:{}, attack:{}, release:{},
+    connect(target) { edges.push(`${name}>${target.name}`); }, disconnect() { edges.push(`${name} x`); }});
+  const context = player.audioOut.context;
+  context.destination = {name:'out'};
+  context.createDynamicsCompressor = () => { const n = node(context.made ? 'limiter' : 'compressor'); context.made = true; n.context = context; return n; };
+  player.audioOut.gain = {...node('gain'), gain:{value:1}};
+  f.element('audio-boost').onclick();
+  assert.equal(player.volume, 2, 'the chain adds +6 dB before compression');
+  assert.deepEqual(edges.filter(edge => edge.includes('>')), ['gain>compressor', 'compressor>limiter', 'limiter>out']);
+  edges.length = 0;
+  f.element('audio-boost').onclick();
+  assert.equal(player.volume, 1);
+  assert.ok(edges.includes('gain>out'), 'turning the boost off restores the direct path');
 });
 test('startup recovery holds a manual pause and rearms when playback resumes', async () => {
   const f = setup({recoveryDelay:10}); f.play();
