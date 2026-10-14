@@ -15,7 +15,7 @@ install -d -m 0755 /opt/video-pilot
 source_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 rsync -a --delete --exclude .git --exclude node_modules --exclude .venv "$source_root/" /opt/video-pilot/
 python3 -m venv /opt/video-pilot/pi-host/.venv
-/opt/video-pilot/pi-host/.venv/bin/pip install --upgrade pip yt-dlp
+/opt/video-pilot/pi-host/.venv/bin/pip install --upgrade pip yt-dlp yt-dlp-ejs
 cd /opt/video-pilot/pi-host
 npm ci --omit=dev --no-audit --no-fund
 chown -R root:root /opt/video-pilot
