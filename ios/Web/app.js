@@ -1180,7 +1180,10 @@ async function switchPlaybackQuality(value) {
       activeQuality = quality;
       requestSeek(currentOffset, {preservePaused:true, preserveFullscreen:true});
     }
-    $('quality-status').textContent = `${quality}p${quality <= 540 ? ' · Lower hotspot data use' : ''}`;
+    // The Quality menu already shows the current quality; keep the status line
+    // for news (preparing, errors) so it does not take up a row of the screen.
+    $('quality-status').textContent = '';
+    if (quality <= 540) toast(`${quality}p · Lower hotspot data use`);
   } catch (error) {
     if (request === qualityRequestSeq && current === video) {
       playbackQuality = previous; syncPlaybackQuality(); $('quality-status').textContent = error.message;
@@ -2069,7 +2072,7 @@ let playerReturn = null;
 function play(video, seek = null) {
   ++qualityRequestSeq;
   activeQuality = defaultPlaybackQuality(video);
-  $('quality-status').textContent = activeQuality ? `${activeQuality}p` : '';
+  $('quality-status').textContent = '';
   // current is assigned by startPlayer; set the control after that as well.
   if ($('player-section').hidden) playerReturn = {tab:currentTab, y:globalThis.scrollY || 0};
   invalidateSeeks();

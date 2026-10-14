@@ -117,6 +117,10 @@ export function installRecordedAudioLead(player, lead = 0.75) {
     if (this.video && this.video.currentTime < this.audio.currentTime) notEnoughData = !this.video.decode();
     this.source.resume(this.demuxer.currentTime - this.audio.currentTime);
     if (notEnoughData && this.source.completed) {
+      // The file is done, but up to the lead's worth of audio (and its video
+      // frames) is still queued for the speaker. Pausing now would cut the
+      // last second off every video, so let that tail play out first.
+      if ((Number(this.audioOut?.enqueuedTime) || 0) > 0.05) return;
       if (this.loop) this.seek(0);
       else { this.pause(); this.options.onEnded?.(this); }
     } else if (notEnoughData) this.options.onStalled?.(this);
