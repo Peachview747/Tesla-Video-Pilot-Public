@@ -107,7 +107,15 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
       if (url.pathname === "/api/search" && req.method === "GET") return send(res, 200, { results: await library.search(url.searchParams.get("q")), continuation: null });
       if (url.pathname === "/api/explore" && req.method === "GET") return send(res, 200, await library.search("trending videos", 20));
       if (url.pathname === "/api/foryou" && req.method === "GET") {
-        const videos = await library.search("trending videos", 20);
+        // Signed in: the account's own YouTube home feed plus new uploads from
+        // subscriptions, like youtube.com. Otherwise (or if YouTube fails) trending.
+        const refresh = url.searchParams.get("refresh") === "1";
+        const [recommended, subscribed] = await Promise.allSettled([library.recommended?.({ refresh }) ?? Promise.resolve(null),
+          library.subscriptions?.({ refresh }) ?? Promise.resolve(null)]);
+        const forYou = recommended.status === "fulfilled" ? recommended.value : null;
+        const newUploads = subscribed.status === "fulfilled" && subscribed.value?.signedIn
+          ? subscribed.value.videos.filter(video => !video.live).slice(0, 20) : [];
+        const videos = forYou?.length ? null : await library.search("trending videos", 20);
         const continuing = library.historyView(20).items
           .filter(item => item.inLibrary && item.position > 0 && item.progress < 0.95)
           .map(item => ({ id: item.libraryId, title: item.title, channel: item.channel, channelId: item.channelId,
@@ -115,8 +123,11 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
             libraryId: item.libraryId, libraryState: item.state }));
         const rows = [];
         if (continuing.length) rows.push({ title: "Continue watching", kind: "continue", videos: continuing });
-        rows.push({ title: "Trending now", kind: "trending", videos });
-        return send(res, 200, { rows, errors: [] });
+        if (forYou?.length) rows.push({ title: "Recommended for you", kind: "recommended", videos: forYou });
+        if (newUploads.length) rows.push({ title: "New from your subscriptions", kind: "subscriptions", videos: newUploads });
+        if (videos) rows.push({ title: "Trending now", kind: "trending", videos });
+        const errors = recommended.status === "rejected" ? ["Your YouTube recommendations did not load; showing trending."] : [];
+        return send(res, 200, { rows, errors });
       }
       if (url.pathname === "/api/channel" && req.method === "GET")
         return send(res, 200, await library.channel(url.searchParams.get("id")));

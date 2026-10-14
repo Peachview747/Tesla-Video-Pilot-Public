@@ -88,13 +88,13 @@ export class Library {
     const cookies = String(text || "").trim();
     if (!/\t(SAPISID|__Secure-3PSID)\t/.test(cookies)) throw new Error("Those cookies are not signed in to YouTube.");
     await writeFile(this.cookiesFile, cookies + "\n", { mode: 0o600 });
-    this.subscriptionCache = null;
+    this.subscriptionCache = null; this.recommendedCache = null;
     this.notify();
   }
 
   async clearCookies() {
     await unlink(this.cookiesFile).catch(() => {});
-    this.subscriptionCache = null;
+    this.subscriptionCache = null; this.recommendedCache = null;
     this.notify();
   }
 
@@ -120,6 +120,17 @@ export class Library {
     const value = { signedIn: true, channels, videos: mapEntries(JSON.parse(uploads.stdout).entries) };
     this.subscriptionCache = { at: Date.now(), value };
     return value;
+  }
+
+  // The signed-in account's YouTube home feed (what youtube.com recommends
+  // from watch history), cached like the subscriptions feed.
+  async recommended({ refresh = false } = {}) {
+    if (!await this.signedIn()) return null;
+    if (!refresh && this.recommendedCache && Date.now() - this.recommendedCache.at < 15 * 60_000) return this.recommendedCache.videos;
+    const result = await this.runner(this.ytDlp, [...this.ytArgs(), "--flat-playlist", "--playlist-end", "40", "--dump-single-json", ":ytrec"]);
+    const videos = mapEntries(JSON.parse(result.stdout).entries).filter(video => !video.live);
+    this.recommendedCache = { at: Date.now(), videos };
+    return videos;
   }
 
   get(id) { return this.videos.find(video => video.id.toLowerCase() === String(id).toLowerCase()); }

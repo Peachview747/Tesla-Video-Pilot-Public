@@ -103,8 +103,12 @@ test("subscriptions need sign-in cookies and then read the YouTube feed with the
     "followed channels are sorted by name and only YouTube image hosts are kept");
   await library.subscriptions();
   assert.equal(calls.length, 2, "the feed is cached");
+  const recommended = await library.recommended();
+  assert.ok(calls.at(-1).includes(":ytrec") && calls.at(-1).includes(library.cookiesFile), "recommendations use the account's YouTube home");
+  assert.deepEqual(recommended.map(video => video.id), ["dQw4w9WgXcQ", "aaaaaaaaaaa"], "live videos are left out");
   await library.clearCookies();
   assert.equal(await library.signedIn(), false);
+  assert.equal(await library.recommended(), null);
 });
 
 test("turns interrupted preparation into a retryable item", async () => {
