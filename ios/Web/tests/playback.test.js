@@ -218,6 +218,17 @@ test('full-screen picture cycles Fit, Fill and Stretch', async () => {
   assert.equal(button.textContent, 'Fit');
   f.close();
 });
+test('seeking and reconnecting keep full screen; only Exit leaves it', async () => {
+  const f = setup(); f.play({id:'video', title:'Test', duration:100});
+  await f.element('fullscreen').onclick();
+  f.element('forward10').onclick();
+  await new Promise(resolve => setTimeout(resolve, 400));
+  assert.equal(f.element('exit-fullscreen').hidden, false, 'still full screen after +10 s');
+  assert.ok(f.element('player-shell').classList.contains('vp-fullscreen'));
+  f.element('exit-fullscreen').onclick();
+  assert.equal(f.element('player-shell').classList.contains('vp-fullscreen'), false);
+  f.close();
+});
 test('seeking keeps the user mute preference across decoder replacement', async () => {
   const f = setup(); f.play({id:'video', title:'Test', duration:100});
   f.element('mute').onclick();

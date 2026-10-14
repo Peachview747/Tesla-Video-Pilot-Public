@@ -1730,7 +1730,10 @@ function closePlayer(resumePosition = null, preserveFullscreen = false) {
   const oldPlayer = player;
   for (const node of audioLimiter || []) { try { node.disconnect(); } catch {} }
   audioLimiter = null;
-  player = null; currentOffset = 0; $('player-section').hidden = true;
+  // A restart (seek, reconnect, quality switch) keeps the player and its last
+  // frame on screen; hiding it flashed the page underneath mid-video.
+  player = null; currentOffset = 0;
+  if (!preserveFullscreen) $('player-section').hidden = true;
   const source = oldPlayer?.source;
   let stopped = source?.stoppedPromise;
   let playerDestroyed = false;
@@ -1872,7 +1875,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
     $('playback-status').textContent = message;
     seekChain = seekChain.then(async () => {
       if (generation !== seekGeneration || current !== videoAtError) return;
-      await closePlayer(target);
+      await closePlayer(target, true);
       if (generation !== seekGeneration || current !== videoAtError) return;
       startPlayer(videoAtError, target, session.recoveryAttempt + 1);
     }).catch(error => {
@@ -1900,7 +1903,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
     $('playback-status').textContent = 'Pi is busy. Retrying…';
     seekChain = seekChain.then(async () => {
       if (generation !== seekGeneration || current !== videoAtError) return;
-      await closePlayer(target);
+      await closePlayer(target, true);
       await new Promise(resolve => globalThis.setTimeout(resolve, delay));
       if (generation !== seekGeneration || current !== videoAtError) return;
       startPlayer(videoAtError, target, session.recoveryAttempt, attempt);
@@ -2186,7 +2189,8 @@ document.addEventListener?.('fullscreenchange', () => {
   if (full) { fullscreenFallback = false; syncFullscreenControls(true); }
   else if (!fullscreenFallback) syncFullscreenControls(false);
 });
-function requestSeek(offset, {preservePaused = false, preserveFullscreen = false} = {}) {
+// A seek reopens the stream; it is not the user leaving, so full screen stays.
+function requestSeek(offset, {preservePaused = false, preserveFullscreen = true} = {}) {
   if (!current) return;
   globalThis.clearTimeout?.(seekTimer);
   const target = Math.max(0, Number(offset) || 0);
