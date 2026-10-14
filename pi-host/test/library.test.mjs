@@ -71,7 +71,7 @@ test("library items gain their channel avatar after a background lookup", async 
   assert.equal(library.libraryView()[0].channelAvatar, undefined);
   await library.channelLookup;
   assert.equal(library.libraryView()[0].channelAvatar, "https://yt3.googleusercontent.com/ytc/abc=s176-c-k-c0x00ffffff-no-rj");
-  assert.equal(library.channels.UCtMVHI3AJD4Qk4hcbZnI9ZQ.subscribers, "3.8M subscribers");
+  assert.equal(library.channels.UCtMVHI3AJD4Qk4hcbZnI9ZQ.subscribers, "3.82M subscribers");
   assert.deepEqual(calls, ["https://www.youtube.com/channel/UCtMVHI3AJD4Qk4hcbZnI9ZQ"], "fresh entries are not looked up again");
   const restored = await new Library({ dataDir, runner }).init();
   assert.ok(restored.libraryView()[0].channelAvatar, "avatars persist across restarts");
@@ -80,7 +80,14 @@ test("library items gain their channel avatar after a background lookup", async 
 test("subscriptions need sign-in cookies and then read the YouTube feed with them", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-subs-"));
   const calls = [];
-  const runner = async (command, args) => { calls.push(args); return { stdout: JSON.stringify({ entries: [{ id: "dQw4w9WgXcQ", title: "New upload", channel: "Chan" }] }) }; };
+  const runner = async (command, args) => {
+    calls.push(args);
+    if (args.at(-1).endsWith("/feed/channels")) return { stdout: JSON.stringify({ entries: [
+      { id: "UCmKLlnlZn3dBFu2UdKxhTXQ", title: "Zed", channel_follower_count: 78300, thumbnails: [{ url: "//yt3.googleusercontent.com/a=s176-c" }] },
+      { id: "UCOt5hVyS2-nbcJ3_FP41Ajg", title: "alpha", thumbnails: [{ url: "https://evil.example/x.png" }] }] }) };
+    return { stdout: JSON.stringify({ entries: [{ id: "dQw4w9WgXcQ", title: "New upload", channel: "Chan" },
+      { id: "aaaaaaaaaaa", title: "Old stream", live_status: "was_live" }, { id: "bbbbbbbbbbb", title: "On air", live_status: "is_live" }] }) };
+  };
   const library = await new Library({ dataDir, runner }).init();
   assert.deepEqual(await library.subscriptions(), { signedIn: false, videos: [] });
   await assert.rejects(library.saveCookies(".youtube.com\tTRUE\t/\tTRUE\t0\tPREF\tx"), /not signed in/);
@@ -88,9 +95,14 @@ test("subscriptions need sign-in cookies and then read the YouTube feed with the
   assert.equal(await library.signedIn(), true);
   const feed = await library.subscriptions();
   assert.equal(feed.videos[0].title, "New upload");
+  assert.deepEqual(feed.videos.map(video => [video.stream || false, video.live || null]), [[false, null], [true, null], [false, "is_live"]]);
   assert.ok(calls[0].includes(library.cookiesFile) && calls[0].includes("https://www.youtube.com/feed/subscriptions"));
+  assert.deepEqual(feed.channels, [
+    { id: "UCOt5hVyS2-nbcJ3_FP41Ajg", name: "alpha", avatar: null, subscribers: null },
+    { id: "UCmKLlnlZn3dBFu2UdKxhTXQ", name: "Zed", avatar: "https://yt3.googleusercontent.com/a=s176-c", subscribers: "78.3K subscribers" }],
+    "followed channels are sorted by name and only YouTube image hosts are kept");
   await library.subscriptions();
-  assert.equal(calls.length, 1, "the feed is cached");
+  assert.equal(calls.length, 2, "the feed is cached");
   await library.clearCookies();
   assert.equal(await library.signedIn(), false);
 });

@@ -103,9 +103,21 @@ export class Library {
   async subscriptions({ refresh = false } = {}) {
     if (!await this.signedIn()) return { signedIn: false, videos: [] };
     if (!refresh && this.subscriptionCache && Date.now() - this.subscriptionCache.at < 10 * 60_000) return this.subscriptionCache.value;
-    const result = await this.runner(this.ytDlp, [...this.ytArgs(), "--flat-playlist", "--playlist-end", "60", "--dump-single-json",
-      "https://www.youtube.com/feed/subscriptions"]);
-    const value = { signedIn: true, videos: mapEntries(JSON.parse(result.stdout).entries) };
+    const feed = (url, end) => this.runner(this.ytDlp, [...this.ytArgs(), "--flat-playlist", "--playlist-end", end, "--dump-single-json", url]);
+    // The channel list is a nicety; the feed still shows if it fails.
+    const [uploads, following] = await Promise.all([feed("https://www.youtube.com/feed/subscriptions", "60"),
+      feed("https://www.youtube.com/feed/channels", "500").catch(() => null)]);
+    const channels = (following ? JSON.parse(following.stdout).entries || [] : [])
+      .filter(entry => /^UC[A-Za-z0-9_-]{20,30}$/.test(entry.channel_id || entry.id || ""))
+      .map(entry => {
+        const followers = Number(entry.channel_follower_count);
+        const thumb = (entry.thumbnails || []).at(-1)?.url || "";
+        return { id: entry.channel_id || entry.id, name: entry.title || entry.channel || "YouTube channel",
+          avatar: /^(https:)?\/\/yt3\.(googleusercontent|ggpht)\.com\//.test(thumb) ? thumb.replace(/^\/\//, "https://") : null,
+          subscribers: followers > 0 ? `${compactCount(followers)} subscribers` : null };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    const value = { signedIn: true, channels, videos: mapEntries(JSON.parse(uploads.stdout).entries) };
     this.subscriptionCache = { at: Date.now(), value };
     return value;
   }
@@ -471,7 +483,9 @@ function channelAvatar(thumbnails = []) {
 }
 
 function compactCount(value) {
-  return value >= 1e6 ? `${+(value / 1e6).toFixed(value < 1e7 ? 1 : 0)}M` : value >= 1e3 ? `${+(value / 1e3).toFixed(value < 1e4 ? 1 : 0)}K` : String(value);
+  // YouTube style: three significant digits (78.3K, 943K, 3.82M).
+  const [unit, scale] = value >= 1e9 ? ["B", 1e9] : value >= 1e6 ? ["M", 1e6] : value >= 1e3 ? ["K", 1e3] : ["", 1];
+  return `${+(value / scale).toPrecision(3)}${unit}`;
 }
 
 function mapEntries(entries = []) {
@@ -481,5 +495,8 @@ function mapEntries(entries = []) {
     duration: formatDuration(entry.duration),
     views: entry.view_count ? Number(entry.view_count).toLocaleString("en-US") + " views" : null,
     published: null,
+    // "live" cannot be downloaded until it ends; "stream" is a finished broadcast.
+    ...(["is_live", "is_upcoming"].includes(entry.live_status) ? { live: entry.live_status } : {}),
+    ...(entry.live_status === "was_live" ? { stream: true } : {}),
   }));
 }

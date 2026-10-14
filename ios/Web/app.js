@@ -600,7 +600,8 @@ function openChannel(spec) {
   Object.assign(channelState, {spec, channel:null, videos:[], continuation:null, loading:false, librarySignature:''});
   hideSuggestions();
   const back = channelState.returnTo?.tab;
-  $('channel-back-label').textContent = back === 'library-tab' ? 'Library' : (back === 'home-tab' && searchState.query ? 'Search' : 'Back');
+  $('channel-back-label').textContent = back === 'library-tab' ? 'Library' : back === 'subs-tab' ? 'Subscriptions'
+    : (back === 'home-tab' && searchState.query ? 'Search' : 'Back');
   renderChannelHeader();
   $('channel-videos').replaceChildren();
   $('channel-more').hidden = true;
@@ -767,7 +768,18 @@ async function retryAll() {
 // ---- Subscriptions ----
 // Newest uploads from channels the Pi's YouTube account follows. The Pi
 // caches the feed for a few minutes; Refresh asks it for a fresh copy.
-const subsState = {loadedAt:0, loading:false, seq:0};
+const subsState = {loadedAt:0, loading:false, seq:0, videos:[], filter:prefs.get('vp-subs-filter', 'all')};
+const SUBS_FILTERS = {all:() => true, videos:video => !video.stream && !video.live, streams:video => video.stream || video.live};
+function renderSubsVideos() {
+  const shown = subsState.videos.filter(SUBS_FILTERS[subsState.filter] || SUBS_FILTERS.all);
+  for (const name of Object.keys(SUBS_FILTERS)) $(`subs-filter-${name}`).setAttribute?.('aria-selected', name === subsState.filter ? 'true' : 'false');
+  $('subs-list').replaceChildren(...(shown.length ? shown.map(video => youtubeCard(video))
+    : [messageCard(subsState.videos.length ? 'Nothing here' : 'Nothing new', subsState.videos.length
+      ? 'No recent uploads match this filter.' : 'Channels you subscribe to have no recent uploads.')]));
+}
+for (const name of Object.keys(SUBS_FILTERS)) $(`subs-filter-${name}`).onclick = () => {
+  subsState.filter = name; prefs.set('vp-subs-filter', name); renderSubsVideos();
+};
 async function loadSubscriptions(refresh = false) {
   if (subsState.loading || (!refresh && Date.now() - subsState.loadedAt < 5 * 60_000)) return;
   const seq = ++subsState.seq; subsState.loading = true;
@@ -778,16 +790,24 @@ async function loadSubscriptions(refresh = false) {
     if (seq !== subsState.seq) return;
     subsState.loadedAt = Date.now();
     if (!feed?.signedIn) {
-      $('subs-status').textContent = '';
+      $('subs-status').textContent = ''; $('subs-channels').hidden = true; $('subs-latest').hidden = true; subsState.videos = [];
       $('subs-list').replaceChildren(messageCard('Sign in to see your subscriptions',
         'Sign in to your YouTube account and the newest uploads from channels you follow show up here.',
         {label:'Sign in to YouTube', run:() => void startSignin()}));
       return;
     }
     const videos = Array.isArray(feed.videos) ? feed.videos : [];
-    $('subs-status').textContent = videos.length ? `${videos.length} newest uploads` : '';
-    $('subs-list').replaceChildren(...(videos.length ? videos.map(video => youtubeCard(video))
-      : [messageCard('Nothing new', 'Channels you subscribe to have no recent uploads.')]));
+    const channels = Array.isArray(feed.channels) ? feed.channels : [];
+    $('subs-status').textContent = channels.length ? `${channels.length} channel${channels.length === 1 ? '' : 's'}` : '';
+    $('subs-channels').hidden = !channels.length; $('subs-latest').hidden = !videos.length;
+    $('subs-channels').replaceChildren(...channels.map(channel => {
+      const button = element('button', 'subs-channel'); button.type = 'button'; button.title = `Open ${channel.name}`;
+      button.append(avatarNode(channel.name, channel.avatar), element('strong', '', channel.name));
+      if (channel.subscribers) button.append(element('small', '', channel.subscribers.replace(' subscribers', '')));
+      button.onclick = () => openChannel({id:channel.id, name:channel.name});
+      return button;
+    }));
+    subsState.videos = videos; renderSubsVideos();
   } catch (error) {
     if (seq !== subsState.seq) return;
     $('subs-status').textContent = '';
@@ -1161,7 +1181,8 @@ function youtubeCard(video, {showChannel = true, badge = true} = {}) {
   const button = element('button', 'card-action'); button.type = 'button';
   node.append(videoThumb({title:video.title}, () => { if (!button.disabled) button.click(); },
     {image:local ? (entry?.youtubeID && !dataSaver() ? youtubeThumb(entry.youtubeID) : '') : feedThumbnail(video), duration:typeof video.duration === 'string' ? video.duration : formatDuration(video.duration),
-      fraction, badge:badge && !local && libraryEntry(video.id)?.state === 'ready' ? 'In library' : ''}));
+      fraction, badge:video.live === 'is_live' ? 'Live now' : video.live === 'is_upcoming' ? 'Upcoming'
+        : badge && !local && libraryEntry(video.id)?.state === 'ready' ? 'In library' : video.stream ? 'Stream' : ''}));
   const body = element('div', 'card-body');
   body.append(element('h3', '', video.title || 'Video'));
   const meta = element('div', 'card-meta');
@@ -1177,6 +1198,11 @@ function youtubeCard(video, {showChannel = true, badge = true} = {}) {
       button.textContent = resume ? `Resume · ${formatTime(resume)}` : 'Play';
       button.onclick = () => playFromLibrary(entry, video.position);
     } else { button.textContent = entry ? 'Not ready yet' : 'Not in library'; button.className = 'card-action quiet'; button.disabled = true; }
+    return node;
+  }
+  if (video.live) {
+    button.textContent = video.live === 'is_live' ? 'Live now · add when it ends' : 'Not started yet';
+    button.className = 'card-action quiet'; button.disabled = true;
     return node;
   }
   const known = cardContext.get(video.id) || {};
