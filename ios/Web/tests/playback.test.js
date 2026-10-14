@@ -12,8 +12,13 @@ const app = readFileSync(new URL('../app.js', import.meta.url), 'utf8')
 function setup({recoveryDelay, fetchImpl} = {}) {
   const elements = new Map(), players = [], intervals = [];
   const element = id => {
-    if (!elements.has(id)) elements.set(id, {textContent:'', hidden:false, dataset:{}, scrollIntoView() {},
-      removeAttribute(name) { delete this[name]; }});
+    if (!elements.has(id)) {
+      const classes = new Set(), listeners = {};
+      elements.set(id, {textContent:'', hidden:false, dataset:{}, scrollIntoView() {}, listeners,
+        classList:{add:name => classes.add(name), remove:name => classes.delete(name), contains:name => classes.has(name)},
+        addEventListener(type, listener) { listeners[type] = listener; },
+        removeAttribute(name) { delete this[name]; }});
+    }
     return elements.get(id);
   };
   class Player {
@@ -183,6 +188,22 @@ test('fullscreen exposes Exit and restores the Full screen button on exit', asyn
   f.element('exit-fullscreen').onclick();
   assert.equal(f.element('fullscreen').hidden, false);
   assert.equal(f.element('exit-fullscreen').hidden, true);
+  f.close();
+});
+test('full-screen controls hide on a tap while playing and come back on the next', async () => {
+  const f = setup(); f.play();
+  const shell = f.element('player-shell'), screen = f.element('screen');
+  const tap = target => shell.listeners.pointerdown({target});
+  await f.element('fullscreen').onclick();
+  assert.equal(shell.classList.contains('vp-chrome-hidden'), false, 'controls show when full screen opens');
+  tap(screen);
+  assert.equal(shell.classList.contains('vp-chrome-hidden'), true, 'a tap on the picture hides them');
+  tap(screen);
+  assert.equal(shell.classList.contains('vp-chrome-hidden'), false, 'the next tap brings them back');
+  f.element('pause').onclick();
+  tap(screen);
+  assert.equal(shell.classList.contains('vp-chrome-hidden'), false, 'paused video keeps its controls');
+  f.element('exit-fullscreen').onclick();
   f.close();
 });
 test('seeking keeps the user mute preference across decoder replacement', async () => {

@@ -267,44 +267,42 @@ canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 250
 .timeline input { flex: 1; min-width: 0; height: 32px; margin: 0; accent-color: #8fb0cc; }
 .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 2px 2px; }
 .controls-spacer { flex: 1; }
-.playback-quality-label { display:flex; align-items:center; gap:8px; color:#e3e9ed; font-size:14px; }
+.playback-quality-label { display:flex; align-items:center; gap:8px; color:#e3e9ed; font-size:14px; white-space:nowrap; }
 .playback-quality-label select { min-height:48px; max-width:190px; padding:8px 12px; border:1px solid #ffffff30; border-radius:12px; color:#e3e9ed; background:#232c33; font:inherit; }
 .quality-status { color:#c0cbd4; font-size:13px; margin:4px 8px; }
 .quality-status:empty { display:none; }
-.controls button { min-width: 96px; min-height: 52px; padding: 8px 18px; border: 1px solid #ffffff1c; border-radius: 12px; background: #232c33; color: #e3e9ed; font-size: 16px; font-weight: 650; }
-.controls button.primary { min-width: 130px; background: #8fb0cc; color: #10171c; border-color: transparent; }
+.controls button { min-width: 0; min-height: 52px; padding: 8px 18px; border: 1px solid #ffffff1c; border-radius: 12px; background: #232c33; color: #e3e9ed; font-size: 16px; font-weight: 650; white-space: nowrap; }
+.controls button.primary { min-width: 120px; background: #8fb0cc; color: #10171c; border-color: transparent; }
 .controls button[aria-pressed="true"] { background: #3b4f5e; }
 #exit-fullscreen { display: none; }
 
-/* Full-screen playback: the picture dominates; a compact control bar sits below it. */
-#player-shell.vp-fullscreen,
-#player-shell:fullscreen,
-#player-shell:-webkit-full-screen {
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
-  width: 100vw; height: 100vh; height: 100dvh; max-width: none; max-height: none; padding: 0 0 10px; border-radius: 0; background: #000; overflow: hidden;
+/* Full-screen playback (:is() so a browser that lacks one of the pseudo-classes
+   still applies the rest): the picture fills the screen and the controls float
+   over its bottom edge. While playing they fade out after a few idle seconds
+   (.vp-chrome-hidden); a tap on the picture brings them back. */
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen) {
+  display: flex; align-items: center; justify-content: center;
+  width: 100vw; height: 100vh; height: 100dvh; max-width: none; max-height: none; padding: 0; border-radius: 0; background: #000; overflow: hidden;
 }
 #player-shell.vp-fullscreen { position: fixed; inset: 0; z-index: 100; }
-#player-shell.vp-fullscreen canvas,
-#player-shell:fullscreen canvas,
-#player-shell:-webkit-full-screen canvas { flex: 0 1 auto; width: 100%; height: auto; max-height: calc(100vh - 116px); max-height: calc(100dvh - 116px); min-height: 0; border-radius: 0; }
-#player-shell.vp-fullscreen .controls,
-#player-shell:fullscreen .controls,
-#player-shell:-webkit-full-screen .controls { flex: 0 0 auto; width: calc(100% - 32px); justify-content: center; gap: 6px; padding: 5px 8px; border-radius: 12px; background: #151c21d9; }
-#player-shell.vp-fullscreen .controls button,
-#player-shell:fullscreen .controls button,
-#player-shell:-webkit-full-screen .controls button { min-width: 0; min-height: 42px; padding: 6px 14px; font-size: 14px; }
-#player-shell.vp-fullscreen .controls-spacer,
-#player-shell:fullscreen .controls-spacer,
-#player-shell:-webkit-full-screen .controls-spacer { flex: 0 0 24px; }
-#player-shell.vp-fullscreen .timeline,
-#player-shell:fullscreen .timeline,
-#player-shell:-webkit-full-screen .timeline { flex: 0 0 auto; width: calc(100% - 40px); padding: 0; font-size: 13px; }
-#player-shell.vp-fullscreen #exit-fullscreen,
-#player-shell:fullscreen #exit-fullscreen,
-#player-shell:-webkit-full-screen #exit-fullscreen {
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen) canvas { width: 100%; height: 100%; max-height: none; aspect-ratio: auto !important; object-fit: contain; border-radius: 0; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen)::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; z-index: 1; height: 180px;
+  background: linear-gradient(transparent, #000000d0); pointer-events: none; transition: opacity .25s; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen) .timeline { position: absolute; left: 20px; right: 20px; bottom: 74px; z-index: 2; padding: 0; font-size: 13px; transition: opacity .25s; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen) .controls { position: absolute; left: 16px; right: 16px; bottom: 12px; z-index: 2; flex-wrap: nowrap; gap: 6px; padding: 0; transition: opacity .25s; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen) .controls button { min-height: 48px; padding: 6px 14px; font-size: 15px; background: #232c33e6; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen) .controls button.primary { background: #8fb0cc; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen) .quality-status { position: absolute; left: 20px; bottom: 112px; z-index: 2; margin: 0; transition: opacity .25s; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen) #exit-fullscreen {
   display: block; position: absolute; top: 14px; right: 14px; z-index: 4; min-height: 46px; padding: 8px 16px;
-  border: 1px solid #ffffff55; border-radius: 12px; background: #151c21d9; color: #f1f1f1; font-size: 15px; font-weight: 650;
+  border: 1px solid #ffffff55; border-radius: 12px; background: #151c21d9; color: #f1f1f1; font-size: 15px; font-weight: 650; transition: opacity .25s;
 }
+#player-shell.vp-chrome-hidden { cursor: none; }
+#player-shell.vp-chrome-hidden::after,
+#player-shell.vp-chrome-hidden .timeline,
+#player-shell.vp-chrome-hidden .controls,
+#player-shell.vp-chrome-hidden .quality-status,
+#player-shell.vp-chrome-hidden #exit-fullscreen { opacity: 0; pointer-events: none; }
 
 .card { position: relative; }
 .card-dismiss { position: absolute; top: 8px; right: 8px; z-index: 2; display: grid; place-items: center; width: 44px; height: 44px; padding: 0;
@@ -351,6 +349,11 @@ canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 250
   .preparation { padding: 10px 16px; margin-bottom: 12px; }
   .settings-card { padding: 18px; }
   .stat-list.two-col { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  .player-overlay { padding: 10px; }
+  .controls { gap: 6px; }
+  .controls button { min-height: 48px; padding: 6px 14px; font-size: 15px; }
+  .controls button.primary { min-width: 104px; }
+  .playback-quality-label select { min-height: 48px; }
 }
 
 /* ---------- Narrow windows ---------- */

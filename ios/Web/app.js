@@ -1664,7 +1664,29 @@ function syncFullscreenControls(active) {
   else shell.classList?.remove?.('vp-fullscreen');
   $('fullscreen').hidden = active;
   $('exit-fullscreen').hidden = !active;
+  showPlayerChrome();
 }
+// Full screen: controls fade out while playing and come back on a tap.
+const CHROME_IDLE_MS = 3500;
+let chromeTimer = null;
+const fullscreenActive = () => Boolean($('player-shell').classList?.contains?.('vp-fullscreen'));
+function showPlayerChrome() {
+  $('player-shell').classList?.remove?.('vp-chrome-hidden');
+  globalThis.clearTimeout?.(chromeTimer); chromeTimer = null;
+  if (fullscreenActive() && player && !player.paused) chromeTimer = globalThis.setTimeout?.(hidePlayerChrome, CHROME_IDLE_MS);
+}
+function hidePlayerChrome() {
+  globalThis.clearTimeout?.(chromeTimer); chromeTimer = null;
+  if (fullscreenActive() && player && !player.paused) $('player-shell').classList?.add?.('vp-chrome-hidden');
+}
+// Hidden controls ignore taps, so the first tap lands on the picture and only
+// reveals them; a tap on the picture while they show hides them again.
+$('player-shell').addEventListener?.('pointerdown', event => {
+  if (!fullscreenActive()) return;
+  const onPicture = event.target === $('screen') || event.target === $('player-shell');
+  const hidden = $('player-shell').classList?.contains?.('vp-chrome-hidden');
+  if (onPicture && !hidden && player && !player.paused) hidePlayerChrome(); else showPlayerChrome();
+});
 function leaveFullscreen() {
   fullscreenFallback = false;
   syncFullscreenControls(false);
@@ -2094,7 +2116,7 @@ $('pause').onclick = () => {
     }
     if (playback) playback.paused = false;
     playback?.resumeWatchdog?.();
-    unlockAudio(); player.source?.resumeReading(); player.play(); $('pause').textContent = 'Pause';
+    unlockAudio(); player.source?.resumeReading(); player.play(); $('pause').textContent = 'Pause'; showPlayerChrome();
     if (!playback?.failed && !playback?.ended) $('playback-status').textContent = 'Buffering…';
   }
 };
