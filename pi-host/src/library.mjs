@@ -174,10 +174,16 @@ export class Library {
     this.drain();
   }
 
+  // The best a video can reach is capped by what YouTube offers for it.
+  reachable(video, quality) {
+    const source = Number(video.sourceHeight);
+    return source > 0 ? Math.min(quality, QUALITIES.filter(value => value <= source).at(-1) || QUALITIES[0]) : quality;
+  }
+
   async upgrade(id, requested = this.settings.quality) {
     const video = this.get(id);
     if (!video || video.state !== "ready") throw new Error("That video is not ready to upgrade.");
-    const quality = parseQuality(requested);
+    const quality = this.reachable(video, parseQuality(requested));
     if ((video.quality || 0) >= quality || video.upgrading) return false;
     video.upgrading = true; video.upgradeQuality = quality; video.upgradeError = null;
     video.message = `Waiting to upgrade to ${quality}p…`;
@@ -185,6 +191,29 @@ export class Library {
     await this.save();
     this.drain();
     return true;
+  }
+
+  // Keep the smaller copy (prepared in the background after every download)
+  // and delete the larger files to free space. Upgrading again re-downloads.
+  async downgrade(id, requested = this.settings.quality) {
+    const video = this.get(id);
+    if (!video || video.state !== "ready") throw new Error("That video is not ready.");
+    const quality = parseQuality(requested);
+    if ((video.quality || 0) <= quality || video.upgrading || this.active === video.id) return false;
+    let status = await this.qualityStatus(video.id, quality);
+    if (!status.ready) {
+      await this.requestQuality(video.id, quality);
+      await this.variantJobs.get(`${video.id}:${quality}`)?.promise;
+      status = await this.qualityStatus(video.id, quality);
+      if (!status.ready) throw new Error(`The ${quality}p copy could not be prepared.`);
+    }
+    const larger = QUALITIES.filter(value => value > quality).flatMap(value => Object.values(this.paths(video.id, value)));
+    const keep = new Set(Object.values(this.paths(video.id, quality)));
+    video.quality = quality; video.mediaQuality = quality;
+    if (video.legacyQuality > quality) delete video.legacyQuality;
+    video.qualities = (video.qualities || []).filter(value => value <= quality);
+    await this.save();
+    await Promise.all([...new Set(larger)].filter(file => !keep.has(file)).map(file => rm(file, { force: true })));
     return true;
   }
 

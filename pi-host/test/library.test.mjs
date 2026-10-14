@@ -111,6 +111,27 @@ test("subscriptions need sign-in cookies and then read the YouTube feed with the
   assert.equal(await library.recommended(), null);
 });
 
+test("upgrades stop at the source quality and downgrades keep the smaller copy", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-quality-"));
+  const library = await new Library({ dataDir, runner: async () => ({ stdout: "" }) }).init();
+  const id = "00000000-0000-4000-8000-000000000001";
+  library.videos.push({ id: "00000000-0000-4000-8000-000000000002", state: "ready", quality: 720, sourceHeight: 720, youtubeID: "aaaaaaaaaaa" },
+    { id, state: "ready", quality: 1080, mediaQuality: 1080, sourceHeight: 1080, qualities: [360, 540, 720, 1080], youtubeID: "bbbbbbbbbbb" });
+  assert.equal(await library.upgrade("00000000-0000-4000-8000-000000000002", 1080), false, "YouTube only has 720p");
+  for (const quality of [720, 1080]) {
+    const files = library.paths(id, quality);
+    await writeFile(files.media, "ts"); await writeFile(files.seek, "{}");
+  }
+  const big = library.paths(id, 1080), small = library.paths(id, 720);
+  assert.equal(await library.downgrade(id, 720), true);
+  const video = library.get(id);
+  assert.deepEqual([video.quality, video.qualities], [720, [360, 540, 720]]);
+  assert.equal(library.paths(id).media, small.media, "playback now uses the 720p file");
+  await assert.rejects(readFile(big.media), "the 1080p file is deleted");
+  assert.equal(await readFile(small.media, "utf8"), "ts");
+  assert.equal(await library.downgrade(id, 720), false, "nothing to do at the target");
+});
+
 test("turns interrupted preparation into a retryable item", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-restart-"));
   await writeFile(path.join(dataDir, "library.json"), JSON.stringify([{ id: "00000000-0000-4000-8000-000000000000", state: "preparing" }]));

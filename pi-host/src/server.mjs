@@ -72,6 +72,13 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
         }
         return send(res, 202, { queued });
       }
+      if (url.pathname === "/api/library/downgrade" && req.method === "POST") {
+        const body = await bodyJSON(req);
+        const targets = body.id ? [body.id] : library.videos.filter(video => video.state === "ready" && (video.quality || 0) > library.settings.quality).map(video => video.id);
+        let changed = 0;
+        for (const id of targets) changed += await library.downgrade(id, body.quality).catch(() => false) ? 1 : 0;
+        return send(res, 200, { changed });
+      }
       if (url.pathname === "/api/library/quality" && req.method === "POST") {
         const body = await bodyJSON(req);
         const status = await library.requestQuality(body.id, body.quality);

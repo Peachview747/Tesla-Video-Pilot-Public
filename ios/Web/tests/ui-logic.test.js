@@ -120,6 +120,14 @@ test('upgrades are offered only below the chosen quality', () => {
   assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', height:1080})`), false);
   assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:'1080p'})`), false);
   assert.equal(f.evaluate(`isUpgradable({height:480})`), false, 'imports cannot be re-downloaded');
+  assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:720, sourceHeight:720})`), false, 'YouTube only has 720p');
+  assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:540, sourceHeight:640})`), false, '640p sources stop at 540p');
+  assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:720, sourceHeight:1080})`), true);
+  assert.equal(f.evaluate(`isDowngradable({state:'ready', quality:1080})`), false, 'already at the chosen quality');
+  f.evaluate(`qualitySetting = '720p'`);
+  assert.equal(f.evaluate(`isDowngradable({state:'ready', quality:1080})`), true, '1080p videos offer a downgrade to 720p');
+  assert.equal(f.evaluate(`isDowngradable({state:'ready', quality:720})`), false);
+  assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:1080})`), false);
 });
 
 test('theme choice resolves system to the browser preference', () => {

@@ -397,6 +397,32 @@ function librarySpec(video) {
   return {};
 }
 function upgradeButton(videos) {
+  const buttons = [upgradeOnly(videos), downgradeButton(videos)].filter(Boolean);
+  if (!buttons.length) return null;
+  const group = element('span', 'quality-actions'); group.append(...buttons);
+  return group;
+}
+function downgradeButton(videos) {
+  const larger = videos.filter(isDowngradable);
+  if (!larger.length) return null;
+  const label = `${String(qualityHeight(qualitySetting))}p`;
+  const button = element('button', 'button quiet small', `Downgrade ${larger.length} to ${label}`); button.type = 'button';
+  button.title = `Keep the ${label} copy and delete the larger files to free space.`;
+  button.onclick = async () => {
+    if (globalThis.confirm && !globalThis.confirm(`Switch ${larger.length} video${larger.length === 1 ? '' : 's'} to ${label} and delete the larger copies? You can upgrade again later.`)) return;
+    button.disabled = true;
+    try {
+      const all = larger.length === (lastLibrary?.videos || []).filter(isDowngradable).length;
+      let changed = 0;
+      if (all) changed = Number((await api('/api/library/downgrade', {}, 120000))?.changed) || 0;
+      else for (const video of larger) changed += Number((await api('/api/library/downgrade', {id:video.id}, 120000))?.changed) || 0;
+      toast(`${changed} video${changed === 1 ? '' : 's'} now ${label}.`);
+      await refresh(true);
+    } catch (error) { notice(error.message); button.disabled = false; }
+  };
+  return button;
+}
+function upgradeOnly(videos) {
   const upgradable = videos.filter(isUpgradable);
   if (!upgradable.length) return null;
   const button = element('button', 'button quiet small', `Upgrade ${upgradable.length} to ${qualitySetting}`); button.type = 'button';
@@ -488,7 +514,7 @@ function renderLibrary(allVideos, preparingID) {
   const videos = allVideos.filter(inLibrary);
   const pending = allVideos.length - videos.length;
   const signature = JSON.stringify([videos.map(video => [video.id, video.state, video.title, video.message, video.channel,
-    video.publishedAt, video.duration, video.height, video.channelAvatar, savedResume(video), isWatched(video)]), preparingID, librarySort, libraryView,
+    video.publishedAt, video.duration, video.height, video.quality, video.sourceHeight, video.channelAvatar, savedResume(video), isWatched(video)]), preparingID, librarySort, libraryView,
     channelOrder, libraryFilter, qualitySetting, dataSaver(), pending]);
   if (signature === librarySignature) return;
   librarySignature = signature;
@@ -1007,11 +1033,19 @@ async function retryVideo(id) {
 // ---- Quality (phone /api/settings; hidden when the phone lacks it) ----
 let qualitySetting = null;
 const qualityHeight = quality => Number(String(quality || '').replace(/\D/g, '')) || 0;
+// Upgrades only count when YouTube has the quality (sourceHeight caps it);
+// downgrades swap to the smaller copy the Pi already keeps.
+const QUALITY_STEPS = [360, 540, 720, 1080];
+function videoHeight(video) { return Number(video.height) || qualityHeight(video.quality); }
 function isUpgradable(video) {
   if (!qualitySetting || video.youtubeID == null) return false;
+  const target = qualityHeight(qualitySetting), source = Number(video.sourceHeight);
+  const reachable = source > 0 ? Math.min(target, QUALITY_STEPS.filter(value => value <= source).at(-1) || QUALITY_STEPS[0]) : target;
+  return target > 0 && videoHeight(video) < reachable;
+}
+function isDowngradable(video) {
   const target = qualityHeight(qualitySetting);
-  const height = Number(video.height) || qualityHeight(video.quality);
-  return target > 0 && height < target;
+  return target > 0 && video.state === 'ready' && videoHeight(video) > target;
 }
 async function loadServerSettings() {
   try {
