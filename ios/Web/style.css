@@ -310,6 +310,9 @@ canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 250
 .card-dismiss { position: absolute; top: 8px; right: 8px; z-index: 2; display: grid; place-items: center; width: 44px; height: 44px; padding: 0;
   border: 0; border-radius: 50%; background: #0b0e10b8; color: #fff; font-size: 18px; line-height: 1; }
 .card-dismiss:active { transform: scale(.94); }
+.card-dismiss::before, .card-dismiss::after { content: ''; position: absolute; top: 50%; left: 50%; width: 18px; height: 2.5px;
+  border-radius: 2px; background: #fff; transform: translate(-50%, -50%) rotate(45deg); }
+.card-dismiss::after { transform: translate(-50%, -50%) rotate(-45deg); }
 .quality-actions { display: inline-flex; flex-wrap: wrap; gap: 8px; }
 /* Subscriptions: an A-to-Z directory of followed channels. */
 .subs-directory { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 4px 8px; }

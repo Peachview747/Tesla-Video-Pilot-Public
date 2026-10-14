@@ -493,7 +493,8 @@ function dismissContinue(video, watched = true) {
     : {id:video.id, position:0}).catch(() => {});
 }
 function continueDismiss(video, card) {
-  const button = element('button', 'card-dismiss', '✕'); button.type = 'button';
+  // The X is drawn in CSS; the Tesla browser's fonts have no ✕ glyph.
+  const button = element('button', 'card-dismiss'); button.type = 'button';
   button.title = 'Remove from Continue watching (marks it watched)';
   button.setAttribute?.('aria-label', `Remove ${video.title || 'video'} from Continue watching`);
   button.onclick = event => {
