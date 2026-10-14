@@ -55,7 +55,10 @@ def read_cookies(profile):
 
 
 def main():
-    profile = firefox_profile()
+    # --profile DIR reads a specific profile (the car sign-in session).
+    profile = Path(sys.argv[sys.argv.index("--profile") + 1]) if "--profile" in sys.argv else firefox_profile()
+    if profile and not (profile / "cookies.sqlite").exists():
+        profile = None
     if not profile:
         print("No Firefox profile with cookies yet.")
         return 0

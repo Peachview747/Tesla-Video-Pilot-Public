@@ -19,7 +19,8 @@ async function bodyJSON(req, limit = 16384) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
 }
 
-export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5001, host = "127.0.0.1", version = "Pi" }) {
+export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5001, host = "127.0.0.1", version = "Pi",
+  signinURL = "http://127.0.0.1:5002" }) {
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
@@ -85,6 +86,19 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
       if (url.pathname === "/api/youtube/cookies" && req.method === "POST") {
         if (req.headers["x-video-pilot-relay"]) return send(res, 403, { error: "Sign in with Firefox on the Pi." });
         await library.saveCookies((await bodyJSON(req, 512 * 1024)).cookies); return send(res, 200, { saved: true });
+      }
+      // Car sign-in: the desktop user's helper runs Firefox on a virtual
+      // screen; these calls pass through to it unchanged.
+      const signin = url.pathname.match(/^\/api\/signin\/(status|screen|start|stop|input)$/);
+      if (signin) {
+        const name = signin[1], post = ["start", "stop", "input"].includes(name);
+        if (post !== (req.method === "POST")) return send(res, 405, { error: "Method not allowed." });
+        let response;
+        try {
+          response = await fetch(`${signinURL}/${name}`, { method: req.method, signal: AbortSignal.timeout(15_000),
+            ...(post ? { headers: { "content-type": "application/json" }, body: JSON.stringify(await bodyJSON(req, 4096)) } : {}) });
+        } catch { return send(res, 503, { error: "The sign-in helper is not running on the Pi." }); }
+        return send(res, response.status, Buffer.from(await response.arrayBuffer()), response.headers.get("content-type") || "application/json");
       }
       if (url.pathname === "/api/youtube/signout" && req.method === "POST") { await library.clearCookies(); return send(res, 200, { signedOut: true }); }
       if (url.pathname === "/api/subscriptions" && req.method === "GET")

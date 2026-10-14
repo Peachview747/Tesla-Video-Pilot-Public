@@ -42,7 +42,21 @@ Settings → Download quality controls the maximum resolution of future YouTube 
 
 ## YouTube sign-in (headless)
 
-Sign in to youtube.com once in Firefox on the Pi (its screen or VNC). A user
+From the car: Settings → Sign in to YouTube. The sign-in helper (a user
+service) runs Firefox on a virtual screen from an empty profile; the page shows
+it live and forwards taps and typing. Once Google signs in, the cookies go to
+Video Pilot and the session is wiped. It needs Xvfb and xdotool; on the
+read-only OS they are unpacked into /opt/pi-tools instead of installed:
+
+```sh
+cd /tmp && apt-get download libxdo3 xdotool xvfb
+for f in *.deb; do sudo dpkg -x "$f" /opt/pi-tools; done
+install -Dm644 pi-host/src/signin-helper.mjs ~/.local/lib/video-pilot/signin-helper.mjs
+install -Dm644 -t ~/.config/systemd/user pi-host/video-pilot-signin.service
+systemctl --user daemon-reload && systemctl --user enable --now video-pilot-signin.service
+```
+
+A Firefox already signed in on the Pi's own desktop works too: a user
 timer copies that sign-in to Video Pilot every two minutes; it is used for
 downloads and the Subscriptions tab and never leaves the Pi. Install it as the
 desktop user, not root:

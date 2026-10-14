@@ -134,6 +134,26 @@
           <div id="subs-list" class="video-grid"></div>
         </section>
 
+        <section id="signin-tab" class="tab-panel" hidden>
+          <div class="page-header">
+            <div><h1 class="page-title">Sign in to YouTube</h1><p id="signin-status" class="muted" role="status"></p></div>
+            <button id="signin-close" class="button quiet small" type="button">Cancel</button>
+          </div>
+          <div class="signin-type">
+            <input id="signin-text" class="filter-input" type="text" placeholder="Tap a field below, type here, then Send" aria-label="Text to type on the sign-in page" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <button id="signin-hide" class="button quiet small" type="button" aria-pressed="false">Hide</button>
+            <button id="signin-send" class="button small" type="button">Send</button>
+          </div>
+          <div class="button-row signin-keys">
+            <button class="button quiet small" type="button" data-signin-key="BackSpace">⌫ Delete</button>
+            <button class="button quiet small" type="button" data-signin-key="Tab">Tab</button>
+            <button class="button quiet small" type="button" data-signin-key="Return">Enter</button>
+            <button class="button quiet small" type="button" data-signin-scroll="-1">Scroll up</button>
+            <button class="button quiet small" type="button" data-signin-scroll="1">Scroll down</button>
+          </div>
+          <div class="signin-screen"><img id="signin-screen" alt="Google sign-in page on the Pi"></div>
+        </section>
+
         <section id="library-tab" class="tab-panel" hidden>
           <div class="page-header">
             <div><h1 class="page-title">Library</h1><p id="library-count" class="muted"></p></div>
@@ -230,8 +250,8 @@
               <div class="stat-list">
                 <div><span>Status</span><strong id="yt-account-status">—</strong></div>
               </div>
-              <p class="muted small-text">To sign in, open Firefox on the Pi (its own screen, or over VNC) and sign in at youtube.com. Video Pilot picks up the sign-in within two minutes and uses it for downloads and your Subscriptions. It stays on the Pi.</p>
-              <div class="button-row"><button id="yt-signout" class="button quiet danger" type="button" hidden>Sign out on the Pi</button></div>
+              <p class="muted small-text">Sign in right here: the Pi opens Google's sign-in page and shows it on this screen. Your account is used for downloads and Subscriptions and stays on the Pi.</p>
+              <div class="button-row"><button id="yt-signin" class="button" type="button">Sign in to YouTube</button><button id="yt-signout" class="button quiet danger" type="button" hidden>Sign out on the Pi</button></div>
             </article>
 
             <article class="settings-card">

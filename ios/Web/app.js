@@ -203,6 +203,7 @@ persistDiagnostics();
 // sub-page: the rail keeps highlighting the section it was opened from.
 const NAV_TABS = ['home-tab', 'subs-tab', 'library-tab', 'queue-tab', 'settings-tab'];
 let currentTab = 'home-tab';
+let signinActive = false;
 let navParent = 'home-tab';
 function showTab(id) {
   if (id === 'player-section') return;
@@ -221,6 +222,7 @@ function showTab(id) {
   if (id === 'queue-tab') void refreshQueueApi();
   if (id === 'library-tab') rerenderLibrary();
   if (id === 'subs-tab') void loadSubscriptions();
+  if (id !== 'signin-tab' && signinActive) void stopSignin();
 }
 function goTo(id) {
   if (id === currentTab && id === 'home-tab' && searchState.query) clearSearch();
@@ -772,8 +774,8 @@ async function loadSubscriptions(refresh = false) {
     if (!feed?.signedIn) {
       $('subs-status').textContent = '';
       $('subs-list').replaceChildren(messageCard('Sign in to see your subscriptions',
-        'Open Firefox on the Pi (its screen or VNC) and sign in at youtube.com. Your subscriptions show up here a couple of minutes later.',
-        {label:'Account settings', run:() => goTo('settings-tab')}));
+        'Sign in to your YouTube account and the newest uploads from channels you follow show up here.',
+        {label:'Sign in to YouTube', run:() => void startSignin()}));
       return;
     }
     const videos = Array.isArray(feed.videos) ? feed.videos : [];
@@ -793,6 +795,69 @@ $('yt-signout').onclick = async () => {
   try { await api('/api/youtube/signout', {}); subsState.loadedAt = 0; toast('Signed out of YouTube on the Pi.'); await refresh(true); }
   catch (error) { notice(error.message); }
 };
+
+// ---- YouTube sign-in from the car ----
+// The Pi runs Google's sign-in in Firefox on a virtual screen. This page shows
+// a live picture of it; taps are mapped to its pixels and text is typed in.
+const SIGNIN_SIZE = {width:900, height:1000};
+let signinShotTimer = null, signinPollTimer = null;
+function signinStatus(text) { $('signin-status').textContent = text; }
+function nextSigninShot(delay = 600) {
+  clearTimeout(signinShotTimer);
+  if (signinActive) signinShotTimer = setTimeout(() => { $('signin-screen').src = '/api/signin/screen?t=' + Date.now(); }, delay);
+}
+$('signin-screen').onload = () => nextSigninShot(600);
+$('signin-screen').onerror = () => nextSigninShot(1500);
+async function startSignin() {
+  showTab('signin-tab'); window.scrollTo?.({top:0});
+  signinStatus('Opening Google sign-in on the Pi…');
+  try {
+    await api('/api/signin/start', {}, 20000);
+    signinActive = true; nextSigninShot(1200);
+    clearInterval(signinPollTimer); signinPollTimer = setInterval(() => void pollSignin(), 2000);
+  } catch (error) { signinStatus(error.message || 'Sign-in could not start.'); }
+}
+async function pollSignin() {
+  try {
+    const status = await api('/api/signin/status');
+    if (status.message) signinStatus(status.message);
+    if (status.active) return;
+    signinActive = false; clearInterval(signinPollTimer); clearTimeout(signinShotTimer);
+    if (status.state === 'signed-in') { toast('Signed in to YouTube.'); subsState.loadedAt = 0; await refresh(true); goTo('settings-tab'); }
+  } catch {}
+}
+async function stopSignin() {
+  signinActive = false; clearInterval(signinPollTimer); clearTimeout(signinShotTimer);
+  try { await api('/api/signin/stop', {}); } catch {}
+}
+async function signinInput(body) {
+  try { await api('/api/signin/input', body); nextSigninShot(250); return true; }
+  catch (error) { signinStatus(error.message); return false; }
+}
+$('yt-signin').onclick = () => void startSignin();
+$('signin-close').onclick = () => { void stopSignin(); goTo('settings-tab'); };
+$('signin-screen').onclick = event => {
+  const rect = $('signin-screen').getBoundingClientRect?.();
+  if (!signinActive || !rect?.width) return;
+  void signinInput({type:'click', x:(event.clientX - rect.left) / rect.width * SIGNIN_SIZE.width,
+    y:(event.clientY - rect.top) / rect.height * SIGNIN_SIZE.height});
+};
+async function sendSigninText(pressEnter = false) {
+  const value = $('signin-text').value;
+  if (value && !await signinInput({type:'text', text:value})) return;
+  $('signin-text').value = '';
+  if (pressEnter) await signinInput({type:'key', key:'Return'});
+}
+$('signin-send').onclick = () => void sendSigninText();
+$('signin-text').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault?.(); void sendSigninText(true); } };
+$('signin-hide').onclick = () => {
+  const hidden = $('signin-text').type !== 'password';
+  $('signin-text').type = hidden ? 'password' : 'text';
+  $('signin-hide').textContent = hidden ? 'Show' : 'Hide';
+  $('signin-hide').setAttribute?.('aria-pressed', hidden ? 'true' : 'false');
+};
+document.querySelectorAll?.('[data-signin-key]').forEach(button => button.onclick = () => void signinInput({type:'key', key:button.dataset.signinKey}));
+document.querySelectorAll?.('[data-signin-scroll]').forEach(button => button.onclick = () => void signinInput({type:'scroll', y:Number(button.dataset.signinScroll)}));
 
 // ---- Polling ----
 async function refresh(force = false) {
@@ -1417,6 +1482,7 @@ function renderSettings() {
   $('settings-youtube').textContent = status.youtubeSignedIn ? 'Signed in' : 'Not signed in';
   $('yt-account-status').textContent = status.youtubeSignedIn ? 'Signed in on the Pi' : 'Not signed in';
   $('yt-signout').hidden = !status.youtubeSignedIn;
+  $('yt-signin').textContent = status.youtubeSignedIn ? 'Switch account' : 'Sign in to YouTube';
   $('settings-search').textContent = status.youtubeSearch ? 'Enabled' : 'Unavailable';
   // Named builds read "0.1.40 · Pi build"; numbered ones keep "(build 12)".
   const named = /^[a-z]+$/i.test(String(status.build || ''));

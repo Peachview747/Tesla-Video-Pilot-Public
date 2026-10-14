@@ -326,4 +326,10 @@ canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 250
   .controls button { min-width: 0; flex: 1; }
   .controls-spacer { display: none; }
 }
+/* Car sign-in: a live picture of Firefox on the Pi; taps map to its pixels. */
+.signin-type { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.signin-type .filter-input { flex: 1 1 260px; width: auto; }
+.signin-keys { margin-bottom: 14px; }
+.signin-screen { max-width: 900px; border: 1px solid var(--stroke); border-radius: 14px; overflow: hidden; background: var(--surface); }
+.signin-screen img { display: block; width: 100%; aspect-ratio: 900 / 1000; object-fit: contain; touch-action: manipulation; cursor: pointer; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
