@@ -365,8 +365,41 @@ canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 250
   .queue-actions { grid-column: 1 / -1; }
   .stat-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .filter-input { width: 100%; }
-  .controls button { min-width: 0; flex: 1; }
-  .controls-spacer { display: none; }
+  .controls-spacer { flex: 1 0 0; }
+  .quality-word { display: none; }
+  .playback-quality-label select { max-width: 132px; }
+}
+
+/* ---------- Short windows (the Model 3 half screen is 773 x 601) ----------
+   Height is the scarce dimension: keep headers, the download banner and the
+   player chrome thin so content and video get the room. */
+@media (max-height: 700px) {
+  :root { --fs-title: 22px; --fs-h2: 17.5px; }
+  .rail { padding: 8px 6px; gap: 2px; }
+  .rail-brand { width: 38px; height: 38px; margin-bottom: 4px; border-radius: 11px; font-size: 13px; }
+  .nav-item { min-height: 58px; gap: 2px; }
+  .nav-item svg { width: 24px; height: 24px; }
+  .main { padding-top: 10px; }
+  .topbar { margin-top: -10px; padding-top: 8px; padding-bottom: 8px; }
+  .search-bar { min-height: 50px; }
+  .search-bar input { height: 40px; font-size: 17px; }
+  .search-submit { min-height: 42px; }
+  .preparation { grid-template-columns: minmax(0, auto) minmax(90px, 1fr) auto; padding: 8px 14px; margin-bottom: 10px; gap: 4px 12px; }
+  .preparation progress { grid-column: auto; grid-row: auto; height: 6px; }
+  .preparation-detail { display: none; }
+  .page-header { margin-bottom: 10px; }
+  .feed-header { margin-bottom: 6px; }
+  .row-section { margin-bottom: 12px; }
+  .card-actions > button { min-height: 44px; }
+  .player-overlay { padding: 6px 10px; align-items: flex-start; }
+  .player-dialog { gap: 6px; }
+  .player-heading .back-button { min-height: 42px; padding: 4px 14px 4px 8px; }
+  .player-heading h2 { font-size: 17px; }
+  .player-shell { padding: 6px; }
+  canvas { max-height: calc(100vh - 168px); max-height: calc(100dvh - 168px); }
+  .timeline { padding: 6px 4px 2px; }
+  .controls button { min-height: 46px; }
+  .playback-quality-label select { min-height: 46px; }
 }
 
 /* ---------- Phones: rail becomes a bottom bar ---------- */
