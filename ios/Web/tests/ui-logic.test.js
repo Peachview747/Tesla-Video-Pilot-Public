@@ -111,6 +111,14 @@ test('library pages show only ready videos; the rest stay on Downloads', () => {
   assert.equal(f.evaluate(`channelLibraryVideos().map(video => video.id).join(',')`), 'r');
   assert.equal(f.evaluate(`queueEntries(lastLibrary.videos, 'p').map(entry => entry.id).join(',')`), 'p');
 });
+test('Continue watching can be dismissed as watched or cleared', () => {
+  const f = setup();
+  const id = '00000000-0000-4000-8000-000000000009';
+  f.evaluate(`dismissContinue({id:'${id}', duration:1023})`);
+  f.evaluate(`dismissContinue({id:'${id}'}, false)`);
+  const history = f.requests.filter(request => String(request.url).endsWith('/api/history')).map(request => request.body);
+  assert.deepEqual(history, [{id, position:1023, duration:1023, finished:true}, {id, position:0}]);
+});
 test('upgrades are offered only below the chosen quality', () => {
   const f = setup();
   assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', height:720})`), false, 'no quality setting from the phone');

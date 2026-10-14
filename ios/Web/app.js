@@ -481,14 +481,49 @@ function channelTile(name, videos) {
     : withID ? {id:withID.channelId} : withVideo ? {video:withVideo.youtubeID} : {})});
   return tile;
 }
+// Continue watching can go stale (finished elsewhere, or abandoned). ✕ marks a
+// video watched; Clear all just forgets the positions. Both update the Pi's
+// history too, which drives Home's Continue watching row.
+function dismissContinue(video, watched = true) {
+  if (!video?.id) return;
+  clearResume(video);
+  if (watched) markWatched(video);
+  const total = finiteDuration(video.duration);
+  api('/api/history', watched ? {id:video.id, position:total || 1, ...(total ? {duration:total} : {}), finished:true}
+    : {id:video.id, position:0}).catch(() => {});
+}
+function continueDismiss(video, card) {
+  const button = element('button', 'card-dismiss', '✕'); button.type = 'button';
+  button.title = 'Remove from Continue watching (marks it watched)';
+  button.setAttribute?.('aria-label', `Remove ${video.title || 'video'} from Continue watching`);
+  button.onclick = event => {
+    event?.stopPropagation?.();
+    dismissContinue(video); feedState.loadedAt = 0;
+    const row = card.parentNode; card.remove?.();
+    if (row && !row.childNodes?.length) row.closest?.('section')?.setAttribute?.('hidden', '');
+    rerenderLibrary();
+  };
+  return button;
+}
+function clearContinueButton(videos, onDone) {
+  const button = element('button', 'button quiet small', 'Clear all'); button.type = 'button';
+  button.title = 'Forget the saved positions so these leave Continue watching';
+  button.onclick = () => {
+    if (globalThis.confirm && !globalThis.confirm('Clear Continue watching? Saved positions are forgotten; videos stay in your library.')) return;
+    for (const video of videos()) dismissContinue(video, false);
+    onDone();
+  };
+  return button;
+}
 function renderContinue(videos) {
   const items = videos.filter(video => video.state === 'ready' && !isWatched(video) && savedResume(video) >= 10)
     .sort((a, b) => Number(prefs.get('video-pilot-resume-at:' + b.id, 0)) - Number(prefs.get('video-pilot-resume-at:' + a.id, 0)))
     .slice(0, 10);
   $('continue-panel').hidden = !items.length || Boolean(libraryFilter);
+  $('continue-tools').replaceChildren(...(items.length ? [clearContinueButton(() => items, () => { rerenderLibrary(); feedState.loadedAt = 0; })] : []));
   $('continue-list').replaceChildren(...items.map(video => {
     const tile = element('article', 'card');
-    tile.append(videoThumb(video, () => play(video)));
+    tile.append(videoThumb(video, () => play(video)), continueDismiss(video, tile));
     const body = element('div', 'card-body');
     body.append(element('h3', '', video.title));
     body.append(element('p', 'card-note', [video.channel, `${formatTime(savedResume(video))} of ${formatDuration(video.duration) || '—'}`].filter(Boolean).join(' · ')));
@@ -1306,7 +1341,18 @@ function renderFeed(rows, errors = []) {
     if (row.subtitle) header.append(element('span', 'subtitle', row.subtitle));
     section.append(header);
     const scroller = element('div', 'row-scroller');
-    scroller.append(...row.videos.map(video => youtubeCard(video, {badge:row.kind !== 'continue'})));
+    scroller.append(...row.videos.map(video => {
+      const card = youtubeCard(video, {badge:row.kind !== 'continue'});
+      const entry = row.kind === 'continue' ? libraryItem(video.libraryId || video.id) : null;
+      if (entry) card.append(continueDismiss(entry, card));
+      return card;
+    }));
+    if (row.kind === 'continue') {
+      const tools = element('div', 'section-tools');
+      tools.append(clearContinueButton(() => row.videos.map(video => libraryItem(video.libraryId || video.id)).filter(Boolean),
+        () => { section.hidden = true; rerenderLibrary(); }));
+      header.append(tools);
+    }
     section.append(scroller);
     return section;
   });

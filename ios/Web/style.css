@@ -306,6 +306,10 @@ canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 250
   border: 1px solid #ffffff55; border-radius: 12px; background: #151c21d9; color: #f1f1f1; font-size: 15px; font-weight: 650;
 }
 
+.card { position: relative; }
+.card-dismiss { position: absolute; top: 8px; right: 8px; z-index: 2; display: grid; place-items: center; width: 44px; height: 44px; padding: 0;
+  border: 0; border-radius: 50%; background: #0b0e10b8; color: #fff; font-size: 18px; line-height: 1; }
+.card-dismiss:active { transform: scale(.94); }
 .quality-actions { display: inline-flex; flex-wrap: wrap; gap: 8px; }
 /* Subscribed channels: a swipeable strip of avatars that open the channel page. */
 .subs-channels { display: flex; gap: 6px; overflow-x: auto; overscroll-behavior-x: contain; margin: 0 0 18px; padding: 2px 0 4px; scrollbar-width: none; }
