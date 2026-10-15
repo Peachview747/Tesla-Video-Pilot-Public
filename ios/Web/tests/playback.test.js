@@ -239,6 +239,19 @@ test('audio plays through a context at the 44.1 kHz source rate', () => {
   f.evaluate('prepareAudioContext()');
   assert.equal(f.evaluate('made.length'), 1, 'an existing context is reused');
 });
+test('a stream that stops mid-video reconnects instead of finishing', async () => {
+  const f = setup(); f.play({id:'00000000-0000-4000-8000-000000000007', title:'Long', duration:2400});
+  f.evaluate('playback.duration = 2400; playback.position = 1200');
+  f.players[0].options.onEnded();
+  assert.equal(f.element('playback-status').textContent, 'Connection dropped. Reconnecting…');
+  assert.notEqual(f.element('pause').textContent, 'Play', 'not shown as finished');
+  for (let i = 0; i < 40 && f.players.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(f.players.length, 2, 'a new stream opens from the same place');
+  f.evaluate('playback.duration = 2400; playback.position = 2395');
+  f.players[1].options.onEnded();
+  assert.equal(f.element('playback-status').textContent, 'Finished', 'a real end still finishes');
+  f.close();
+});
 test('seeking keeps the user mute preference across decoder replacement', async () => {
   const f = setup(); f.play({id:'video', title:'Test', duration:100});
   f.element('mute').onclick();

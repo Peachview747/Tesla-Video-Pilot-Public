@@ -169,7 +169,10 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
         }
         res.writeHead(200, { "content-type": "video/mp2t", "content-length": info.size - offset,
           "cache-control": "no-store", "accept-ranges": "none", "x-mk8-seek-offset": String(offset),
-          "x-video-seek-time": String(seekTime), "x-video-duration": String(video.duration || 0) });
+          "x-video-seek-time": String(seekTime), "x-video-duration": String(video.duration || 0),
+          // The relay streams in chunks and drops content-length; without a size
+          // the player cannot tell a dropped connection from the end of the file.
+          "x-video-bytes": String(info.size - offset) });
         const stream = createReadStream(files.media, { start: offset });
         res.once("close", () => stream.destroy());
         stream.once("error", () => res.destroy());

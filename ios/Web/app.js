@@ -2091,6 +2091,18 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
       },
       onEnded:() => {
         if (playback !== session || session.failed) return;
+        // An "end" well before the video's length is a dropped stream, not the
+        // finish: reconnect from here instead of jumping to the end and marking
+        // the video watched. Bounded so a short file cannot loop forever.
+        const tries = earlyEndRetries.get(video.id) || 0;
+        if (session.duration && (session.position || 0) < session.duration - 10 && tries < 3) {
+          earlyEndRetries.set(video.id, tries + 1);
+          reportDiagnostic('playerEndedEarly', {positionSeconds:session.position || 0, durationSeconds:session.duration, attempt:tries + 1});
+          requestSeek(session.position || 0);
+          $('playback-status').textContent = 'Connection dropped. Reconnecting…';
+          return;
+        }
+        earlyEndRetries.delete(video.id);
         clearRecoveryTimer(session);
         session.ended = true;
         if (session.duration) session.position = session.duration;
@@ -2136,6 +2148,7 @@ function reportHistory(video = current, position = currentOffset, finished = fal
   api('/api/history', body).catch(() => {});
 }
 let playerReturn = null;
+const earlyEndRetries = new Map();
 function play(video, seek = null) {
   ++qualityRequestSeq;
   activeQuality = defaultPlaybackQuality(video);

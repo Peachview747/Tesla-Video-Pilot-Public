@@ -267,7 +267,8 @@ export class JSMpegHttpSource {
       if (seekHeader !== null && Number.isFinite(seekTime) && seekTime >= 0) this.options.onSourceStartTime?.(seekTime);
       const duration = Number(response.headers.get('x-video-duration'));
       if (Number.isFinite(duration) && duration > 0) this.options.onSourceDuration?.(duration);
-      const expected = Number(response.headers.get('content-length'));
+      // The car relay drops content-length, so the Pi repeats the size in its own header.
+      const expected = Number(response.headers.get('content-length')) || Number(response.headers.get('x-video-bytes'));
       this.expectedBytes = Number.isSafeInteger(expected) && expected > 0 ? expected : 0;
       reader = response.body.getReader();
       this.reader = reader;

@@ -68,7 +68,8 @@ test('pausing and ending a library video report history to the phone', () => {
   const history = () => f.requests.filter(request => request.url === '/api/history').map(request => request.body);
   assert.deepEqual(history(), [{id:uuid, position:42, duration:100}]);
   f.element('pause').onclick();
-  f.evaluate('player.options.onEnded()');
+  // A real end arrives at the end; an early one reconnects (separate test).
+  f.evaluate('playback.position = 99; player.options.onEnded()');
   assert.deepEqual(history().at(-1), {id:uuid, position:100, duration:100, finished:true});
 });
 

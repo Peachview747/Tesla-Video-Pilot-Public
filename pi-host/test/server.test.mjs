@@ -47,6 +47,7 @@ test("serves the Tesla UI, library API, and indexed MPEG-TS seek", async t => {
   assert.deepEqual(await (await fetch(`http://127.0.0.1:${port}/api/library`)).json(), [item]);
   const response = await fetch(`http://127.0.0.1:${port}/api/stream/${item.id}.ts?seek=12`);
   assert.equal(response.headers.get("x-mk8-seek-offset"), "1880");
+  assert.equal(response.headers.get("x-video-bytes"), String(188 * 20 - 1880), "the size survives relays that drop content-length");
   assert.equal((await response.arrayBuffer()).byteLength, 1880);
 });
 
