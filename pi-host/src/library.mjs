@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {QUALITIES, parseQuality, encodeArgs} from "./quality.mjs";
 
@@ -26,6 +26,7 @@ export class Library {
     this.historyFile = path.join(dataDir, "history.json");
     this.channelsFile = path.join(dataDir, "channels.json");
     this.cookiesFile = path.join(dataDir, "youtube-cookies.txt");
+    this.diagnosticsFile = path.join(dataDir, "diagnostics.jsonl");
     this.ytDlp = ytDlp;
     this.ffmpeg = ffmpeg;
     this.ffprobe = ffprobe;
@@ -347,6 +348,27 @@ export class Library {
     const result = await this.runner(this.ytDlp, [...this.ytArgs(), "--flat-playlist", "--playlist-end", String(limit), "--dump-single-json",
       `https://www.youtube.com/results?${params}`]);
     return mapChannels(JSON.parse(result.stdout).entries).slice(0, limit);
+  }
+
+  // Playback events from the car's browser (stream received, completed,
+  // ended, positions), kept so car-only bugs can be read on the Pi. Capped:
+  // past 2 MB only the newer half is kept.
+  async recordDiagnostics(events) {
+    const list = (Array.isArray(events) ? events : []).slice(0, 200);
+    const received = new Date().toISOString();
+    const lines = list.map(event => JSON.stringify({ received, ...event }).slice(0, 4000)).join("\n");
+    if (lines) await appendFile(this.diagnosticsFile, lines + "\n", { mode: 0o600 });
+    const size = await stat(this.diagnosticsFile).then(info => info.size, () => 0);
+    if (size > 2 * 1024 * 1024) {
+      const text = await readFile(this.diagnosticsFile, "utf8");
+      await writeFile(this.diagnosticsFile, text.slice(text.indexOf("\n", text.length / 2) + 1), { mode: 0o600 });
+    }
+    return list.length;
+  }
+
+  async diagnosticsText(limit = 500) {
+    const text = await readFile(this.diagnosticsFile, "utf8").catch(() => "");
+    return text.trim().split("\n").filter(Boolean).slice(-limit).join("\n");
   }
 
   // YouTube's own autocomplete, so the car never needs to paste a link.

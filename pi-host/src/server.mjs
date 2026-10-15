@@ -39,7 +39,7 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
         youtubeSearch: true, youtubeExplore: true, youtubeSignedIn: await library.signedIn(), tunnel: "connected",
         version, build: "Pi", activeStreams: 0, queuedCount: library.queue.length,
         preparationStage: library.active ? "processing" : "idle", preparationProgress: null,
-        preparingID: library.active || "", diagnosticsEnabled: false, diagnosticsEventCount: 0,
+        preparingID: library.active || "", diagnosticsEnabled: true, diagnosticsEventCount: 0,
       });
       if (url.pathname === "/api/library" && req.method === "GET") return send(res, 200, library.libraryView());
       if (url.pathname === "/api/queue" && req.method === "GET") return send(res, 200, library.queueView());
@@ -86,8 +86,12 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
       }
       if (url.pathname === "/api/library/quality" && req.method === "GET")
         return send(res, 200, await library.qualityStatus(url.searchParams.get("id"), url.searchParams.get("quality")));
-      if (url.pathname === "/api/diagnostics" && req.method === "POST") return send(res, 200, { accepted: false, count: 0 });
-      if (url.pathname === "/api/diagnostics/export" && req.method === "GET") return send(res, 404, { error: "Diagnostics are available in journalctl on the Pi." });
+      if (url.pathname === "/api/diagnostics" && req.method === "POST") {
+        const count = await library.recordDiagnostics((await bodyJSON(req, 256 * 1024)).events);
+        return send(res, 200, { accepted: true, count });
+      }
+      if (url.pathname === "/api/diagnostics/export" && req.method === "GET")
+        return send(res, 200, await library.diagnosticsText(), "text/plain; charset=utf-8");
       // Sign-in cookies are pushed by the Firefox sync on the Pi itself. The
       // relay marks every request it forwards, so the car link cannot set them.
       if (url.pathname === "/api/youtube/cookies" && req.method === "POST") {

@@ -149,6 +149,16 @@ test("channel search uses YouTube's channel filter and keeps its order", async (
   assert.deepEqual(await library.searchChannels(""), []);
 });
 
+test("car diagnostics are appended to a capped log on the Pi", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-diag-"));
+  const library = await new Library({ dataDir }).init();
+  assert.equal(await library.recordDiagnostics([{ eventId: "a", type: "playerEnded", positionSeconds: 2635 }, { eventId: "b", type: "sourceCompleted" }]), 2);
+  const lines = (await library.diagnosticsText()).split("\n").map(line => JSON.parse(line));
+  assert.deepEqual(lines.map(line => line.type), ["playerEnded", "sourceCompleted"]);
+  assert.ok(lines[0].received);
+  assert.equal(await library.recordDiagnostics("nonsense"), 0);
+});
+
 test("turns interrupted preparation into a retryable item", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-restart-"));
   await writeFile(path.join(dataDir, "library.json"), JSON.stringify([{ id: "00000000-0000-4000-8000-000000000000", state: "preparing" }]));
