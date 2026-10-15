@@ -239,14 +239,19 @@ test('audio plays through a context at the 44.1 kHz source rate', () => {
   f.evaluate('prepareAudioContext()');
   assert.equal(f.evaluate('made.length'), 1, 'an existing context is reused');
 });
-test('a stream that stops mid-video reconnects instead of finishing', async () => {
+test('a stream that stops mid-video holds the place and waits for Retry', async () => {
   const f = setup(); f.play({id:'00000000-0000-4000-8000-000000000007', title:'Long', duration:2400});
-  f.evaluate('playback.duration = 2400; playback.position = 1200');
+  f.evaluate('playback.duration = 2400; playback.position = 1200.6');
   f.players[0].options.onEnded();
-  assert.equal(f.element('playback-status').textContent, 'Connection dropped. Reconnecting…');
-  assert.notEqual(f.element('pause').textContent, 'Play', 'not shown as finished');
+  assert.equal(f.element('player-drop').hidden, false, 'the dropped-connection panel shows');
+  assert.equal(f.element('drop-time').textContent, 'Your place is saved at 20:00.');
+  assert.equal(f.element('pause').textContent, 'Retry', 'not shown as finished');
+  assert.equal(f.players.length, 1, 'nothing reconnects until Retry');
+  f.element('drop-retry').onclick();
+  assert.equal(f.element('player-drop').hidden, true);
   for (let i = 0; i < 40 && f.players.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 50));
-  assert.equal(f.players.length, 2, 'a new stream opens from the same place');
+  assert.equal(f.players.length, 2, 'Retry opens a new stream');
+  assert.equal(f.evaluate('currentOffset'), 1200, 'from the saved place');
   f.evaluate('playback.duration = 2400; playback.position = 2395');
   f.players[1].options.onEnded();
   assert.equal(f.element('playback-status').textContent, 'Finished', 'a real end still finishes');
@@ -268,7 +273,8 @@ test('stream failures survive late decoder and end callbacks', () => {
   const player = f.players[0], status = f.element('playback-status');
   player.options.onSourceError('Video stream interrupted.');
   player.options.onVideoDecode(); player.options.onStalled(); player.options.onEnded();
-  assert.equal(status.textContent, 'Connection interrupted. Reconnecting…');
+  assert.equal(status.textContent, 'Connection to the Pi dropped', 'an interrupted stream waits for Retry');
+  assert.equal(f.element('player-drop').hidden, false);
 });
 test('finished playback and replacement players ignore late callbacks', async () => {
   const f = setup(); f.play();

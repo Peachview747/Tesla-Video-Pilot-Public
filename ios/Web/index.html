@@ -323,6 +323,11 @@
         </div>
         <p id="quality-status" class="quality-status" role="status" aria-live="polite"></p>
         <button id="exit-fullscreen" type="button" hidden>Exit full screen</button>
+        <div id="player-drop" class="player-drop" role="alertdialog" aria-labelledby="drop-title" hidden>
+          <strong id="drop-title">Connection to the Pi dropped</strong>
+          <span id="drop-time"></span>
+          <button id="drop-retry" type="button">Retry</button>
+        </div>
       </div>
     </div>
   </section>

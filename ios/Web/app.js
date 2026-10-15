@@ -1916,6 +1916,7 @@ function prepareAudioContext() {
   } catch { /* An older browser without the option keeps JSMpeg's default context. */ }
 }
 function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
+  hideDropSplash();
   current = video;
   syncPlaybackQuality();
   const preferred = playbackQuality === 'auto' ? (dataSaver() ? 360 : qualityHeight(video.quality)) : Number(playbackQuality);
@@ -2105,6 +2106,8 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
         reportDiagnostic('playerError', {error:text, positionSeconds:session.position || 0,
           recoveryAttempt:session.recoveryAttempt});
         if (retryBusy(text)) return;
+        // A stream cut mid-video (fewer bytes than the file) waits for Retry.
+        if (/interrupted/i.test(text)) { showDropSplash(session, video); return; }
         if (retryable && restartSession('Connection interrupted. Reconnecting…')) return;
         session.failed = true; session.paused = true;
         try { player?.pause(); player?.source?.pauseReading?.(); } catch {}
@@ -2113,17 +2116,13 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
       onEnded:() => {
         if (playback !== session || session.failed) return;
         // An "end" well before the video's length is a dropped stream, not the
-        // finish: reconnect from here instead of jumping to the end and marking
-        // the video watched. Bounded so a short file cannot loop forever.
-        const tries = earlyEndRetries.get(video.id) || 0;
-        if (session.duration && (session.position || 0) < session.duration - 10 && tries < 3) {
-          earlyEndRetries.set(video.id, tries + 1);
-          reportDiagnostic('playerEndedEarly', {positionSeconds:session.position || 0, durationSeconds:session.duration, attempt:tries + 1});
-          requestSeek(session.position || 0);
-          $('playback-status').textContent = 'Connection dropped. Reconnecting…';
+        // finish: hold the place and wait for Retry instead of jumping to the
+        // end and marking the video watched.
+        if (session.duration && (session.position || 0) < session.duration - 10) {
+          reportDiagnostic('playerEndedEarly', {positionSeconds:session.position || 0, durationSeconds:session.duration});
+          showDropSplash(session, video);
           return;
         }
-        earlyEndRetries.delete(video.id);
         clearRecoveryTimer(session);
         session.ended = true;
         if (session.duration) session.position = session.duration;
@@ -2169,7 +2168,21 @@ function reportHistory(video = current, position = currentOffset, finished = fal
   api('/api/history', body).catch(() => {});
 }
 let playerReturn = null;
-const earlyEndRetries = new Map();
+// The connection to the Pi dropped mid-video: pause on the last frame, keep the
+// place, and show a panel with Retry that continues from exactly there.
+function showDropSplash(session, video) {
+  clearRecoveryTimer(session);
+  session.failed = true; session.paused = true;
+  const position = Math.max(0, Math.floor(session.position || currentOffset || 0));
+  currentOffset = position; saveResume(video, position);
+  try { player?.pause(); player?.source?.pauseReading?.(); } catch {}
+  $('drop-time').textContent = `Your place is saved at ${formatTime(position)}.`;
+  $('player-drop').hidden = false;
+  $('pause').textContent = 'Retry'; $('playback-status').textContent = 'Connection to the Pi dropped';
+  showPlayerChrome();
+}
+function hideDropSplash() { $('player-drop').hidden = true; }
+$('drop-retry').onclick = () => { hideDropSplash(); if (current) requestSeek(currentOffset); };
 function play(video, seek = null) {
   ++qualityRequestSeq;
   activeQuality = defaultPlaybackQuality(video);

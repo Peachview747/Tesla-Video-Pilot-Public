@@ -303,6 +303,14 @@ canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 250
 #player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen) #fit-mode { display: inline-block; }
 #player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen).vp-fit-fill canvas { object-fit: cover; }
 #player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen).vp-fit-stretch canvas { object-fit: fill; }
+/* Dropped connection: a panel over the paused picture with one big Retry. */
+.player-drop { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  padding: 20px; background: #000000b8; color: #f1f1f1; text-align: center; }
+.player-drop[hidden] { display: none; }
+.player-drop strong { font-size: 22px; }
+.player-drop span { color: #c9d3da; font-size: 15px; }
+.player-drop button { min-width: 160px; min-height: 56px; margin-top: 6px; padding: 10px 28px; border: 0; border-radius: 14px;
+  background: #8fb0cc; color: #10171c; font-size: 18px; font-weight: 750; }
 #player-shell.vp-chrome-hidden { cursor: none; }
 #player-shell.vp-chrome-hidden::after,
 #player-shell.vp-chrome-hidden .timeline,
