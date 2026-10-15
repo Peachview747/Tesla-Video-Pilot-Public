@@ -201,7 +201,7 @@ persistDiagnostics();
 // ---- Navigation ----
 // Persistent left rail (bottom bar on narrow screens). The channel page is a
 // sub-page: the rail keeps highlighting the section it was opened from.
-const NAV_TABS = ['home-tab', 'library-tab', 'queue-tab', 'subs-tab', 'tv-tab', 'settings-tab'];
+const NAV_TABS = ['home-tab', 'library-tab', 'queue-tab', 'subs-tab', 'settings-tab'];
 let currentTab = 'home-tab';
 let signinActive = false;
 let navParent = 'home-tab';
@@ -940,6 +940,26 @@ $('signin-hide').onclick = () => {
 };
 document.querySelectorAll?.('[data-signin-key]').forEach(button => button.onclick = () => void signinInput({type:'key', key:button.dataset.signinKey}));
 document.querySelectorAll?.('[data-signin-scroll]').forEach(button => button.onclick = () => void signinInput({type:'scroll', y:Number(button.dataset.signinScroll)}));
+
+// ---- Portal ----
+// Video Pilot opens on a choice of service. YouTube is the original app (the
+// rail and its tabs); Netflix and Hulu open the live view. A reload (after a
+// deploy) or a #tab link goes straight back into YouTube.
+function showPortal() {
+  $('portal').hidden = false;
+  try { globalThis.sessionStorage?.removeItem('vp-in-youtube'); } catch {}
+}
+function enterYouTube() {
+  $('portal').hidden = true;
+  try { globalThis.sessionStorage?.setItem('vp-in-youtube', '1'); } catch {}
+}
+$('portal-youtube').onclick = () => enterYouTube();
+$('to-portal').onclick = () => showPortal();
+{
+  let inYouTube = false;
+  try { inYouTube = globalThis.sessionStorage?.getItem('vp-in-youtube') === '1'; } catch {}
+  if (!inYouTube && !hashTab()) showPortal();
+}
 
 // ---- Netflix and Hulu, live from the Pi ----
 // The Pi plays them in Chromium on a virtual screen and streams that screen

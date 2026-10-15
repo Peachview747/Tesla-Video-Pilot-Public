@@ -11,7 +11,7 @@
 <body>
   <div class="app">
     <nav id="rail" class="rail" aria-label="Video Pilot sections">
-      <div class="rail-brand" aria-hidden="true">VP</div>
+      <button id="to-portal" class="rail-brand" type="button" aria-label="All services" title="All services">VP</button>
       <button class="nav-item active" type="button" data-tab="home-tab" aria-current="page">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 10.5 12 3.8l8.5 6.7V20a1 1 0 0 1-1 1h-5v-6.2h-5V21h-5a1 1 0 0 1-1-1z"/></svg>
         <span>Home</span>
@@ -28,10 +28,6 @@
       <button class="nav-item" type="button" data-tab="subs-tab">
         <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="6.5" width="17" height="13" rx="2"/><path d="M6 3.5h12M10.5 10v6l5-3z"/></svg>
         <span>Subscriptions</span>
-      </button>
-      <button class="nav-item" type="button" data-tab="tv-tab">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
-        <span>TV</span>
       </button>
       <button class="nav-item" type="button" data-tab="settings-tab">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2.2"/><circle cx="10" cy="17" r="2.2"/></svg>
@@ -140,16 +136,6 @@
             </div>
           </div>
           <div id="subs-channels" class="subs-directory"></div>
-        </section>
-
-        <section id="tv-tab" class="tab-panel" hidden>
-          <div class="page-header">
-            <div><h1 class="page-title">Netflix and Hulu</h1><p class="muted">Plays in a browser on the Pi and streams here live. Sign in once; the Pi remembers it.</p></div>
-          </div>
-          <div class="tv-tiles">
-            <button class="tv-tile netflix" type="button" data-live-service="netflix"><span>NETFLIX</span></button>
-            <button class="tv-tile hulu" type="button" data-live-service="hulu"><span>hulu</span></button>
-          </div>
         </section>
 
         <section id="signin-tab" class="tab-panel" hidden>
@@ -345,6 +331,17 @@
       </div>
     </div>
   </section>
+  <!-- PORTAL: pick a service. YouTube is the original Video Pilot app. -->
+  <section id="portal" class="portal" aria-labelledby="portal-title" hidden>
+    <h1 id="portal-title">Video Pilot</h1>
+    <div class="portal-tiles">
+      <button id="portal-youtube" class="portal-tile youtube" type="button"><span class="yt-mark" aria-hidden="true"></span><span>YouTube</span></button>
+      <button class="portal-tile netflix" type="button" data-live-service="netflix"><span>NETFLIX</span></button>
+      <button class="portal-tile hulu" type="button" data-live-service="hulu"><span>hulu</span></button>
+    </div>
+    <p class="portal-note">Netflix and Hulu play in a browser on the Pi and stream here live. Sign in once; the Pi remembers it.</p>
+  </section>
+
   <!-- LIVE (Netflix / Hulu on the Pi) -->
   <section id="live-section" class="live-overlay" aria-modal="true" aria-labelledby="live-title" role="dialog" hidden>
     <div class="live-bar">
