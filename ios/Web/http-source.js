@@ -316,3 +316,49 @@ export class JSMpegHttpSource {
     }
   }
 }
+
+// Netflix/Hulu live picture from the Pi. It is played like a recorded file
+// (audio is the clock, video follows it) because the relay delivers in bursts;
+// JSMpeg's own streaming mode would race through each burst. There is no end
+// and no read-ahead gate: the Pi only produces real time, so take all of it.
+export class JSMpegLiveSource {
+  streaming = false;
+  established = false;
+  completed = false;
+  progress = 0;
+  destination = null;
+  controller = new AbortController();
+  receivedBytes = 0;
+  constructor(url, options) { this.url = url; this.options = options || {}; }
+  connect(destination) { this.destination = destination; }
+  start() { void this.read(); }
+  resume() {}
+  // Seconds of picture already here but not yet shown: how far behind live.
+  lag() {
+    const demuxed = Number(this.destination?.currentTime), audio = Number(this.options.player?.()?.audio?.currentTime);
+    return Number.isFinite(demuxed) && Number.isFinite(audio) ? Math.max(0, demuxed - audio) : 0;
+  }
+  destroy() { this.controller.abort(); this.destination = null; }
+  async read() {
+    try {
+      const response = await fetch(this.url, {credentials:'same-origin', cache:'no-store', signal:this.controller.signal});
+      if (!response.ok) {
+        let message = `The live picture failed (HTTP ${response.status}).`;
+        try { message = (await response.json()).error || message; } catch {}
+        throw new Error(message);
+      }
+      const reader = response.body.getReader();
+      for (;;) {
+        const {value, done} = await reader.read();
+        if (done) break;
+        if (!value?.byteLength) continue;
+        if (!this.established) { this.established = true; this.progress = 1; this.options.onSourceEstablished?.(this); }
+        this.receivedBytes += value.byteLength;
+        this.destination?.write(value.slice().buffer);
+      }
+      if (!this.controller.signal.aborted) throw new Error('The live picture stopped.');
+    } catch (error) {
+      if (!this.controller.signal.aborted) this.options.onSourceError?.(error.message || 'The live picture stopped.');
+    }
+  }
+}

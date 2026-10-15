@@ -1,4 +1,4 @@
-import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause} from './http-source.js';
+import {JSMpegHttpSource, JSMpegLiveSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause} from './http-source.js';
 import {DiagnosticsJournal, LiveStats} from './diagnostics.js';
 const $ = id => document.getElementById(id);
 let player = null, current = null, currentOffset = 0, seekTimer = null;
@@ -201,7 +201,7 @@ persistDiagnostics();
 // ---- Navigation ----
 // Persistent left rail (bottom bar on narrow screens). The channel page is a
 // sub-page: the rail keeps highlighting the section it was opened from.
-const NAV_TABS = ['home-tab', 'library-tab', 'queue-tab', 'subs-tab', 'settings-tab'];
+const NAV_TABS = ['home-tab', 'library-tab', 'queue-tab', 'subs-tab', 'tv-tab', 'settings-tab'];
 let currentTab = 'home-tab';
 let signinActive = false;
 let navParent = 'home-tab';
@@ -941,6 +941,130 @@ $('signin-hide').onclick = () => {
 document.querySelectorAll?.('[data-signin-key]').forEach(button => button.onclick = () => void signinInput({type:'key', key:button.dataset.signinKey}));
 document.querySelectorAll?.('[data-signin-scroll]').forEach(button => button.onclick = () => void signinInput({type:'scroll', y:Number(button.dataset.signinScroll)}));
 
+// ---- Netflix and Hulu, live from the Pi ----
+// The Pi plays them in Chromium on a virtual screen and streams that screen
+// here; taps map to its pixels, like the sign-in page.
+const LIVE_SIZE = {width:1280, height:720};
+const LIVE_NAMES = {netflix:'Netflix', hulu:'Hulu'};
+let livePlayer = null, liveService = '', liveStretch = prefs.get('vp-live-fit') === 'stretch', liveMuted = false, liveLagTimer = null;
+function liveStatus(text) { $('live-status').textContent = text; }
+function stopLivePlayer() {
+  clearInterval(liveLagTimer); liveLagTimer = null;
+  const old = livePlayer; livePlayer = null;
+  try { old?.destroy(); } catch {}
+}
+function playLive() {
+  stopLivePlayer();
+  $('live-drop').hidden = true;
+  liveStatus('Connecting…');
+  prepareAudioContext();
+  const instance = new window.JSMpeg.Player(`/api/live/stream.ts?t=${Date.now()}`, {
+    source:JSMpegLiveSource, canvas:$('live-screen'), autoplay:true, loop:false, disableWebAssembly:true,
+    player:() => instance,
+    onSourceEstablished:() => { if (livePlayer === instance) liveStatus(''); },
+    onSourceError:message => {
+      if (livePlayer !== instance) return;
+      liveStatus(''); $('live-drop-title').textContent = message; $('live-drop').hidden = false;
+      reportDiagnostic('liveError', {error:message});
+    },
+  });
+  livePlayer = instance;
+  for (const decoder of [instance.video, instance.audio].filter(Boolean)) installRecordedBufferWindow(decoder);
+  installRecordedAudioOutput(instance.audioOut,
+    () => globalThis.JSMpeg?.Now?.() ?? (globalThis.performance?.now?.() ?? Date.now()) / 1000);
+  installRecordedAudioLead(instance, 0.5);
+  instance.volume = liveMuted ? 0 : 1;
+  try { instance.audioOut?.unlock(() => {}); } catch {}
+  // Bursty links can leave the picture seconds behind; jump back to live.
+  liveLagTimer = setInterval(() => {
+    const lag = instance.source?.lag?.() || 0;
+    if (lag > 4 && livePlayer === instance) {
+      try { instance.seek(instance.currentTime + lag - 0.75); reportDiagnostic('liveCatchUp', {lagSeconds:lag}); } catch {}
+    }
+  }, 5000);
+}
+async function openLive(service) {
+  liveService = service;
+  $('live-title').textContent = LIVE_NAMES[service] || '';
+  $('live-section').hidden = false;
+  $('live-screen').classList?.toggle?.('stretch', liveStretch);
+  $('live-fit').textContent = liveStretch ? 'Stretch' : 'Fit';
+  $('live-drop').hidden = true;
+  prepareAudioContext();
+  liveStatus(`Opening ${LIVE_NAMES[service]} on the Pi…`);
+  try {
+    await api('/api/live/start', {service}, 25000);
+    if (liveService !== service || $('live-section').hidden) return;
+    // Give Chromium a moment to draw before the first frame is captured.
+    await new Promise(resolve => setTimeout(resolve, 2500));
+    if (liveService === service && !$('live-section').hidden) playLive();
+  } catch (error) {
+    liveStatus(''); $('live-drop-title').textContent = error.message || 'Could not open it on the Pi.'; $('live-drop').hidden = false;
+  }
+}
+async function closeLive() {
+  liveService = '';
+  stopLivePlayer();
+  $('live-section').hidden = true;
+  $('live-type').hidden = true; $('live-keyboard').setAttribute?.('aria-pressed', 'false');
+  try { await api('/api/live/stop', {}); } catch {}
+  applyWebUpdate();
+}
+async function liveInput(body) {
+  try { await api('/api/live/input', body); return true; }
+  catch (error) { toast(error.message); return false; }
+}
+document.querySelectorAll?.('[data-live-service]').forEach(button => button.onclick = () => void openLive(button.dataset.liveService));
+$('live-close').onclick = () => void closeLive();
+$('live-retry').onclick = () => liveService && playLive();
+// Map a tap to the Pi's screen, allowing for letterboxing in Fit mode.
+$('live-screen').onclick = event => {
+  const rect = $('live-screen').getBoundingClientRect?.();
+  if (!rect?.width || !rect?.height) return;
+  try { livePlayer?.audioOut?.unlock(() => {}); livePlayer?.audioOut?.context?.resume?.()?.catch?.(() => {}); } catch {}
+  let width = rect.width, height = rect.height, left = rect.left, top = rect.top;
+  if (!liveStretch) {
+    const scale = Math.min(rect.width / LIVE_SIZE.width, rect.height / LIVE_SIZE.height);
+    width = LIVE_SIZE.width * scale; height = LIVE_SIZE.height * scale;
+    left += (rect.width - width) / 2; top += (rect.height - height) / 2;
+  }
+  const x = (event.clientX - left) / width * LIVE_SIZE.width, y = (event.clientY - top) / height * LIVE_SIZE.height;
+  if (x < 0 || y < 0 || x >= LIVE_SIZE.width || y >= LIVE_SIZE.height) return;
+  void liveInput({type:'click', x, y});
+};
+$('live-keyboard').onclick = () => {
+  const show = $('live-type').hidden;
+  $('live-type').hidden = !show;
+  $('live-keyboard').setAttribute?.('aria-pressed', show ? 'true' : 'false');
+  if (show) $('live-text').focus?.();
+};
+async function sendLiveText(pressEnter = false) {
+  const value = $('live-text').value;
+  if (value && !await liveInput({type:'text', text:value})) return;
+  $('live-text').value = '';
+  if (pressEnter) await liveInput({type:'key', key:'Return'});
+}
+$('live-send').onclick = () => void sendLiveText(true);
+$('live-text').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault?.(); void sendLiveText(true); } };
+$('live-hide').onclick = () => {
+  const hidden = $('live-text').type !== 'password';
+  $('live-text').type = hidden ? 'password' : 'text';
+  $('live-hide').textContent = hidden ? 'Show' : 'Hide';
+  $('live-hide').setAttribute?.('aria-pressed', hidden ? 'true' : 'false');
+};
+$('live-mute').onclick = () => {
+  liveMuted = !liveMuted;
+  if (livePlayer) livePlayer.volume = liveMuted ? 0 : 1;
+  $('live-mute').textContent = liveMuted ? 'Unmute' : 'Mute';
+};
+$('live-fit').onclick = () => {
+  liveStretch = !liveStretch; prefs.set('vp-live-fit', liveStretch ? 'stretch' : 'fit');
+  $('live-screen').classList?.toggle?.('stretch', liveStretch);
+  $('live-fit').textContent = liveStretch ? 'Stretch' : 'Fit';
+};
+document.querySelectorAll?.('[data-live-key]').forEach(button => button.onclick = () => void liveInput({type:'key', key:button.dataset.liveKey}));
+document.querySelectorAll?.('[data-live-scroll]').forEach(button => button.onclick = () => void liveInput({type:'scroll', y:Number(button.dataset.liveScroll)}));
+
 // ---- Self-update ----
 // Fixes deployed to the Pi never reached a page already open in the car, so
 // the page reloads itself when the Pi's web files change, but only while no
@@ -953,7 +1077,7 @@ function noteWebVersion(version) {
   applyWebUpdate();
 }
 function applyWebUpdate() {
-  if (!webUpdatePending || !$('player-section').hidden || currentTab === 'signin-tab') return;
+  if (!webUpdatePending || !$('player-section').hidden || !$('live-section').hidden || currentTab === 'signin-tab') return;
   webUpdatePending = false;
   reportDiagnostic('webUpdateReload', {from:loadedWebVersion});
   void flushDiagnostics(true);

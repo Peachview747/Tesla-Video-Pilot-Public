@@ -454,3 +454,23 @@ canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 250
 .signin-screen { max-width: 900px; border: 1px solid var(--stroke); border-radius: 14px; overflow: hidden; background: var(--surface); }
 .signin-screen img { display: block; width: 100%; aspect-ratio: 900 / 1000; object-fit: contain; touch-action: manipulation; cursor: pointer; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* Netflix and Hulu: the Pi's browser, live */
+.tv-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; max-width: 720px; }
+.tv-tile { display: flex; align-items: center; justify-content: center; aspect-ratio: 16 / 9; border: 0; border-radius: 16px; font-size: 34px; font-weight: 800; letter-spacing: .04em; }
+.tv-tile.netflix { background: #141414; color: #e50914; }
+.tv-tile.hulu { background: #0b0c0f; color: #1ce783; text-transform: lowercase; font-size: 40px; }
+.tv-tile:active { transform: scale(.97); }
+.live-overlay { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: #000; color: #e3e9ed; }
+.live-overlay[hidden] { display: none; }
+.live-bar, .live-type { display: flex; align-items: center; gap: 6px; padding: 6px 8px; overflow-x: auto; flex: none; background: #0d1114; }
+.live-type[hidden] { display: none; }
+.live-bar h2 { font-size: 17px; white-space: nowrap; }
+.live-bar .back-button { min-height: 44px; flex: none; }
+.live-bar button:not(.back-button), .live-type button { flex: none; min-height: 44px; padding: 6px 12px; border: 1px solid #ffffff1c; border-radius: 12px; background: #232c33; color: #e3e9ed; font-size: 15px; font-weight: 650; white-space: nowrap; }
+.live-bar button[aria-pressed="true"], .live-type button[aria-pressed="true"] { background: #3b4f5e; }
+.live-type button.primary { background: #8fb0cc; color: #10171c; border-color: transparent; }
+.live-type .filter-input { flex: 1 1 200px; min-width: 160px; }
+.live-stage { position: relative; flex: 1; min-height: 0; }
+#live-screen { display: block; width: 100%; height: 100%; object-fit: contain; touch-action: manipulation; background: #000; }
+#live-screen.stretch { object-fit: fill; }

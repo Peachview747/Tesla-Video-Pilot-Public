@@ -28,7 +28,7 @@ async function webVersion(webRoot) {
 }
 
 export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5001, host = "127.0.0.1", version = "Pi",
-  signinURL = "http://127.0.0.1:5002" }) {
+  signinURL = "http://127.0.0.1:5002", liveURL = "http://127.0.0.1:5003" }) {
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
@@ -119,6 +119,35 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
             ...(post ? { headers: { "content-type": "application/json" }, body: JSON.stringify(await bodyJSON(req, 4096)) } : {}) });
         } catch { return send(res, 503, { error: "The sign-in helper is not running on the Pi." }); }
         return send(res, response.status, Buffer.from(await response.arrayBuffer()), response.headers.get("content-type") || "application/json");
+      }
+      // Netflix and Hulu: the desktop user's live helper runs Chromium on a
+      // virtual screen; its control calls and live stream pass through.
+      const live = url.pathname.match(/^\/api\/live\/(status|screen|start|stop|input|stream\.ts)$/);
+      if (live) {
+        const name = live[1], post = ["start", "stop", "input"].includes(name);
+        if (post !== (req.method === "POST")) return send(res, 405, { error: "Method not allowed." });
+        const controller = new AbortController();
+        let response;
+        try {
+          if (name !== "stream.ts") setTimeout(() => controller.abort(), 20_000);
+          response = await fetch(`${liveURL}/${name}`, { method: req.method, signal: controller.signal,
+            ...(post ? { headers: { "content-type": "application/json" }, body: JSON.stringify(await bodyJSON(req, 4096)) } : {}) });
+        } catch { return send(res, 503, { error: "The Netflix and Hulu helper is not running on the Pi." }); }
+        if (name !== "stream.ts" || !response.ok)
+          return send(res, response.status, Buffer.from(await response.arrayBuffer()), response.headers.get("content-type") || "application/json");
+        res.writeHead(200, { "content-type": "video/mp2t", "content-length": response.headers.get("content-length"),
+          "cache-control": "no-store", "x-video-live": "1" });
+        res.once("close", () => controller.abort());
+        const reader = response.body.getReader();
+        try {
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done || res.destroyed) break;
+            if (!res.write(value)) await new Promise(resolve => { res.once("drain", resolve); res.once("close", resolve); });
+          }
+        } catch {}
+        res.destroy();
+        return;
       }
       if (url.pathname === "/api/youtube/signout" && req.method === "POST") { await library.clearCookies(); return send(res, 200, { signedOut: true }); }
       if (url.pathname === "/api/subscriptions/channels" && req.method === "GET")
