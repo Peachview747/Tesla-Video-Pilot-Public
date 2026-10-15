@@ -481,7 +481,8 @@ button.rail-brand { border: 0; cursor: pointer; }
 .live-type button.primary { background: #8fb0cc; color: #10171c; border-color: transparent; }
 .live-type .filter-input { flex: 1 1 200px; min-width: 160px; }
 .live-stage { position: relative; flex: 1; min-height: 0; }
-#live-screen { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; touch-action: manipulation; background: #000; }
+/* Not the YouTube player's canvas rule: that caps the height, which pinned the picture to the top. */
+#live-screen { position: absolute; inset: 0; display: block; width: 100%; height: 100%; max-height: none; margin: 0; border-radius: 0; object-fit: contain; touch-action: manipulation; background: #000; }
 #live-screen.fill { object-fit: cover; }
 #live-screen.stretch { object-fit: fill; }
 
@@ -509,3 +510,4 @@ button.rail-brand { border: 0; cursor: pointer; }
 .device-row div { flex: 1; min-width: 0; }
 .device-row strong { display: block; }
 .device-row small { color: var(--muted); }
+html.live-open, html.live-open body { overflow: hidden; }

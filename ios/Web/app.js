@@ -1173,6 +1173,8 @@ async function openLive(service) {
   liveService = service;
   $('live-title').textContent = LIVE_NAMES[service] || '';
   $('live-section').hidden = false;
+  // The page underneath must not scroll; its scrollbar would eat into the picture.
+  document.documentElement?.classList?.add?.('live-open');
   if (pinNeeded) showPinScreen();
   applyLiveFit();
   $('live-drop').hidden = true;
@@ -1192,6 +1194,7 @@ async function closeLive() {
   liveService = '';
   stopLivePlayer();
   $('live-section').hidden = true;
+  document.documentElement?.classList?.remove?.('live-open');
   $('live-type').hidden = true; $('live-keyboard').setAttribute?.('aria-pressed', 'false');
   try { await api('/api/live/stop', {}); } catch {}
   applyWebUpdate();
