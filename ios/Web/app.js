@@ -1113,7 +1113,26 @@ $('to-portal').onclick = () => showPortal();
 // here; taps map to its pixels, like the sign-in page.
 const LIVE_SIZE = {width:1280, height:720};
 const LIVE_NAMES = {netflix:'Netflix', hulu:'Hulu'};
-let livePlayer = null, liveService = '', liveStretch = prefs.get('vp-live-fit') === 'stretch', liveMuted = false, liveLagTimer = null;
+// How the 16:9 picture sits in the car's taller space: whole (fit), cropped at
+// the sides to fill it (fill), or squeezed to fill it (stretch).
+const LIVE_FITS = ['fit', 'fill', 'stretch'], LIVE_FIT_NAMES = {fit:'Fit', fill:'Fill', stretch:'Stretch'};
+let livePlayer = null, liveService = '', liveFit = LIVE_FITS.includes(prefs.get('vp-live-fit')) ? prefs.get('vp-live-fit') : 'fit', liveMuted = false, liveLagTimer = null;
+function applyLiveFit() {
+  for (const mode of LIVE_FITS) $('live-screen').classList?.toggle?.(mode, mode === liveFit);
+  $('live-fit').textContent = LIVE_FIT_NAMES[liveFit];
+}
+// Where a tap on the canvas lands on the Pi's screen, or null outside the picture.
+function liveTapPoint(rect, clientX, clientY, fit = liveFit) {
+  let width = rect.width, height = rect.height, left = rect.left, top = rect.top;
+  if (fit !== 'stretch') {
+    const pick = fit === 'fill' ? Math.max : Math.min;
+    const scale = pick(rect.width / LIVE_SIZE.width, rect.height / LIVE_SIZE.height);
+    width = LIVE_SIZE.width * scale; height = LIVE_SIZE.height * scale;
+    left += (rect.width - width) / 2; top += (rect.height - height) / 2;
+  }
+  const x = (clientX - left) / width * LIVE_SIZE.width, y = (clientY - top) / height * LIVE_SIZE.height;
+  return x < 0 || y < 0 || x >= LIVE_SIZE.width || y >= LIVE_SIZE.height ? null : {x, y};
+}
 function liveStatus(text) { $('live-status').textContent = text; }
 function stopLivePlayer() {
   clearInterval(liveLagTimer); liveLagTimer = null;
@@ -1155,8 +1174,7 @@ async function openLive(service) {
   $('live-title').textContent = LIVE_NAMES[service] || '';
   $('live-section').hidden = false;
   if (pinNeeded) showPinScreen();
-  $('live-screen').classList?.toggle?.('stretch', liveStretch);
-  $('live-fit').textContent = liveStretch ? 'Stretch' : 'Fit';
+  applyLiveFit();
   $('live-drop').hidden = true;
   prepareAudioContext();
   liveStatus(`Opening ${LIVE_NAMES[service]} on the Pi…`);
@@ -1190,15 +1208,9 @@ $('live-screen').onclick = event => {
   const rect = $('live-screen').getBoundingClientRect?.();
   if (!rect?.width || !rect?.height) return;
   try { livePlayer?.audioOut?.unlock(() => {}); livePlayer?.audioOut?.context?.resume?.()?.catch?.(() => {}); } catch {}
-  let width = rect.width, height = rect.height, left = rect.left, top = rect.top;
-  if (!liveStretch) {
-    const scale = Math.min(rect.width / LIVE_SIZE.width, rect.height / LIVE_SIZE.height);
-    width = LIVE_SIZE.width * scale; height = LIVE_SIZE.height * scale;
-    left += (rect.width - width) / 2; top += (rect.height - height) / 2;
-  }
-  const x = (event.clientX - left) / width * LIVE_SIZE.width, y = (event.clientY - top) / height * LIVE_SIZE.height;
-  if (x < 0 || y < 0 || x >= LIVE_SIZE.width || y >= LIVE_SIZE.height) return;
-  void liveInput({type:'click', x, y});
+  const point = liveTapPoint(rect, event.clientX, event.clientY);
+  if (!point) return;
+  void liveInput({type:'click', x:point.x, y:point.y});
 };
 $('live-keyboard').onclick = () => {
   const show = $('live-type').hidden;
@@ -1226,9 +1238,9 @@ $('live-mute').onclick = () => {
   $('live-mute').textContent = liveMuted ? 'Unmute' : 'Mute';
 };
 $('live-fit').onclick = () => {
-  liveStretch = !liveStretch; prefs.set('vp-live-fit', liveStretch ? 'stretch' : 'fit');
-  $('live-screen').classList?.toggle?.('stretch', liveStretch);
-  $('live-fit').textContent = liveStretch ? 'Stretch' : 'Fit';
+  liveFit = LIVE_FITS[(LIVE_FITS.indexOf(liveFit) + 1) % LIVE_FITS.length];
+  prefs.set('vp-live-fit', liveFit);
+  applyLiveFit();
 };
 document.querySelectorAll?.('[data-live-key]').forEach(button => button.onclick = () => void liveInput({type:'key', key:button.dataset.liveKey}));
 document.querySelectorAll?.('[data-live-scroll]').forEach(button => button.onclick = () => void liveInput({type:'scroll', y:Number(button.dataset.liveScroll)}));

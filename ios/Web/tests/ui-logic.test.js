@@ -192,3 +192,13 @@ test('a locked Pi asks for the PIN over a service, never over the service picker
   f.evaluate(`saveDeviceKey('abc')`);
   assert.equal(f.evaluate('globalThis.videoPilotDeviceKey'), 'abc');
 });
+test('taps on the live picture land on the right Pi pixel in Fit, Fill and Stretch', () => {
+  const f = setup();
+  // The car's live area: 773 x 545, taller than the 16:9 picture.
+  const tap = (x, y, fit) => f.evaluate(`JSON.stringify(liveTapPoint({left:0, top:0, width:773, height:545}, ${x}, ${y}, '${fit}'))`);
+  assert.equal(tap(386.5, 272.5, 'fit'), JSON.stringify({x:640, y:360}), 'the centre is the centre');
+  assert.equal(tap(386.5, 20, 'fit'), 'null', 'the bar above the centred picture is not the picture');
+  assert.equal(JSON.parse(tap(0, 0, 'stretch')).x, 0);
+  const fill = JSON.parse(tap(0, 0, 'fill'));
+  assert.ok(fill.x > 100 && fill.y === 0, 'Fill crops the sides, so the left edge is inside the picture');
+});
