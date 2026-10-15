@@ -941,6 +941,25 @@ $('signin-hide').onclick = () => {
 document.querySelectorAll?.('[data-signin-key]').forEach(button => button.onclick = () => void signinInput({type:'key', key:button.dataset.signinKey}));
 document.querySelectorAll?.('[data-signin-scroll]').forEach(button => button.onclick = () => void signinInput({type:'scroll', y:Number(button.dataset.signinScroll)}));
 
+// ---- Self-update ----
+// Fixes deployed to the Pi never reached a page already open in the car, so
+// the page reloads itself when the Pi's web files change, but only while no
+// video is open (positions are saved, so nothing is lost).
+let loadedWebVersion = '', webUpdatePending = false;
+function noteWebVersion(version) {
+  if (!version) return;
+  if (!loadedWebVersion) { loadedWebVersion = String(version); return; }
+  if (String(version) !== loadedWebVersion) webUpdatePending = true;
+  applyWebUpdate();
+}
+function applyWebUpdate() {
+  if (!webUpdatePending || !$('player-section').hidden || currentTab === 'signin-tab') return;
+  webUpdatePending = false;
+  reportDiagnostic('webUpdateReload', {from:loadedWebVersion});
+  void flushDiagnostics(true);
+  globalThis.location?.reload?.();
+}
+
 // ---- Polling ----
 async function refresh(force = false) {
   // A user action must see its own change, so queue one more pass instead of
@@ -960,6 +979,7 @@ async function refresh(force = false) {
       lastLibraryFetch = {revision:status.libraryRevision, at:Date.now()};
     }
     lastStatus = status;
+    noteWebVersion(status.webVersion);
     if ($('host-ui').hidden) {
       $('host-ui').hidden = false; $('connecting-panel').hidden = true;
       showTab(hashTab() || (NAV_TABS.includes(prefs.get('vp-tab')) ? prefs.get('vp-tab') : 'home-tab'));
@@ -1769,6 +1789,7 @@ function closePlayer(resumePosition = null, preserveFullscreen = false) {
   // frame on screen; hiding it flashed the page underneath mid-video.
   player = null; currentOffset = 0;
   if (!preserveFullscreen) $('player-section').hidden = true;
+  if (!preserveFullscreen) globalThis.setTimeout?.(applyWebUpdate, 500);
   const source = oldPlayer?.source;
   let stopped = source?.stoppedPromise;
   let playerDestroyed = false;

@@ -19,6 +19,14 @@ async function bodyJSON(req, limit = 16384) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
 }
 
+// A version for the deployed web files (their newest change time), so an open
+// page in the car can tell it is out of date and reload itself.
+const WEB_FILES = ["index.html", "app.js", "style.css", "http-source.js", "diagnostics.js"];
+async function webVersion(webRoot) {
+  const times = await Promise.all(WEB_FILES.map(name => stat(path.join(webRoot, name)).then(info => info.mtimeMs, () => 0)));
+  return String(Math.floor(Math.max(...times)));
+}
+
 export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5001, host = "127.0.0.1", version = "Pi",
   signinURL = "http://127.0.0.1:5002" }) {
   const server = http.createServer(async (req, res) => {
@@ -35,6 +43,7 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
         });
       }
       if (url.pathname === "/api/status" && req.method === "GET") return send(res, 200, {
+        webVersion: await webVersion(webRoot),
         hosting: true, busy: Boolean(library.active), publicAccess: true, authentication: "tunnel-key",
         youtubeSearch: true, youtubeExplore: true, youtubeSignedIn: await library.signedIn(), tunnel: "connected",
         version, build: "Pi", activeStreams: 0, queuedCount: library.queue.length,

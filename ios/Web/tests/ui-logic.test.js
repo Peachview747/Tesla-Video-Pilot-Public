@@ -127,6 +127,17 @@ test('search shows a channel only when it plainly matches the words typed', () =
   assert.equal(f.evaluate(`channelMatches('Daily Dose Of Internet', 'funny cats')`), false);
   assert.equal(f.evaluate(`channelMatches('AB', 'ab')`), false, 'too short to trust');
 });
+test('the page reloads itself after a deploy, but never during a video', () => {
+  const f = setup();
+  f.evaluate(`globalThis.reloads = 0; globalThis.location = {reload() { reloads++; }}; document.getElementById('player-section').hidden = true`);
+  f.evaluate(`noteWebVersion('100')`);
+  f.evaluate(`noteWebVersion('100')`);
+  assert.equal(f.evaluate('reloads'), 0, 'same version: no reload');
+  f.evaluate(`document.getElementById('player-section').hidden = false; noteWebVersion('200')`);
+  assert.equal(f.evaluate('reloads'), 0, 'a video is open: wait');
+  f.evaluate(`document.getElementById('player-section').hidden = true; applyWebUpdate()`);
+  assert.equal(f.evaluate('reloads'), 1, 'reloads once the player closes');
+});
 test('upgrades are offered only below the chosen quality', () => {
   const f = setup();
   assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', height:720})`), false, 'no quality setting from the phone');
