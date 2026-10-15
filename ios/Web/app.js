@@ -81,11 +81,66 @@ function saveResume(video = current, position = currentOffset) {
 function clearResume(video = current) {
   try { globalThis.localStorage?.removeItem(resumeKey(video)); } catch {}
 }
+// ---- PIN lock ----
+let deviceId = '';
+let deviceToken = '';
+function loadDeviceId() {
+  try { deviceId = globalThis.localStorage?.getItem('vp-device-id') || ''; } catch {}
+  try { deviceToken = globalThis.localStorage?.getItem('vp-device-token') || ''; } catch {}
+}
+loadDeviceId();
+
+async function showPin(newDeviceId) {
+  deviceId = newDeviceId;
+  $('pin-message').textContent = '';
+  $('pin-input').value = '';
+  $('pin-input').focus?.();
+  $('pin-panel').hidden = false;
+}
+
+async function submitPin() {
+  const pin = $('pin-input').value;
+  if (!pin || pin.length < 4) { $('pin-message').textContent = 'Enter the PIN'; return; }
+  try {
+    const res = await api('/api/pin/check', {pin, deviceId}, 10000);
+    deviceId = res.deviceId;
+    deviceToken = res.token;
+    try { globalThis.localStorage?.setItem('vp-device-id', deviceId); globalThis.localStorage?.setItem('vp-device-token', deviceToken); } catch {}
+    $('pin-panel').hidden = true;
+    toast('Device unlocked');
+    await refresh(true);
+  } catch (error) { $('pin-message').textContent = error.message || 'PIN check failed'; }
+}
+
+$('pin-input').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault?.(); void submitPin(); } };
+$('pin-submit').onclick = () => void submitPin();
+
+async function renderDevices() {
+  if (!lastStatus?.pinLocked) { $('devices-status').textContent = 'PIN lock is not enabled'; return; }
+  try {
+    const res = await api('/api/pin/list', {pin: ''}, 5000).catch(() => null);
+    if (!res?.devices) { $('devices-status').textContent = 'Could not load devices'; return; }
+    $('devices-status').textContent = '';
+    const list = $('devices-list');
+    list.innerHTML = '';
+    for (const device of res.devices) {
+      const el = document.createElement('div');
+      el.className = 'device-item';
+      const date = new Date(device.trustedAt);
+      const ago = Math.round((Date.now() - date) / 1000);
+      const when = ago < 60 ? 'just now' : ago < 3600 ? Math.round(ago/60)+'m ago' : ago < 86400 ? Math.round(ago/3600)+'h ago' : date.toLocaleDateString();
+      el.innerHTML = `<div class="device-info">Trusted ${when}</div><button class="button quiet small device-remove" type="button">Remove</button>`;
+      el.querySelector('button').onclick = () => { console.log('remove device', device.id); };
+      list.appendChild(el);
+    }
+  } catch {}
+}
+
 async function api(path, body, timeout = 12000) {
   const started = globalThis.performance?.now?.() ?? Date.now();
   let response;
   try {
-    const result = await timedFetch(path, {method:body ? 'POST' : 'GET', credentials:'same-origin', cache:'no-store',
+    const result = await timedFetch(path, {method:body ? 'POST' : 'GET', credentials:'same-origin', cache:'no-store', headers:{'x-device-id':deviceId, 'x-device-token':deviceToken}, headers:{'x-device-id':deviceId, 'x-device-token':deviceToken},
       headers:body ? {'Content-Type':'application/json'} : {}, body:body ? JSON.stringify(body) : undefined}, timeout, r => r.text());
     response = result.response;
     const raw = result.body;
@@ -106,6 +161,8 @@ async function api(path, body, timeout = 12000) {
         elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - started),
         error:String(parsed.error || 'request-failed')});
       const failure = new Error(parsed.error || `Request failed (${response.status}).`);
+      if (response.status === 401 && parsed.deviceId) { void showPin(parsed.deviceId); failure.code = 'PIN_REQUIRED'; }
+      if (response.status === 401 && parsed.deviceId) { void showPin(parsed.deviceId); failure.code = 'PIN_REQUIRED'; }
       failure.status = response.status;
       throw failure;
     }

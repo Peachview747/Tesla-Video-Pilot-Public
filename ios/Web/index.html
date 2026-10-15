@@ -267,6 +267,12 @@
                 <div><span>Audio</span><strong id="settings-audio">—</strong></div>
               </div>
             </article>
+
+            <article class="settings-card">
+              <h2>Devices</h2>
+              <p id="devices-status" class="muted"></p>
+              <div id="devices-list" class="devices-list"></div>
+            </article>
           </div>
             <article class="settings-card diagnostics-card">
               <h2>Diagnostics</h2>
@@ -340,6 +346,19 @@
       <button class="portal-tile hulu" type="button" data-live-service="hulu"><span>hulu</span></button>
     </div>
     <p class="portal-note">Netflix and Hulu play in a browser on the Pi and stream here live. Sign in once; the Pi remembers it.</p>
+  </section>
+
+  <!-- PIN LOCK -->
+  <section id="pin-panel" class="pin-overlay" aria-labelledby="pin-title" hidden>
+    <div class="pin-card">
+      <h1 id="pin-title">Enter PIN</h1>
+      <p id="pin-message" class="muted"></p>
+      <div class="pin-entry">
+        <input id="pin-input" type="password" inputmode="numeric" placeholder="0000" maxlength="8" aria-label="PIN code">
+        <button id="pin-submit" class="button" type="button">Unlock</button>
+      </div>
+      <p class="pin-note">First time? Contact the Pi owner to set up the PIN.</p>
+    </div>
   </section>
 
   <!-- LIVE (Netflix / Hulu on the Pi) -->

@@ -483,3 +483,23 @@ button.rail-brand { border: 0; cursor: pointer; }
 .live-stage { position: relative; flex: 1; min-height: 0; }
 #live-screen { display: block; width: 100%; height: 100%; object-fit: contain; touch-action: manipulation; background: #000; }
 #live-screen.stretch { object-fit: fill; }
+
+/* PIN lock */
+.pin-overlay { position: fixed; inset: 0; z-index: 70; display: flex; align-items: center; justify-content: center; padding: 20px; background: var(--overlay); }
+.pin-overlay[hidden] { display: none; }
+.pin-card { background: var(--surface); border-radius: 20px; padding: 28px 24px; max-width: 320px; text-align: center; box-shadow: 0 8px 24px #0008; }
+.pin-card h1 { font-size: 26px; font-weight: 750; margin-bottom: 10px; }
+.pin-message { min-height: 20px; margin-bottom: 20px; }
+.pin-entry { display: flex; gap: 10px; margin-bottom: 20px; }
+#pin-input { flex: 1; padding: 12px 16px; border: 1px solid var(--stroke); border-radius: 12px; background: var(--surface-2); color: var(--text); font-size: 18px; text-align: center; letter-spacing: .3em; font-weight: 600; }
+.pin-note { font-size: var(--fs-small); opacity: .7; }
+
+/* Devices list */
+.settings-section { margin-bottom: 24px; padding-bottom: 20px; border-bottom: 1px solid var(--stroke); }
+.settings-section h3 { font-size: var(--fs-h2); margin-bottom: 12px; }
+#devices-status { min-height: 18px; margin-bottom: 16px; }
+.devices-list { display: flex; flex-direction: column; gap: 8px; }
+.device-item { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: var(--surface-2); border-radius: 12px; font-size: var(--fs-small); }
+.device-item .device-info { flex: 1; }
+.device-item .device-date { opacity: .7; }
+.device-remove { padding: 4px 8px; min-height: auto; font-size: 13px; }
