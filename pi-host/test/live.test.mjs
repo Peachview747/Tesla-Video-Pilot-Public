@@ -22,7 +22,7 @@ test("Netflix opens in a kept Chromium profile with Widevine, and taps stay on s
   await session.start("netflix");
   assert.deepEqual(fake.launched.map(child => path.basename(child.file)), ["Xvfb", "chromium"]);
   assert.ok(fake.launched[1].args.includes("https://www.netflix.com/browse"));
-  assert.ok(fake.launched[1].args.some(arg => arg.startsWith("--user-agent=") && arg.includes("CrOS")));
+  assert.ok(!fake.launched[1].args.some(arg => arg.startsWith("--user-agent=")), "Netflix refuses a disguised user agent");
   assert.deepEqual(JSON.parse(await readFile(path.join(session.profile, "WidevineCdm/latest-component-updated-widevine-cdm"), "utf8")), { Path: widevine });
   assert.ok(fake.calls.some(call => call[0] === "pw-cli" && call[1] === "create-node"), "the capture sink is created");
 

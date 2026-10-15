@@ -5,6 +5,9 @@
 // the recorded videos use. Taps and typing come back through xdotool. The
 // profile is kept, so the user signs in once from the car. Nothing is
 // downloaded or decrypted; it is the user's own session, watched remotely.
+// Keep Chromium's own user agent: on Linux it already reads "X11; Linux
+// x86_64", which Netflix plays. Disguising it as a Chromebook made Netflix
+// refuse every title (E100), because the browser's other signals said Linux.
 // Listens on loopback only; the Video Pilot server proxies to it.
 import { spawn, execFile } from "node:child_process";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -18,8 +21,6 @@ export const SERVICES = {
   hulu: { name: "Hulu", url: "https://www.hulu.com/hub/home" },
 };
 const SINK = "video-pilot-live";
-// Netflix and Hulu turn away Linux on ARM; Chromebooks on ARM are supported.
-const USER_AGENT = "Mozilla/5.0 (X11; CrOS aarch64 15359.58.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36";
 const KEYS = new Set(["Return", "BackSpace", "Tab", "Escape", "Up", "Down", "Left", "Right", "space", "f", "alt+Left"]);
 
 function execTool(file, args, env) {
@@ -83,7 +84,7 @@ export class LiveSession {
     this.browser = this.launch("chromium", [`--user-data-dir=${this.profile}`, "--no-first-run", "--no-default-browser-check",
       "--password-store=basic", "--kiosk", `--window-size=${SCREEN.width},${SCREEN.height}`, "--window-position=0,0",
       "--autoplay-policy=no-user-gesture-required", "--disable-features=Translate,MediaRouter", "--disable-session-crashed-bubble",
-      `--user-agent=${USER_AGENT}`, target.url], { env: this.env, stdio: "ignore" });
+      "--hide-crash-restore-bubble", target.url], { env: this.env, stdio: "ignore" });
     const browser = this.browser;
     browser.once?.("exit", () => { if (this.browser === browser) { this.browser = null; this.stopEncoder(); this.state = "idle"; } });
     this.service = service; this.state = "open"; this.message = `${target.name} is open on the Pi.`;
