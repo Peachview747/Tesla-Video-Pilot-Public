@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause} from '../http-source.js';
+import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause, DEVICE_KEY, deviceHeaders} from '../http-source.js';
 import {DiagnosticsJournal, LiveStats} from '../diagnostics.js';
 
 // Pure UI logic from app.js, run in the same fake-DOM sandbox as playback.test.js.
@@ -22,7 +22,7 @@ function setup() {
     pause() { this.paused = true; } play() { this.paused = false; } destroy() {}
   }
   const context = vm.createContext({
-    JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause,
+    JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause, DEVICE_KEY, deviceHeaders,
     DiagnosticsJournal, LiveStats,
     document:{getElementById:element}, window:{JSMpeg:{Player}, addEventListener() {}},
     fetch:(url, options) => { requests.push({url, body:options?.body ? JSON.parse(options.body) : null}); return new Promise(() => {}); },
@@ -178,4 +178,17 @@ test('library list is refetched only when the phone revision changes', () => {
   assert.equal(f.evaluate(`libraryNeedsFetch({libraryRevision:7}, true)`), true, 'user actions force a fetch');
   f.evaluate(`lastLibraryFetch.at = Date.now() - 31000`);
   assert.equal(f.evaluate(`libraryNeedsFetch({libraryRevision:7})`), true, 'safety refetch every 30 s');
+});
+test('a locked Pi asks for the PIN over a service, never over the service picker', () => {
+  const f = setup();
+  f.evaluate(`['portal','pin-lock','live-section','pin-reset'].forEach(id => document.getElementById(id).hidden = true);
+    document.getElementById('portal').hidden = false; document.getElementById('live-section').hidden = true`);
+  f.evaluate(`globalThis.videoPilotPinRequired()`);
+  assert.equal(f.evaluate(`document.getElementById('pin-lock').hidden`), true, 'the picker stays usable');
+  f.evaluate(`enterYouTube()`);
+  assert.equal(f.evaluate(`document.getElementById('pin-lock').hidden`), false, 'YouTube opens under the PIN screen');
+  f.evaluate(`pressPinDigit('8'); pressPinDigit('4')`);
+  assert.equal(f.evaluate('pinDigits'), '84');
+  f.evaluate(`saveDeviceKey('abc')`);
+  assert.equal(f.evaluate('globalThis.videoPilotDeviceKey'), 'abc');
 });

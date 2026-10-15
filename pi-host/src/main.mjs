@@ -16,8 +16,7 @@ const library = await new Library({
   dataDir,
   ytDlp: process.env.YT_DLP || path.resolve(root, "pi-host/.venv/bin/yt-dlp"),
 }).init();
-const pinLock = new PinLock({ dataDir });
-await pinLock.load();
+const pinLock = await new PinLock({ dataDir }).load();
 const http = createVideoPilotServer({ library, webRoot: path.resolve(root, "ios/Web"),
   decoderPath: path.resolve(root, "app/client/public/jsmpeg.min.js"), port, version: "0.1.40-pi", pinLock });
 await http.start();

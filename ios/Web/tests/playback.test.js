@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause} from '../http-source.js';
+import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause, DEVICE_KEY, deviceHeaders} from '../http-source.js';
 import {DiagnosticsJournal, LiveStats} from '../diagnostics.js';
 
 // Run the shipped UI against small DOM/player doubles. Decoder callbacks are
@@ -43,7 +43,7 @@ function setup({recoveryDelay, fetchImpl} = {}) {
   }
   const context = vm.createContext({
     JSMpegHttpSource,
-    installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause,
+    installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause, DEVICE_KEY, deviceHeaders,
     DiagnosticsJournal, LiveStats,
     document:{getElementById:element},
     window:{JSMpeg:{Player}, addEventListener() {}},

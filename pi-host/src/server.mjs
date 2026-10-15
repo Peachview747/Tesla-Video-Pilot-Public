@@ -28,7 +28,7 @@ async function webVersion(webRoot) {
 }
 
 export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5001, host = "127.0.0.1", version = "Pi",
-  signinURL = "http://127.0.0.1:5002", liveURL = "http://127.0.0.1:5003" }) {
+  signinURL = "http://127.0.0.1:5002", liveURL = "http://127.0.0.1:5003", pinLock = null }) {
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
@@ -38,10 +38,29 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
         const file = name === "jsmpeg.min.js" && decoderPath ? decoderPath : path.join(webRoot, name);
         const data = await readFile(file);
         return send(res, 200, data, TYPES[path.extname(file)] || "application/octet-stream", {
-          "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https://i.ytimg.com https://yt3.ggpht.com https://yt3.googleusercontent.com; connect-src 'self'; object-src 'none'; frame-ancestors 'none'",
+          "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: https://i.ytimg.com https://yt3.ggpht.com https://yt3.googleusercontent.com; connect-src 'self'; object-src 'none'; frame-ancestors 'none'",
           "x-content-type-options": "nosniff", "referrer-policy": "no-referrer",
         });
       }
+      // PIN lock: everything from the relay needs a device key, except the
+      // lock's own calls. Requests made on the Pi itself are never locked.
+      const deviceKey = String(req.headers["x-vp-device"] || "");
+      const pinRoute = url.pathname.match(/^\/api\/pin\/(status|unlock|reset|change|devices|remove)$/);
+      if (pinRoute && pinLock) {
+        const name = pinRoute[1];
+        if ((name === "status") !== (req.method === "GET")) return send(res, 405, { error: "Method not allowed." });
+        try {
+          if (name === "status") return send(res, 200, pinLock.status(deviceKey));
+          const body = await bodyJSON(req, 2048), agent = req.headers["user-agent"];
+          if (name === "unlock") return send(res, 200, await pinLock.unlock(String(body.pin || ""), agent));
+          if (name === "reset") return send(res, 200, await pinLock.reset(body.answer, String(body.newPin || ""), agent));
+          if (name === "change") return send(res, 200, await pinLock.changePin(String(body.pin || ""), String(body.newPin || ""), agent));
+          if (name === "devices") return send(res, 200, { devices: await pinLock.devices(String(body.pin || ""), deviceKey) });
+          return send(res, 200, await pinLock.removeDevice(String(body.pin || ""), String(body.id || "")));
+        } catch (error) { return send(res, error.status || 400, { error: String(error.message || error) }); }
+      }
+      if (pinLock && req.headers["x-video-pilot-relay"] && !pinLock.allows(deviceKey))
+        return send(res, 401, { error: "Enter the PIN.", pinRequired: true });
       if (url.pathname === "/api/status" && req.method === "GET") return send(res, 200, {
         webVersion: await webVersion(webRoot),
         hosting: true, busy: Boolean(library.active), publicAccess: true, authentication: "tunnel-key",

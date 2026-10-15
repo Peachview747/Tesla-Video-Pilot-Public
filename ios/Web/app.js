@@ -1,4 +1,4 @@
-import {JSMpegHttpSource, JSMpegLiveSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause} from './http-source.js';
+import {JSMpegHttpSource, JSMpegLiveSource, DEVICE_KEY, deviceHeaders, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause} from './http-source.js';
 import {DiagnosticsJournal, LiveStats} from './diagnostics.js';
 const $ = id => document.getElementById(id);
 let player = null, current = null, currentOffset = 0, seekTimer = null;
@@ -81,66 +81,11 @@ function saveResume(video = current, position = currentOffset) {
 function clearResume(video = current) {
   try { globalThis.localStorage?.removeItem(resumeKey(video)); } catch {}
 }
-// ---- PIN lock ----
-let deviceId = '';
-let deviceToken = '';
-function loadDeviceId() {
-  try { deviceId = globalThis.localStorage?.getItem('vp-device-id') || ''; } catch {}
-  try { deviceToken = globalThis.localStorage?.getItem('vp-device-token') || ''; } catch {}
-}
-loadDeviceId();
-
-async function showPin(newDeviceId) {
-  deviceId = newDeviceId;
-  $('pin-message').textContent = '';
-  $('pin-input').value = '';
-  $('pin-input').focus?.();
-  $('pin-panel').hidden = false;
-}
-
-async function submitPin() {
-  const pin = $('pin-input').value;
-  if (!pin || pin.length < 4) { $('pin-message').textContent = 'Enter the PIN'; return; }
-  try {
-    const res = await api('/api/pin/check', {pin, deviceId}, 10000);
-    deviceId = res.deviceId;
-    deviceToken = res.token;
-    try { globalThis.localStorage?.setItem('vp-device-id', deviceId); globalThis.localStorage?.setItem('vp-device-token', deviceToken); } catch {}
-    $('pin-panel').hidden = true;
-    toast('Device unlocked');
-    await refresh(true);
-  } catch (error) { $('pin-message').textContent = error.message || 'PIN check failed'; }
-}
-
-$('pin-input').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault?.(); void submitPin(); } };
-$('pin-submit').onclick = () => void submitPin();
-
-async function renderDevices() {
-  if (!lastStatus?.pinLocked) { $('devices-status').textContent = 'PIN lock is not enabled'; return; }
-  try {
-    const res = await api('/api/pin/list', {pin: ''}, 5000).catch(() => null);
-    if (!res?.devices) { $('devices-status').textContent = 'Could not load devices'; return; }
-    $('devices-status').textContent = '';
-    const list = $('devices-list');
-    list.innerHTML = '';
-    for (const device of res.devices) {
-      const el = document.createElement('div');
-      el.className = 'device-item';
-      const date = new Date(device.trustedAt);
-      const ago = Math.round((Date.now() - date) / 1000);
-      const when = ago < 60 ? 'just now' : ago < 3600 ? Math.round(ago/60)+'m ago' : ago < 86400 ? Math.round(ago/3600)+'h ago' : date.toLocaleDateString();
-      el.innerHTML = `<div class="device-info">Trusted ${when}</div><button class="button quiet small device-remove" type="button">Remove</button>`;
-      el.querySelector('button').onclick = () => { console.log('remove device', device.id); };
-      list.appendChild(el);
-    }
-  } catch {}
-}
-
 async function api(path, body, timeout = 12000) {
   const started = globalThis.performance?.now?.() ?? Date.now();
   let response;
   try {
-    const result = await timedFetch(path, {method:body ? 'POST' : 'GET', credentials:'same-origin', cache:'no-store', headers:{'x-device-id':deviceId, 'x-device-token':deviceToken}, headers:{'x-device-id':deviceId, 'x-device-token':deviceToken},
+    const result = await timedFetch(path, {method:body ? 'POST' : 'GET', credentials:'same-origin', cache:'no-store',
       headers:body ? {'Content-Type':'application/json'} : {}, body:body ? JSON.stringify(body) : undefined}, timeout, r => r.text());
     response = result.response;
     const raw = result.body;
@@ -161,8 +106,6 @@ async function api(path, body, timeout = 12000) {
         elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - started),
         error:String(parsed.error || 'request-failed')});
       const failure = new Error(parsed.error || `Request failed (${response.status}).`);
-      if (response.status === 401 && parsed.deviceId) { void showPin(parsed.deviceId); failure.code = 'PIN_REQUIRED'; }
-      if (response.status === 401 && parsed.deviceId) { void showPin(parsed.deviceId); failure.code = 'PIN_REQUIRED'; }
       failure.status = response.status;
       throw failure;
     }
@@ -221,14 +164,16 @@ function reportDiagnostic(event, fields = {}) {
 }
 function timedFetch(url, options = {}, timeout = 4000, readBody = null) {
   const controller = typeof globalThis.AbortController === 'function' ? new AbortController() : null;
-  const request = controller ? {...options, signal:controller.signal} : options;
+  const request = {...options, headers:deviceHeaders(options.headers || {}), ...(controller ? {signal:controller.signal} : {})};
   let timer;
   const deadline = new Promise((_, reject) => {
     timer = setTimeout(() => { controller?.abort?.(); reject(new Error('request-timeout')); }, timeout);
     timer?.unref?.();
   });
-  const operation = fetch(url, request).then(async response =>
-    readBody ? {response, body:await readBody(response)} : response);
+  const operation = fetch(url, request).then(async response => {
+    if (response.status === 401) globalThis.videoPilotPinRequired?.();
+    return readBody ? {response, body:await readBody(response)} : response;
+  });
   return Promise.race([operation, deadline]).finally(() => clearTimeout(timer));
 }
 async function flushDiagnostics(keepalive = false) {
@@ -943,7 +888,18 @@ let signinShotTimer = null, signinPollTimer = null;
 function signinStatus(text) { $('signin-status').textContent = text; }
 function nextSigninShot(delay = 600) {
   clearTimeout(signinShotTimer);
-  if (signinActive) signinShotTimer = setTimeout(() => { $('signin-screen').src = '/api/signin/screen?t=' + Date.now(); }, delay);
+  if (signinActive) signinShotTimer = setTimeout(() => void loadSigninShot(), delay);
+}
+// Fetched rather than set as the image URL, so the request carries the device key.
+async function loadSigninShot() {
+  try {
+    const {response, body} = await timedFetch('/api/signin/screen?t=' + Date.now(), {cache:'no-store'}, 8000, r => r.ok ? r.blob() : null);
+    if (!signinActive) return;
+    if (!response.ok || !body) return nextSigninShot(1500);
+    const image = $('signin-screen'), old = image.src;
+    image.src = URL.createObjectURL(body);
+    if (String(old).startsWith('blob:')) URL.revokeObjectURL(old);
+  } catch { nextSigninShot(1500); }
 }
 $('signin-screen').onload = () => nextSigninShot(600);
 $('signin-screen').onerror = () => nextSigninShot(1500);
@@ -998,6 +954,139 @@ $('signin-hide').onclick = () => {
 document.querySelectorAll?.('[data-signin-key]').forEach(button => button.onclick = () => void signinInput({type:'key', key:button.dataset.signinKey}));
 document.querySelectorAll?.('[data-signin-scroll]').forEach(button => button.onclick = () => void signinInput({type:'scroll', y:Number(button.dataset.signinScroll)}));
 
+// ---- PIN lock ----
+// The Pi answers 401 to any request without a trusted device key. The PIN
+// screen then covers whichever service is open (the service picker itself
+// stays usable), and once the PIN is right the service carries on in place.
+let pinNeeded = false, pinDigits = '', pinBusy = false;
+function saveDeviceKey(key) {
+  globalThis.videoPilotDeviceKey = key || '';
+  try { if (key) globalThis.localStorage?.setItem(DEVICE_KEY, key); else globalThis.localStorage?.removeItem(DEVICE_KEY); } catch {}
+}
+function renderPinDots() {
+  const dots = $('pin-dots');
+  dots.textContent = '';
+  for (let i = 0; i < pinDigits.length; i++) dots.appendChild?.(document.createElement('span'));
+}
+function showPinScreen() {
+  if (!pinNeeded || !$('pin-lock').hidden) return;
+  pinDigits = ''; renderPinDots();
+  $('pin-message').textContent = '';
+  $('pin-enter').hidden = false; $('pin-reset').hidden = true;
+  $('pin-lock').hidden = false;
+}
+// A service is in front: YouTube (the picker is closed) or Netflix/Hulu.
+function serviceOpen() { return $('portal').hidden || !$('live-section').hidden; }
+function requirePin() {
+  pinNeeded = true;
+  if (serviceOpen()) showPinScreen();
+}
+globalThis.videoPilotPinRequired = requirePin;
+async function pinUnlocked(key) {
+  saveDeviceKey(key);
+  pinNeeded = false; pinDigits = '';
+  $('pin-lock').hidden = true;
+  toast('Unlocked. This browser will not ask again.');
+  if (!$('live-section').hidden && liveService) void openLive(liveService);
+  try { await refresh(true); } catch {}
+}
+async function submitPin() {
+  if (pinBusy) return;
+  if (pinDigits.length < 4) { $('pin-message').textContent = 'Enter the PIN.'; return; }
+  pinBusy = true;
+  try {
+    const result = await api('/api/pin/unlock', {pin:pinDigits});
+    await pinUnlocked(result.key);
+  } catch (error) {
+    pinDigits = ''; renderPinDots();
+    $('pin-message').textContent = error.message || 'That did not work.';
+  } finally { pinBusy = false; }
+}
+function pressPinDigit(digit) {
+  if (pinDigits.length >= 8) return;
+  pinDigits += digit; renderPinDots();
+  $('pin-message').textContent = '';
+}
+document.querySelectorAll?.('[data-pin-digit]').forEach(button => button.onclick = () => pressPinDigit(button.dataset.pinDigit));
+$('pin-clear').onclick = () => { pinDigits = pinDigits.slice(0, -1); renderPinDots(); };
+$('pin-unlock').onclick = () => void submitPin();
+globalThis.addEventListener?.('keydown', event => {
+  if ($('pin-lock').hidden || !$('pin-reset').hidden) return;
+  if (/^\d$/.test(event.key)) pressPinDigit(event.key);
+  else if (event.key === 'Backspace') { pinDigits = pinDigits.slice(0, -1); renderPinDots(); }
+  else if (event.key === 'Enter') void submitPin();
+});
+$('pin-cancel').onclick = () => {
+  $('pin-lock').hidden = true;
+  if (!$('live-section').hidden) void closeLive();
+  showPortal();
+};
+$('pin-forgot').onclick = async () => {
+  $('pin-enter').hidden = true; $('pin-reset').hidden = false;
+  $('pin-reset-message').textContent = '';
+  try { $('pin-question').textContent = (await api('/api/pin/status')).question || 'No reset question is set.'; }
+  catch { $('pin-question').textContent = 'The Pi did not answer. Try again.'; }
+};
+$('pin-reset-back').onclick = () => { $('pin-reset').hidden = true; $('pin-enter').hidden = false; };
+$('pin-reset-submit').onclick = async () => {
+  try {
+    const result = await api('/api/pin/reset', {answer:$('pin-answer').value, newPin:$('pin-new').value});
+    $('pin-answer').value = ''; $('pin-new').value = '';
+    await pinUnlocked(result.key);
+    toast('PIN changed. Every other device has to enter the new one.');
+  } catch (error) { $('pin-reset-message').textContent = error.message || 'That did not work.'; }
+};
+
+// Settings: trusted devices and the PIN itself. Every action needs the PIN.
+function whenText(ms) {
+  const minutes = Math.round((Date.now() - ms) / 60000);
+  if (minutes < 2) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 48 * 60) return `${Math.round(minutes / 60)} h ago`;
+  return new Date(ms).toLocaleDateString();
+}
+function renderDeviceList(devices) {
+  const list = $('devices-list');
+  list.textContent = '';
+  for (const device of devices) {
+    const row = document.createElement('div'); row.className = 'device-row';
+    const info = document.createElement('div');
+    const name = document.createElement('strong'); name.textContent = device.current ? `${device.name} (this one)` : device.name;
+    const seen = document.createElement('small'); seen.textContent = `Added ${whenText(device.addedAt)} · last used ${whenText(device.lastSeen)}`;
+    info.append(name, seen);
+    const remove = document.createElement('button');
+    remove.className = 'button quiet small danger'; remove.type = 'button'; remove.textContent = 'Remove';
+    remove.onclick = () => void removeDevice(device);
+    row.append(info, remove);
+    list.appendChild(row);
+  }
+  if (!devices.length) list.textContent = 'No devices yet.';
+}
+async function showDevices() {
+  try {
+    const result = await api('/api/pin/devices', {pin:$('devices-pin').value});
+    renderDeviceList(result.devices || []);
+    $('devices-status').textContent = '';
+  } catch (error) { $('devices-status').textContent = error.message; }
+}
+async function removeDevice(device) {
+  try {
+    await api('/api/pin/remove', {pin:$('devices-pin').value, id:device.id});
+    if (device.current) { saveDeviceKey(''); $('devices-pin').value = ''; $('devices-list').textContent = ''; requirePin(); return; }
+    await showDevices();
+    $('devices-status').textContent = `Removed. That ${device.name} has to enter the PIN again.`;
+  } catch (error) { $('devices-status').textContent = error.message; }
+}
+$('devices-show').onclick = () => void showDevices();
+$('pin-change').onclick = async () => {
+  try {
+    const result = await api('/api/pin/change', {pin:$('devices-pin').value, newPin:$('pin-change-new').value});
+    saveDeviceKey(result.key);
+    $('devices-pin').value = ''; $('pin-change-new').value = ''; $('devices-list').textContent = '';
+    $('devices-status').textContent = 'PIN changed. Every other device has to enter the new one.';
+  } catch (error) { $('devices-status').textContent = error.message; }
+};
+
 // ---- Portal ----
 // Video Pilot opens on a choice of service. YouTube is the original app (the
 // rail and its tabs); Netflix and Hulu open the live view. A reload (after a
@@ -1008,6 +1097,7 @@ function showPortal() {
 }
 function enterYouTube() {
   $('portal').hidden = true;
+  if (pinNeeded) showPinScreen();
   try { globalThis.sessionStorage?.setItem('vp-in-youtube', '1'); } catch {}
 }
 $('portal-youtube').onclick = () => enterYouTube();
@@ -1064,6 +1154,7 @@ async function openLive(service) {
   liveService = service;
   $('live-title').textContent = LIVE_NAMES[service] || '';
   $('live-section').hidden = false;
+  if (pinNeeded) showPinScreen();
   $('live-screen').classList?.toggle?.('stretch', liveStretch);
   $('live-fit').textContent = liveStretch ? 'Stretch' : 'Fit';
   $('live-drop').hidden = true;
@@ -2303,7 +2394,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
         clearRecoveryTimer(session);
         saveResume();
         const text = String(message || 'Unable to read video stream.');
-        const retryable = !/Pair this browser|HTTP 4\d\d|not ready|no longer exists/i.test(text);
+        const retryable = !/Enter the PIN|HTTP 4\d\d|not ready|no longer exists/i.test(text);
         reportDiagnostic('playerError', {error:text, positionSeconds:session.position || 0,
           recoveryAttempt:session.recoveryAttempt});
         if (retryBusy(text)) return;

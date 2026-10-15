@@ -267,11 +267,19 @@
                 <div><span>Audio</span><strong id="settings-audio">—</strong></div>
               </div>
             </article>
-
             <article class="settings-card">
-              <h2>Devices</h2>
-              <p id="devices-status" class="muted"></p>
+              <h2>PIN and devices</h2>
+              <p class="muted small-text">Browsers that entered the PIN skip it. Seeing or changing this list needs the PIN. A new PIN signs out every other device.</p>
+              <div class="pin-manage">
+                <input id="devices-pin" class="filter-input" type="password" inputmode="numeric" placeholder="PIN" aria-label="Current PIN" autocomplete="off">
+                <button id="devices-show" class="button quiet" type="button">Show devices</button>
+              </div>
               <div id="devices-list" class="devices-list"></div>
+              <div class="pin-manage">
+                <input id="pin-change-new" class="filter-input" type="password" inputmode="numeric" placeholder="New PIN" aria-label="New PIN" autocomplete="off">
+                <button id="pin-change" class="button quiet" type="button">Change PIN</button>
+              </div>
+              <p id="devices-status" class="muted small-text" role="status"></p>
             </article>
           </div>
             <article class="settings-card diagnostics-card">
@@ -348,16 +356,29 @@
     <p class="portal-note">Netflix and Hulu play in a browser on the Pi and stream here live. Sign in once; the Pi remembers it.</p>
   </section>
 
-  <!-- PIN LOCK -->
-  <section id="pin-panel" class="pin-overlay" aria-labelledby="pin-title" hidden>
+  <!-- PIN LOCK: shown over whichever service is open until the PIN is entered. -->
+  <section id="pin-lock" class="pin-overlay" role="dialog" aria-modal="true" aria-labelledby="pin-title" hidden>
     <div class="pin-card">
-      <h1 id="pin-title">Enter PIN</h1>
-      <p id="pin-message" class="muted"></p>
-      <div class="pin-entry">
-        <input id="pin-input" type="password" inputmode="numeric" placeholder="0000" maxlength="8" aria-label="PIN code">
-        <button id="pin-submit" class="button" type="button">Unlock</button>
+      <div id="pin-enter">
+        <h2 id="pin-title">Enter PIN</h2>
+        <div id="pin-dots" class="pin-dots" aria-hidden="true"></div>
+        <p id="pin-message" class="pin-message" role="status"></p>
+        <div class="pin-pad">
+          <button type="button" data-pin-digit="1">1</button><button type="button" data-pin-digit="2">2</button><button type="button" data-pin-digit="3">3</button>
+          <button type="button" data-pin-digit="4">4</button><button type="button" data-pin-digit="5">5</button><button type="button" data-pin-digit="6">6</button>
+          <button type="button" data-pin-digit="7">7</button><button type="button" data-pin-digit="8">8</button><button type="button" data-pin-digit="9">9</button>
+          <button id="pin-clear" type="button" aria-label="Delete">⌫</button><button type="button" data-pin-digit="0">0</button><button id="pin-unlock" class="pin-go" type="button">Unlock</button>
+        </div>
+        <div class="pin-links"><button id="pin-cancel" class="link-button" type="button">Back to services</button><button id="pin-forgot" class="link-button" type="button">Forgot PIN?</button></div>
       </div>
-      <p class="pin-note">First time? Contact the Pi owner to set up the PIN.</p>
+      <div id="pin-reset" hidden>
+        <h2>Reset PIN</h2>
+        <p id="pin-question" class="pin-question"></p>
+        <input id="pin-answer" class="filter-input" type="text" placeholder="Answer" aria-label="Answer to the reset question" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <input id="pin-new" class="filter-input" type="password" inputmode="numeric" placeholder="New PIN, 4 to 8 digits" aria-label="New PIN" autocomplete="off">
+        <p id="pin-reset-message" class="pin-message" role="status"></p>
+        <div class="button-row"><button id="pin-reset-back" class="button quiet" type="button">Back</button><button id="pin-reset-submit" class="button" type="button">Reset PIN</button></div>
+      </div>
     </div>
   </section>
 

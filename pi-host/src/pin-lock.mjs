@@ -1,110 +1,186 @@
-// PIN lock for the Video Pilot portal: one PIN protects all services
-// (YouTube, Netflix, Hulu). Trusted devices skip it via a random token
-// in localStorage. A PIN request includes the device token; the server
-// marks it as trusted or locks it out after repeated wrong attempts.
-// PIN changes invalidate all tokens. The Devices list always requires the PIN.
-import { randomUUID } from "node:crypto";
-import { readFile, stat, writeFile } from "node:fs/promises";
+// PIN lock for everything the car reaches through the relay: YouTube,
+// Netflix and Hulu. The Pi itself (requests that did not come through the
+// relay) is never locked. A browser that enters the PIN gets a random device
+// key, kept in its localStorage and sent on every request (the relay cannot
+// carry cookies). Only hashes of the PIN, the reset answer and the keys are
+// stored. Wrong guesses lock everyone out for a growing time, so the PIN
+// cannot be worked out by trying; the lockout is shared, not per browser,
+// because a browser can claim to be anyone.
+import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
+
+const scryptAsync = promisify(scrypt);
+const FREE_TRIES = 5;
+const MAX_LOCK_MS = 60 * 60_000;
+const SEEN_SAVE_MS = 10 * 60_000;
+
+export const validPin = pin => typeof pin === "string" && /^\d{4,8}$/.test(pin);
+const normalizeAnswer = answer => String(answer || "").trim().toLowerCase().replace(/\s+/g, " ");
+const keyHash = key => createHash("sha256").update(String(key)).digest("hex");
+
+async function hashSecret(secret) {
+  const salt = randomBytes(16);
+  const hash = await scryptAsync(secret, salt, 32);
+  return `scrypt:${salt.toString("hex")}:${hash.toString("hex")}`;
+}
+
+async function matches(secret, stored) {
+  const [kind, salt, hash] = String(stored || "").split(":");
+  if (kind !== "scrypt" || !salt || !hash) return false;
+  const actual = await scryptAsync(secret, Buffer.from(salt, "hex"), 32);
+  return timingSafeEqual(actual, Buffer.from(hash, "hex"));
+}
+
+// "Tesla", "iPhone" and so on, from the browser's user agent.
+export function deviceName(userAgent = "") {
+  const ua = String(userAgent);
+  if (/Tesla/i.test(ua)) return "Tesla";
+  if (/iPhone/i.test(ua)) return "iPhone";
+  if (/iPad/i.test(ua)) return "iPad";
+  if (/Android/i.test(ua)) return "Android";
+  if (/Macintosh/i.test(ua)) return "Mac";
+  if (/Windows/i.test(ua)) return "Windows";
+  if (/CrOS/i.test(ua)) return "Chromebook";
+  if (/Linux/i.test(ua)) return "Linux";
+  return "Browser";
+}
 
 export class PinLock {
-  constructor({ dataDir, pinFile = "pin-lock.json" } = {}) {
-    this.file = path.join(dataDir, pinFile);
-    this.state = { pin: "", devices: {}, lockouts: {} };
-    this.changed = null;
+  constructor({ dataDir, file = "pin-lock.json", now = () => Date.now() } = {}) {
+    this.file = path.join(dataDir, file);
+    this.now = now;
+    this.state = { pinHash: "", question: "", answerHash: "", devices: [], pinFailures: 0, pinLockedUntil: 0, answerFailures: 0, answerLockedUntil: 0 };
+    this.lastSeenSave = 0;
   }
 
+  get enabled() { return Boolean(this.state.pinHash); }
+
   async load() {
-    try {
-      const raw = await readFile(this.file, "utf8");
-      this.state = JSON.parse(raw);
-    } catch {
+    let saved = {};
+    try { saved = JSON.parse(await readFile(this.file, "utf8")); } catch {}
+    this.state = { ...this.state, ...saved, devices: Array.isArray(saved.devices) ? saved.devices : [] };
+    // An older build kept the PIN in plain text; hash it.
+    if (typeof saved.pin === "string" && validPin(saved.pin) && !this.state.pinHash) this.state.pinHash = await hashSecret(saved.pin);
+    if ("pin" in this.state || "lockouts" in this.state || "backup" in this.state) {
+      delete this.state.pin; delete this.state.lockouts; delete this.state.backup;
       await this.save();
     }
+    return this;
   }
 
   async save() {
-    await writeFile(this.file, JSON.stringify(this.state, null, 2));
+    const temp = `${this.file}.tmp`;
+    await writeFile(temp, JSON.stringify(this.state, null, 2), { mode: 0o600 });
+    await rename(temp, this.file);
   }
 
-  // Generate or reset: no PIN set → return a setup token. The page uses it to set one.
-  async setup() {
-    const token = randomUUID();
-    return { setup: token, pinIsSet: Boolean(this.state.pin) };
-  }
-
-  // Set PIN once (setup). Requires the setup token returned by setup().
-  async setPin(token, newPin, setupToken) {
-    if (this.state.pin) throw new Error("PIN is already set. Use changePin.");
-    if (token !== setupToken) throw new Error("Setup token is invalid.");
-    if (!newPin || newPin.length < 4 || newPin.length > 8 || !/^\d+$/.test(newPin))
-      throw new Error("PIN must be 4–8 digits.");
-    this.state.pin = newPin;
-    this.state.devices = {};
-    this.state.lockouts = {};
+  async configure({ pin, question, answer }) {
+    if (!validPin(pin)) throw new Error("The PIN must be 4 to 8 digits.");
+    this.state.pinHash = await hashSecret(pin);
+    if (question && answer) { this.state.question = String(question); this.state.answerHash = await hashSecret(normalizeAnswer(answer)); }
+    this.state.devices = [];
+    this.state.pinFailures = 0; this.state.pinLockedUntil = 0; this.state.answerFailures = 0; this.state.answerLockedUntil = 0;
     await this.save();
-    return { ok: true };
   }
 
-  // Change PIN (requires old PIN). Invalidates all device tokens.
-  async changePin(oldPin, newPin) {
-    if (oldPin !== this.state.pin) throw new Error("Old PIN is incorrect.");
-    if (!newPin || newPin.length < 4 || newPin.length > 8 || !/^\d+$/.test(newPin))
-      throw new Error("PIN must be 4–8 digits.");
-    this.state.pin = newPin;
-    this.state.devices = {};
-    this.state.lockouts = {};
-    await this.save();
-    return { ok: true };
+  // The device behind a key, or null.
+  device(key) {
+    if (!key) return null;
+    const hash = keyHash(key);
+    return this.state.devices.find(device => device.keyHash === hash) || null;
   }
 
-  // Check device PIN: returns deviceId and token if correct.
-  // On wrong attempts, tracks lockouts and blocks after 5 failures.
-  async checkPin(pin, deviceId) {
-    if (!this.state.pin) throw new Error("PIN is not set. Use setup.");
-    const now = Date.now();
-    const lock = this.state.lockouts[deviceId];
-    if (lock?.until > now) {
-      const remainingSecs = Math.ceil((lock.until - now) / 1000);
-      throw new Error(`Too many wrong attempts. Try again in ${remainingSecs}s.`);
+  // Every request from the relay comes through here.
+  allows(key) {
+    if (!this.enabled) return true;
+    const device = this.device(key);
+    if (!device) return false;
+    device.lastSeen = this.now();
+    if (this.now() - this.lastSeenSave > SEEN_SAVE_MS) { this.lastSeenSave = this.now(); void this.save().catch(() => {}); }
+    return true;
+  }
+
+  status(key) {
+    return { enabled: this.enabled, unlocked: !this.enabled || Boolean(this.device(key)), question: this.state.question || "",
+      lockedForSeconds: Math.max(0, Math.ceil((this.state.pinLockedUntil - this.now()) / 1000)) };
+  }
+
+  lockError(until) {
+    const seconds = Math.ceil((until - this.now()) / 1000);
+    const wait = seconds >= 120 ? `${Math.ceil(seconds / 60)} minutes` : `${seconds} seconds`;
+    const error = new Error(`Too many wrong tries. Try again in ${wait}.`);
+    error.status = 429;
+    return error;
+  }
+
+  // Checks a guess against the PIN or the reset answer, with the shared lockout:
+  // FREE_TRIES wrong guesses, then 1 minute, doubling each time up to an hour.
+  async verify(kind, guess) {
+    const failures = `${kind}Failures`, lockedUntil = `${kind}LockedUntil`;
+    if (this.state[lockedUntil] > this.now()) throw this.lockError(this.state[lockedUntil]);
+    const stored = kind === "pin" ? this.state.pinHash : this.state.answerHash;
+    const ok = kind === "pin" ? validPin(guess) && await matches(guess, stored) : await matches(normalizeAnswer(guess), stored);
+    if (ok) {
+      if (this.state[failures]) { this.state[failures] = 0; this.state[lockedUntil] = 0; await this.save(); }
+      return;
     }
-    if (pin !== this.state.pin) {
-      this.state.lockouts[deviceId] = { attempts: (lock?.attempts || 0) + 1, until: now + 60_000 };
-      if (this.state.lockouts[deviceId].attempts >= 5) this.state.lockouts[deviceId].until = now + 900_000;
-      await this.save();
-      throw new Error("PIN is incorrect.");
-    }
-    delete this.state.lockouts[deviceId];
-    const token = randomUUID();
-    this.state.devices[deviceId] = { token, trustedAt: now };
+    this.state[failures] += 1;
+    const over = this.state[failures] - FREE_TRIES;
+    if (over >= 0) this.state[lockedUntil] = this.now() + Math.min(MAX_LOCK_MS, 60_000 * 2 ** over);
     await this.save();
-    return { deviceId, token, ok: true };
+    if (over >= 0) throw this.lockError(this.state[lockedUntil]);
+    const left = FREE_TRIES - this.state[failures];
+    const error = new Error(kind === "pin" ? `Wrong PIN. ${left} ${left === 1 ? "try" : "tries"} before a lockout.` : `That is not the answer. ${left} ${left === 1 ? "try" : "tries"} left.`);
+    error.status = 403;
+    throw error;
   }
 
-  // Verify device token: returns true if valid and trusted.
-  isDeviceTrusted(deviceId, token) {
-    if (!this.state.pin) return false;
-    const device = this.state.devices[deviceId];
-    return device?.token === token;
-  }
-
-  // Forget a device (requires PIN). The device must sign in again.
-  async removeDevice(pin, deviceId) {
-    if (pin !== this.state.pin) throw new Error("PIN is incorrect.");
-    delete this.state.devices[deviceId];
+  async addDevice(userAgent) {
+    const key = randomBytes(32).toString("base64url");
+    const at = this.now();
+    this.state.devices.push({ id: randomBytes(8).toString("hex"), keyHash: keyHash(key), name: deviceName(userAgent), addedAt: at, lastSeen: at });
     await this.save();
-    return { ok: true };
+    return key;
   }
 
-  // List all trusted devices (requires PIN).
-  async listDevices(pin) {
-    if (pin !== this.state.pin) throw new Error("PIN is incorrect.");
-    const now = Date.now();
-    return {
-      devices: Object.entries(this.state.devices).map(([id, device]) => ({
-        id,
-        trustedAt: new Date(device.trustedAt).toISOString(),
-      })),
-    };
+  async unlock(pin, userAgent) {
+    if (!this.enabled) throw new Error("No PIN is set.");
+    await this.verify("pin", pin);
+    return { key: await this.addDevice(userAgent) };
+  }
+
+  // Forgot the PIN: the reset answer sets a new one and signs every device out.
+  async reset(answer, newPin, userAgent) {
+    if (!this.state.answerHash) throw new Error("No reset question is set.");
+    if (!validPin(newPin)) throw new Error("The new PIN must be 4 to 8 digits.");
+    await this.verify("answer", answer);
+    this.state.pinHash = await hashSecret(newPin);
+    this.state.devices = []; this.state.pinFailures = 0; this.state.pinLockedUntil = 0;
+    return { key: await this.addDevice(userAgent) };
+  }
+
+  // A new PIN signs every device out; the one that changed it gets a fresh key.
+  async changePin(pin, newPin, userAgent) {
+    if (!validPin(newPin)) throw new Error("The new PIN must be 4 to 8 digits.");
+    await this.verify("pin", pin);
+    this.state.pinHash = await hashSecret(newPin);
+    this.state.devices = [];
+    return { key: await this.addDevice(userAgent) };
+  }
+
+  async devices(pin, key) {
+    await this.verify("pin", pin);
+    const current = this.device(key);
+    return this.state.devices.map(({ id, name, addedAt, lastSeen }) => ({ id, name, addedAt, lastSeen, current: current?.id === id }));
+  }
+
+  async removeDevice(pin, id) {
+    await this.verify("pin", pin);
+    const before = this.state.devices.length;
+    this.state.devices = this.state.devices.filter(device => device.id !== id);
+    await this.save();
+    return { removed: before !== this.state.devices.length };
   }
 }

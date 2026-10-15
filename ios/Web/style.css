@@ -485,21 +485,26 @@ button.rail-brand { border: 0; cursor: pointer; }
 #live-screen.stretch { object-fit: fill; }
 
 /* PIN lock */
-.pin-overlay { position: fixed; inset: 0; z-index: 70; display: flex; align-items: center; justify-content: center; padding: 20px; background: var(--overlay); }
+.pin-overlay { position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center; padding: 12px 16px; background: var(--bg); overflow: auto; }
 .pin-overlay[hidden] { display: none; }
-.pin-card { background: var(--surface); border-radius: 20px; padding: 28px 24px; max-width: 320px; text-align: center; box-shadow: 0 8px 24px #0008; }
-.pin-card h1 { font-size: 26px; font-weight: 750; margin-bottom: 10px; }
-.pin-message { min-height: 20px; margin-bottom: 20px; }
-.pin-entry { display: flex; gap: 10px; margin-bottom: 20px; }
-#pin-input { flex: 1; padding: 12px 16px; border: 1px solid var(--stroke); border-radius: 12px; background: var(--surface-2); color: var(--text); font-size: 18px; text-align: center; letter-spacing: .3em; font-weight: 600; }
-.pin-note { font-size: var(--fs-small); opacity: .7; }
-
-/* Devices list */
-.settings-section { margin-bottom: 24px; padding-bottom: 20px; border-bottom: 1px solid var(--stroke); }
-.settings-section h3 { font-size: var(--fs-h2); margin-bottom: 12px; }
-#devices-status { min-height: 18px; margin-bottom: 16px; }
+.pin-card { width: 100%; max-width: 360px; text-align: center; }
+.pin-card h2 { font-size: var(--fs-h2); font-weight: 750; margin-bottom: 8px; }
+.pin-dots { display: flex; justify-content: center; gap: 12px; min-height: 18px; margin: 6px 0; }
+.pin-dots span { width: 14px; height: 14px; border-radius: 50%; background: var(--text); }
+.pin-message { min-height: 1.4em; margin: 4px 0 8px; color: var(--bad); font-size: var(--fs-small); }
+.pin-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.pin-pad button { min-height: 58px; border: 1px solid var(--stroke); border-radius: 14px; background: var(--surface); color: var(--text); font-size: 26px; font-weight: 650; }
+.pin-pad button:active { transform: scale(.96); }
+.pin-pad .pin-go { background: var(--accent); color: var(--accent-text); border-color: transparent; font-size: 18px; }
+.pin-links { display: flex; justify-content: space-between; margin-top: 14px; }
+.pin-question { margin: 6px 0 12px; font-weight: 650; }
+#pin-reset .filter-input { width: 100%; margin-bottom: 10px; }
+#pin-reset .button-row { justify-content: center; }
+@media (max-height: 700px) { .pin-pad button { min-height: 50px; font-size: 22px; } .pin-card h2 { margin-bottom: 2px; } }
+.pin-manage { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0; }
+.pin-manage .filter-input { flex: 1 1 140px; min-width: 0; }
 .devices-list { display: flex; flex-direction: column; gap: 8px; }
-.device-item { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: var(--surface-2); border-radius: 12px; font-size: var(--fs-small); }
-.device-item .device-info { flex: 1; }
-.device-item .device-date { opacity: .7; }
-.device-remove { padding: 4px 8px; min-height: auto; font-size: 13px; }
+.device-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); }
+.device-row div { flex: 1; min-width: 0; }
+.device-row strong { display: block; }
+.device-row small { color: var(--muted); }

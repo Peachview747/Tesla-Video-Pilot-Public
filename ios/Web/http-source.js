@@ -1,4 +1,12 @@
 // Same recorded-stream transport as MK8's JSMpegHttpSource, with pause backpressure.
+// PIN lock: the Pi gives each browser that enters the PIN a device key, kept in
+// localStorage. Every request to the Pi carries it.
+export const DEVICE_KEY = 'vp-device-key';
+export function deviceHeaders(headers = {}) {
+  let key = globalThis.videoPilotDeviceKey || '';
+  try { key = globalThis.localStorage?.getItem(DEVICE_KEY) || key; } catch {}
+  return key ? {...headers, 'x-vp-device': key} : {...headers};
+}
 const reportDiagnostic = (event, fields = {}) => {
   try { globalThis.videoPilotDiagnostics?.(event, fields); } catch {}
 };
@@ -255,12 +263,13 @@ export class JSMpegHttpSource {
     this.readStartedAt = startedAt;
     try {
       const response = await fetch(this.url, {credentials:'same-origin',cache:'no-store',signal:this.controller.signal,
-        headers:this.options.headers || undefined});
+        headers:deviceHeaders(this.options.headers || {})});
       if (this.destroyed) return;
       reportDiagnostic('sourceResponse', {responseStatus:response.status,
         expectedBytes:Number(response.headers.get('content-length')) || 0,
         elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - startedAt)});
-      if (!response.ok) throw new Error(response.status === 401 ? 'Pair this browser again.' : `Video stream failed (HTTP ${response.status}).`);
+      if (response.status === 401) globalThis.videoPilotPinRequired?.();
+      if (!response.ok) throw new Error(response.status === 401 ? 'Enter the PIN to keep watching.' : `Video stream failed (HTTP ${response.status}).`);
       if (!response.body) throw new Error('This browser cannot read the video stream.');
       const seekHeader = response.headers.get('x-video-seek-time');
       const seekTime = Number(seekHeader);
@@ -341,7 +350,8 @@ export class JSMpegLiveSource {
   destroy() { this.controller.abort(); this.destination = null; }
   async read() {
     try {
-      const response = await fetch(this.url, {credentials:'same-origin', cache:'no-store', signal:this.controller.signal});
+      const response = await fetch(this.url, {credentials:'same-origin', cache:'no-store', signal:this.controller.signal, headers:deviceHeaders()});
+      if (response.status === 401) globalThis.videoPilotPinRequired?.();
       if (!response.ok) {
         let message = `The live picture failed (HTTP ${response.status}).`;
         try { message = (await response.json()).error || message; } catch {}
