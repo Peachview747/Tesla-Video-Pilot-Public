@@ -53,6 +53,7 @@ export class PinLock {
     this.now = now;
     this.state = { pinHash: "", question: "", answerHash: "", devices: [], pinFailures: 0, pinLockedUntil: 0, answerFailures: 0, answerLockedUntil: 0 };
     this.lastSeenSave = 0;
+    this.checking = Promise.resolve();
   }
 
   get enabled() { return Boolean(this.state.pinHash); }
@@ -71,7 +72,7 @@ export class PinLock {
   }
 
   async save() {
-    const temp = `${this.file}.tmp`;
+    const temp = `${this.file}.${randomBytes(6).toString("hex")}.tmp`;
     await writeFile(temp, JSON.stringify(this.state, null, 2), { mode: 0o600 });
     await rename(temp, this.file);
   }
@@ -117,7 +118,15 @@ export class PinLock {
 
   // Checks a guess against the PIN or the reset answer, with the shared lockout:
   // FREE_TRIES wrong guesses, then 1 minute, doubling each time up to an hour.
-  async verify(kind, guess) {
+  // One guess at a time: guesses sent together would all pass the lockout
+  // check before any of them counted.
+  verify(kind, guess) {
+    const check = this.checking.then(() => this.verifyOne(kind, guess));
+    this.checking = check.catch(() => {});
+    return check;
+  }
+
+  async verifyOne(kind, guess) {
     const failures = `${kind}Failures`, lockedUntil = `${kind}LockedUntil`;
     if (this.state[lockedUntil] > this.now()) throw this.lockError(this.state[lockedUntil]);
     const stored = kind === "pin" ? this.state.pinHash : this.state.answerHash;

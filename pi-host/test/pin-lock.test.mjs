@@ -46,6 +46,14 @@ test("wrong PINs lock everyone out for a growing time, whatever the browser clai
   await assert.rejects(pin.unlock("000000", TESLA), /4 tries/);
 });
 
+test("guesses sent all at once still hit the lockout", async () => {
+  const { pin } = await lock();
+  const guesses = Array.from({ length: 12 }, (_, i) => pin.unlock(String(100000 + i), TESLA).then(() => "unlocked", error => error.status));
+  const results = await Promise.all(guesses);
+  assert.deepEqual(results.filter(status => status === 403).length, 4, "four wrong tries are free");
+  assert.ok(results.slice(5).every(status => status === 429), "everything after the fifth is locked out");
+});
+
 test("the reset answer ignores case, sets a new PIN and signs every device out", async () => {
   const { pin } = await lock();
   const old = (await pin.unlock("849590", TESLA)).key;
