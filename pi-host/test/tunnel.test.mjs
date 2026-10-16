@@ -34,3 +34,16 @@ test("answers relay requests in bounded binary frames", async () => {
   assert.equal(frames.reduce((sum, frame) => sum + frame.length - 16, 0), 200000);
   assert.ok(frames.every(frame => frame.length <= 131056 + 16));
 });
+
+test("a request the Pi cannot serve fails alone and the tunnel stays up", async () => {
+  const errors = [];
+  const tunnel = new PiTunnel({ publicURL: "https://tv.example", secret: "test", localURL: "http://127.0.0.1:1",
+    WebSocketImpl: Socket, fetchImpl: async () => { throw new Error("connect ECONNREFUSED"); }, logger: { log() {}, error: line => errors.push(line) } });
+  const socket = new Socket(); tunnel.socket = socket;
+  let closed = false; socket.terminate = () => { closed = true; };
+  const id = "00000000-0000-4000-8000-000000000001";
+  await tunnel.handle({ type: "request", id, method: "GET", target: "/api/status?x=1", headers: {}, body: "" });
+  assert.deepEqual(socket.sent.map(value => JSON.parse(value)), [{ type: "error", id }]);
+  assert.equal(closed, false);
+  assert.match(errors[0], /GET \/api\/status failed/);
+});

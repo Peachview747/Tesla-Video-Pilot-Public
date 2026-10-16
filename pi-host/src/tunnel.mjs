@@ -76,11 +76,21 @@ export class PiTunnel {
     delete headers.host; delete headers["content-length"];
     headers["x-video-pilot-relay"] = "1";
     const body = message.body ? Buffer.from(message.body, "base64") : undefined;
-    const response = await this.fetch(new URL(message.target, this.localURL), {
-      method: message.method, headers, body: body?.length ? body : undefined, signal: controller.signal,
-    });
-    const length = Number(response.headers.get("content-length"));
-    if (!Number.isSafeInteger(length) || length < 0) throw new Error("Local response omitted Content-Length");
+    let response, length;
+    // One request that the Pi cannot answer fails alone; closing the tunnel
+    // would also cut every other stream in flight.
+    try {
+      response = await this.fetch(new URL(message.target, this.localURL), {
+        method: message.method, headers, body: body?.length ? body : undefined, signal: controller.signal,
+      });
+      length = Number(response.headers.get("content-length"));
+      if (!Number.isSafeInteger(length) || length < 0) throw new Error("Local response omitted Content-Length");
+    } catch (error) {
+      controller.abort();
+      this.logger.error(`Video Pilot tunnel: ${message.method} ${String(message.target).split("?")[0]} failed: ${error.message || error}`);
+      this.sendJSON({ type: "error", id: message.id });
+      return;
+    }
     const responseHeaders = {};
     for (const [name, value] of response.headers) if (!["content-length", "connection", "transfer-encoding"].includes(name)) responseHeaders[name] = value;
     const peer = { controller, reader: response.body?.getReader() || null, pending: Buffer.alloc(0), remaining: length, sending: false, credits: 0 };
