@@ -275,6 +275,8 @@ let librarySignature = '';
 let lastLibrary = null;
 let lastStatus = null;
 const releaseTime = video => { const time = Date.parse(video.publishedAt || ''); return Number.isFinite(time) ? time : null; };
+// createdAt is an ISO date from the Pi (a number from older hosts).
+const addedTime = video => { const time = Number(video.createdAt) || Date.parse(video.createdAt || ''); return Number.isFinite(time) ? time : 0; };
 function formatRelease(video) {
   const time = releaseTime(video);
   if (time === null) return '';
@@ -286,7 +288,7 @@ function formatRelease(video) {
 function sortLibrary(videos, mode) {
   const byRelease = direction => (a, b) => {
     const left = releaseTime(a), right = releaseTime(b);
-    if (left === null && right === null) return direction * ((Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
+    if (left === null && right === null) return direction * (addedTime(a) - addedTime(b));
     if (left === null || right === null) return left === null ? 1 : -1;
     return direction * (left - right);
   };
@@ -363,7 +365,11 @@ function videoAction(video, preparingID) {
   return {label:active ? 'Cancel' : 'Remove', run:() => removeVideo(video.id)};
 }
 function videoStatus(video) {
-  if (video.state === 'ready') return '';
+  if (video.state === 'ready') {
+    // A short source is expected, not a failure; the Upgrade button just goes away.
+    if (video.upgrading) return `Upgrading to ${video.upgradeQuality ? `${video.upgradeQuality}p` : 'a higher quality'}…`;
+    return video.upgradeError && !/source is only/i.test(video.upgradeError) ? `Upgrade failed: ${video.upgradeError}` : '';
+  }
   if (video.state === 'preparing') return video.message || 'Preparing…';
   return video.message || video.state;
 }
@@ -552,7 +558,7 @@ function renderLibrary(allVideos, preparingID) {
   const videos = allVideos.filter(inLibrary);
   const pending = allVideos.length - videos.length;
   const signature = JSON.stringify([videos.map(video => [video.id, video.state, video.title, video.message, video.channel,
-    video.publishedAt, video.duration, video.height, video.quality, video.sourceLimit, video.channelAvatar, savedResume(video), isWatched(video)]), preparingID, librarySort, libraryView,
+    video.publishedAt, video.duration, video.height, video.quality, video.sourceMax, video.upgrading, video.upgradeError, video.channelAvatar, savedResume(video), isWatched(video)]), preparingID, librarySort, libraryView,
     channelOrder, libraryFilter, qualitySetting, dataSaver(), pending]);
   if (signature === librarySignature) return;
   librarySignature = signature;
@@ -624,7 +630,7 @@ function renderChannelLibrary(force = false) {
   if (!channelState.spec) return;
   const videos = channelLibraryVideos();
   const preparingID = lastLibrary?.preparingID;
-  const signature = JSON.stringify([videos.map(video => [video.id, video.state, video.message, savedResume(video), isWatched(video)]), channelOrder, preparingID]);
+  const signature = JSON.stringify([videos.map(video => [video.id, video.state, video.message, video.upgrading, video.upgradeError, savedResume(video), isWatched(video)]), channelOrder, preparingID, qualitySetting]);
   if (!force && signature === channelState.librarySignature) return;
   channelState.librarySignature = signature;
   $('channel-library').hidden = !videos.length;
@@ -750,7 +756,7 @@ function queueEntries(videos, activeID = '') {
       formatBytesPerSecond(item.speedBps), formatEta(item.etaSec)].filter(Boolean).join(' · '), api:true}));
   const isActive = video => video.id?.toLowerCase() === activeID?.toLowerCase();
   return videos.filter(video => video.state === 'preparing')
-    .sort((a, b) => isActive(b) - isActive(a) || (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0))
+    .sort((a, b) => isActive(b) - isActive(a) || addedTime(a) - addedTime(b))
     .map(video => ({id:video.id, title:video.title, youtubeID:video.youtubeID, active:isActive(video), progress:null,
       detail:video.message || (isActive(video) ? 'Preparing now' : 'Waiting'), api:false}));
 }
@@ -1390,13 +1396,13 @@ async function retryVideo(id) {
 // ---- Quality (phone /api/settings; hidden when the phone lacks it) ----
 let qualitySetting = null;
 const qualityHeight = quality => Number(String(quality || '').replace(/\D/g, '')) || 0;
-// Upgrades only count when YouTube has the quality (sourceLimit caps it);
+// Upgrades only count when YouTube has the quality (sourceMax caps it);
 // downgrades swap to the smaller copy the Pi already keeps.
 const QUALITY_STEPS = [360, 540, 720, 1080];
 function videoHeight(video) { return Number(video.height) || qualityHeight(video.quality); }
 function isUpgradable(video) {
-  if (!qualitySetting || video.youtubeID == null) return false;
-  const target = qualityHeight(qualitySetting), source = Number(video.sourceLimit);
+  if (!qualitySetting || video.youtubeID == null || video.upgrading) return false;
+  const target = qualityHeight(qualitySetting), source = Number(video.sourceMax);
   const reachable = source > 0 ? Math.min(target, QUALITY_STEPS.filter(value => value <= source).at(-1) || QUALITY_STEPS[0]) : target;
   return target > 0 && videoHeight(video) < reachable;
 }

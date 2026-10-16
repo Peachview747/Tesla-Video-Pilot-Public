@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Library, parseYouTubeID } from "../src/library.mjs";
@@ -118,7 +118,7 @@ test("upgrades stop at the source quality and downgrades keep the smaller copy",
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-quality-"));
   const library = await new Library({ dataDir, runner: async () => ({ stdout: "" }) }).init();
   const id = "00000000-0000-4000-8000-000000000001";
-  library.videos.push({ id: "00000000-0000-4000-8000-000000000002", state: "ready", quality: 720, sourceLimit: 720, youtubeID: "aaaaaaaaaaa" },
+  library.videos.push({ id: "00000000-0000-4000-8000-000000000002", state: "ready", quality: 720, sourceMax: 720, youtubeID: "aaaaaaaaaaa" },
     { id: "00000000-0000-4000-8000-000000000003", state: "ready", quality: 720, sourceHeight: 720, youtubeID: "ccccccccccc" },
     { id, state: "ready", quality: 1080, mediaQuality: 1080, sourceHeight: 1080, qualities: [360, 540, 720, 1080], youtubeID: "bbbbbbbbbbb" });
   assert.equal(await library.upgrade("00000000-0000-4000-8000-000000000002", 1080), false, "YouTube only has 720p");
@@ -162,11 +162,90 @@ test("car diagnostics are appended to a capped log on the Pi", async () => {
   assert.equal(await library.recordDiagnostics("nonsense"), 0);
 });
 
-test("turns interrupted preparation into a retryable item", async () => {
+test("a restart picks the queue up where it stopped, upgrades included", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-restart-"));
-  await writeFile(path.join(dataDir, "library.json"), JSON.stringify([{ id: "00000000-0000-4000-8000-000000000000", state: "preparing" }]));
+  const [a, b, c] = ["00000000-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-00000000000b", "00000000-0000-4000-8000-00000000000c"];
+  await writeFile(path.join(dataDir, "library.json"), JSON.stringify([
+    { id: a, state: "preparing" },
+    { id: b, state: "ready", quality: 720, upgrading: true, upgradeQuality: 1080, sourceLimit: 720 },
+    { id: c, state: "ready", quality: 720, upgrading: true }]));
+  await writeFile(path.join(dataDir, "queue.json"), JSON.stringify([b, a]));
+  await mkdir(path.join(dataDir, "media"), { recursive: true });
+  await writeFile(path.join(dataDir, "media", `${b}.1080.source.f137.mp4.part`), "partial");
+  await writeFile(path.join(dataDir, "media", `${b}.ts`), "playable");
   const library = await new Library({ dataDir }).init();
-  assert.equal(library.videos[0].state, "paused");
+  assert.deepEqual(library.queue, [b, a], "saved order, nothing started before the server is up");
+  assert.equal(library.get(a).state, "preparing");
+  assert.equal(library.get(b).state, "ready", "an interrupted upgrade keeps the playable copy");
+  assert.equal(library.get(b).sourceLimit, undefined, "pre-fix height-only limits are dropped");
+  assert.equal(library.get(c).upgrading, false, "an upgrade without a target is dropped");
+  assert.deepEqual(await readdir(path.join(dataDir, "media")), [`${b}.ts`], "partial downloads are swept");
+});
+
+test("cancel stops the running job; a cancelled upgrade leaves the video ready", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-cancel-"));
+  const runner = (command, args, { signal } = {}) => new Promise((resolve, reject) => {
+    if (args.includes("--dump-single-json")) return resolve({ stdout: '{"duration":30}' });
+    writeFile(args[args.indexOf("--output") + 1] + ".part", "partial").then(() => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+  });
+  const library = await new Library({ dataDir, runner }).init();
+  const ready = { id: "00000000-0000-4000-8000-000000000001", youtubeID: "dQw4w9WgXcQ", state: "ready", quality: 720 };
+  const queued = { id: "00000000-0000-4000-8000-000000000002", youtubeID: "aaaaaaaaaaa", state: "ready", quality: 720 };
+  library.videos.push(ready, queued);
+  await library.upgrade(ready.id, 1080); await library.upgrade(queued.id, 1080);
+  while (!(await readdir(library.mediaDir)).length) await new Promise(resolve => setTimeout(resolve, 5));
+  await library.cancelQueued(queued.id);
+  assert.deepEqual([queued.state, queued.upgrading], ["ready", false], "a waiting upgrade is dropped, not paused");
+  await library.cancelQueued(ready.id);
+  assert.deepEqual([ready.state, ready.quality, ready.upgradeError], ["ready", 720, null]);
+  assert.equal(library.active, null);
+  assert.deepEqual(await readdir(library.mediaDir), [], "the partial download is deleted");
+  const fresh = await library.enqueue("bbbbbbbbbbb");
+  while (!(await readdir(library.mediaDir)).length) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(await library.remove(fresh.id), true, "removing the running download cancels it");
+  assert.equal(library.get(fresh.id), undefined);
+});
+
+test("widescreen sources count by width: 1920x960 is a 1080p source", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-wide-"));
+  const runner = async (command, args) => {
+    if (args.includes("--dump-single-json")) return { stdout: '{"duration":30}' };
+    if (command === "yt-dlp") { await writeFile(args[args.indexOf("--output") + 1], "source"); return { stdout: "" }; }
+    if (command === "ffmpeg") { await writeFile(args.at(-1), "encoded"); return { stdout: "" }; }
+    if (args.includes("json")) return { stdout: '{"streams":[{"width":1920,"height":960}]}' };
+    return { stdout: "0,0,K_\n" };
+  };
+  const library = await new Library({ dataDir, runner }).init();
+  const video = { id: "00000000-0000-4000-8000-000000000003", youtubeID: "dQw4w9WgXcQ", state: "ready", quality: 540, sourceHeight: 640 };
+  library.videos.push(video);
+  assert.equal(await library.upgrade(video.id, 1080), true);
+  while (library.active || library.queue.length) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual([video.quality, video.upgradeError, video.sourceMax], [1080, null, undefined]);
+  assert.deepEqual((await readdir(library.mediaDir)).filter(name => name.includes("source")), [], "the source is deleted");
+});
+
+test("adding a video already in the library does not download it twice", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-dupe-"));
+  const library = await new Library({ dataDir }).init();
+  library.drain = () => {};
+  const first = await library.enqueue("dQw4w9WgXcQ");
+  assert.equal((await library.enqueue("https://youtu.be/dQw4w9WgXcQ")).id, first.id);
+  assert.equal(library.videos.length, 1);
+  first.state = "failed";
+  await library.enqueue("dQw4w9WgXcQ");
+  assert.equal(first.state, "preparing", "a failed copy is retried instead");
+});
+
+test("search filters use YouTube's own results filters", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-filter-"));
+  const calls = [];
+  const runner = async (command, args) => { calls.push(args.at(-1)); return { stdout: '{"entries":[]}' }; };
+  const library = await new Library({ dataDir, runner }).init();
+  await library.search("tesla", 20, "long"); await library.search("tesla", 20, "any"); await library.search("tesla", 20, "bogus");
+  assert.equal(calls[0], "https://www.youtube.com/results?search_query=tesla&sp=EgIYAg%3D%3D");
+  assert.deepEqual(calls.slice(1), ["ytsearch20:tesla", "ytsearch20:tesla"]);
 });
 
 test("maps yt-dlp search results for the existing Tesla cards", async () => {
@@ -228,4 +307,34 @@ test("an unavailable 1080p source leaves the existing video ready", async () => 
   assert.equal(video.state,"ready");assert.equal(video.quality,720);
   assert.match(video.upgradeError,/only 720p/);
   assert.equal(await readFile(files.media,"utf8"),"keep");
+});
+
+test("download and conversion progress reach the status and Downloads views", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-progress-"));
+  const seen = [];
+  let library;
+  const runner = async (command, args, { onLine } = {}) => {
+    if (args.includes("--dump-single-json")) return { stdout: '{"duration":100}' };
+    if (command === "yt-dlp") {
+      onLine("VPP 250 1000 NA"); seen.push(library.statusView().preparationProgress);
+      onLine("VPP 600 NA 2000.0"); seen.push(library.statusView().preparationProgress);
+      await writeFile(args[args.indexOf("--output") + 1], "source"); return { stdout: "" };
+    }
+    if (command === "ffmpeg") {
+      for (const line of ["frame=10", "out_time_us=N/A", "out_time_us=40000000", "speed=2.5x", "progress=continue"]) onLine(line);
+      const status = library.statusView();
+      seen.push([status.preparationStage, status.preparationProgress, status.processingSpeed, status.preparationSecondsRemaining]);
+      seen.push(library.queueView().items[0]);
+      await writeFile(args.at(-1), "encoded"); return { stdout: "" };
+    }
+    if (args.includes("json")) return { stdout: '{"streams":[{"width":1280,"height":720}]}' };
+    return { stdout: "0,0,K_\n" };
+  };
+  library = await new Library({ dataDir, runner }).init();
+  const video = await library.enqueue("dQw4w9WgXcQ");
+  while (library.active || library.queue.length) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(seen.slice(0, 3), [0.25, 0.3, ["processing", 0.4, 2.5, 24]]);
+  assert.deepEqual(seen[3], { id: video.id, title: "YouTube dQw4w9WgXcQ", videoId: "dQw4w9WgXcQ", stage: "transcoding", quality: "720p", progress: 0.4, etaSec: 24 });
+  assert.equal(library.lastPreparation.quality, 720);
+  assert.equal(library.statusView().busy, false);
 });

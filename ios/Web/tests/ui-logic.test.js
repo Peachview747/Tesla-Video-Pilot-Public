@@ -151,10 +151,15 @@ test('upgrades are offered only below the chosen quality', () => {
   assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', height:1080})`), false);
   assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:'1080p'})`), false);
   assert.equal(f.evaluate(`isUpgradable({height:480})`), false, 'imports cannot be re-downloaded');
-  assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:720, sourceLimit:720})`), false, 'YouTube only has 720p');
+  assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:720, sourceMax:720})`), false, 'YouTube only has 720p');
   assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:720, sourceHeight:720})`), true, 'the download height is not a YouTube limit');
-  assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:540, sourceLimit:640})`), false, '640p sources stop at 540p');
-  assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:720, sourceLimit:1080})`), true);
+  assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:720, upgrading:true})`), false, 'already upgrading');
+  assert.equal(f.evaluate(`videoStatus({state:'ready', upgrading:true, upgradeQuality:1080})`), 'Upgrading to 1080p…');
+  assert.equal(f.evaluate(`videoStatus({state:'ready', upgradeError:'This source is only 720p. The current 540p copy is still available.'})`), '');
+  assert.equal(f.evaluate(`videoStatus({state:'ready', upgradeError:'yt-dlp exited 1'})`), 'Upgrade failed: yt-dlp exited 1');
+  assert.deepEqual(JSON.parse(f.evaluate(`JSON.stringify(sortLibrary([{id:'old',createdAt:'2026-10-01T00:00:00Z'},{id:'new',createdAt:'2026-10-15T00:00:00Z'}],'oldest').map(v=>v.id))`)), ['old','new'], 'ISO added dates sort');
+  assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:540, sourceMax:640})`), false, '640p sources stop at 540p');
+  assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:720, sourceMax:1080})`), true);
   assert.equal(f.evaluate(`isDowngradable({state:'ready', quality:1080})`), false, 'already at the chosen quality');
   f.evaluate(`qualitySetting = '720p'`);
   assert.equal(f.evaluate(`isDowngradable({state:'ready', quality:1080})`), true, '1080p videos offer a downgrade to 720p');

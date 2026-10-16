@@ -63,11 +63,10 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
         return send(res, 401, { error: "Enter the PIN.", pinRequired: true });
       if (url.pathname === "/api/status" && req.method === "GET") return send(res, 200, {
         webVersion: await webVersion(webRoot),
-        hosting: true, busy: Boolean(library.active), publicAccess: true, authentication: "tunnel-key",
+        hosting: true, publicAccess: true, authentication: "tunnel-key",
         youtubeSearch: true, youtubeExplore: true, youtubeSignedIn: await library.signedIn(), tunnel: "connected",
-        version, build: "Pi", activeStreams: 0, queuedCount: library.queue.length,
-        preparationStage: library.active ? "processing" : "idle", preparationProgress: null,
-        preparingID: library.active || "", diagnosticsEnabled: true, diagnosticsEventCount: 0,
+        version, build: "Pi", activeStreams: 0, diagnosticsEnabled: true, diagnosticsEventCount: 0,
+        ...library.statusView(),
       });
       if (url.pathname === "/api/library" && req.method === "GET") return send(res, 200, library.libraryView());
       if (url.pathname === "/api/queue" && req.method === "GET") return send(res, 200, library.queueView());
@@ -176,7 +175,7 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
       if (url.pathname === "/api/suggest" && req.method === "GET") return send(res, 200, await library.suggest(url.searchParams.get("q")).catch(() => []));
       if (url.pathname === "/api/search" && req.method === "GET") {
         const query = url.searchParams.get("q");
-        const [results, channels] = await Promise.all([library.search(query),
+        const [results, channels] = await Promise.all([library.search(query, 20, url.searchParams.get("filter") || "any"),
           library.searchChannels?.(query).catch(() => []) ?? Promise.resolve([])]);
         return send(res, 200, { results, channels, continuation: null });
       }

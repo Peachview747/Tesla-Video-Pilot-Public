@@ -20,6 +20,7 @@ const pinLock = await new PinLock({ dataDir }).load();
 const http = createVideoPilotServer({ library, webRoot: path.resolve(root, "ios/Web"),
   decoderPath: path.resolve(root, "app/client/public/jsmpeg.min.js"), port, version: "0.1.40-pi", pinLock });
 await http.start();
+library.drain();
 library.warmQualities();
 const tunnel = new PiTunnel({ publicURL, secret, localURL: `http://127.0.0.1:${port}` });
 const shutdown = async () => { tunnel.stop(); await http.stop(); process.exit(0); };

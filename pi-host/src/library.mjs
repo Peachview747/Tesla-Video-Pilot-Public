@@ -1,15 +1,26 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {QUALITIES, parseQuality, encodeArgs} from "./quality.mjs";
 
-export function run(command, args, options = {}) {
+// onLine receives stdout line by line (progress readers) instead of keeping it.
+// signal cancels the whole process group, so yt-dlp's own ffmpeg (merging
+// video and audio) stops with it instead of writing on after a cancel.
+export function run(command, args, { onLine, signal, ...options } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "", stderr = "";
-    child.stdout?.on("data", chunk => { stdout += chunk; });
+    if (signal?.aborted) { reject(signal.reason); return; }
+    const child = spawn(command, args, { ...options, detached: Boolean(signal), stdio: ["ignore", "pipe", "pipe"] });
+    const abort = () => { try { process.kill(-child.pid, "SIGTERM"); } catch {} reject(signal.reason); };
+    signal?.addEventListener("abort", abort, { once: true });
+    child.once("close", () => signal?.removeEventListener("abort", abort));
+    let stdout = "", stderr = "", partial = "";
+    child.stdout?.on("data", chunk => {
+      if (!onLine) { stdout += chunk; return; }
+      const lines = (partial + chunk).split("\n"); partial = lines.pop();
+      for (const line of lines) onLine(line);
+    });
     child.stderr?.on("data", chunk => { stderr = (stderr + chunk).slice(-32_000); });
     child.on("error", reject);
     child.on("close", code => code === 0 ? resolve({ stdout, stderr })
@@ -27,6 +38,7 @@ export class Library {
     this.channelsFile = path.join(dataDir, "channels.json");
     this.cookiesFile = path.join(dataDir, "youtube-cookies.txt");
     this.diagnosticsFile = path.join(dataDir, "diagnostics.jsonl");
+    this.queueFile = path.join(dataDir, "queue.json");
     this.ytDlp = ytDlp;
     this.ffmpeg = ffmpeg;
     this.ffprobe = ffprobe;
@@ -41,6 +53,10 @@ export class Library {
     this.channelLookups = new Set();
     this.queue = [];
     this.active = null;
+    this.activeJob = null;
+    this.progress = null;
+    this.lastPreparation = null;
+    this.revision = 0;
     this.listeners = new Set();
     this.variantJobs = new Map();
     this.mediaWork = Promise.resolve();
@@ -52,26 +68,46 @@ export class Library {
     try { this.settings = { ...this.settings, ...JSON.parse(await readFile(this.settingsFile, "utf8")) }; } catch {}
     try { this.history = JSON.parse(await readFile(this.historyFile, "utf8")); } catch { this.history = []; }
     try { this.channels = JSON.parse(await readFile(this.channelsFile, "utf8")) || {}; } catch { this.channels = {}; }
+    // A restart (or a deploy) picks the queue up where it stopped; drain()
+    // starts it once the server is listening.
+    let savedQueue = [];
+    try { savedQueue = JSON.parse(await readFile(this.queueFile, "utf8")); } catch {}
+    const waiting = [];
     for (const video of this.videos) {
-      if (video.upgrading) { video.upgrading = false; video.upgradeError = "Upgrade interrupted. Select the quality again to retry."; }
-      if (video.state === "preparing") {
-        video.state = "paused";
-        video.message = "The Pi restarted before preparation finished. Tap Retry.";
-      }
+      // sourceLimit (one day old) was set from height alone, so widescreen
+      // films looked low-resolution; sourceMax replaces it.
+      delete video.sourceLimit;
+      if (video.upgrading && !video.upgradeQuality) video.upgrading = false;
+      if (video.upgrading) { video.message = `Waiting to upgrade to ${video.upgradeQuality}p…`; waiting.push(video.id); }
+      if (video.state === "preparing") { video.message = "Waiting on the Raspberry Pi…"; waiting.push(video.id); }
     }
+    const order = id => { const index = Array.isArray(savedQueue) ? savedQueue.indexOf(id) : -1; return index < 0 ? Infinity : index; };
+    this.queue = waiting.reverse().sort((a, b) => order(a) - order(b));
+    await this.removeLeftovers(name => /\.source\.|\.working\.ts$/.test(name));
     await this.save();
     return this;
   }
 
+  // Partial downloads (yt-dlp's .part and per-format files) and unfinished
+  // encodes; a failed or cancelled job must not leave gigabytes behind.
+  async removeLeftovers(match) {
+    const names = await readdir(this.mediaDir).catch(() => []);
+    await Promise.all(names.filter(match).map(name => rm(path.join(this.mediaDir, name), { force: true })));
+  }
+
   onChange(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
-  notify() { for (const listener of this.listeners) listener(); }
+  notify() { this.revision++; for (const listener of this.listeners) listener(); }
 
   async atomicJSON(file, value) {
     const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
     await writeFile(temporary, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
     await rename(temporary, file);
   }
-  async save() { await this.atomicJSON(this.indexFile, this.videos); this.notify(); }
+  async save() {
+    await this.atomicJSON(this.indexFile, this.videos);
+    await this.atomicJSON(this.queueFile, [this.active, ...this.queue].filter(Boolean));
+    this.notify();
+  }
   async saveSettings() { await this.atomicJSON(this.settingsFile, this.settings); this.notify(); }
   async saveHistory() { await this.atomicJSON(this.historyFile, this.history.slice(0, 300)); this.notify(); }
 
@@ -154,6 +190,11 @@ export class Library {
     const id = randomUUID();
     const youtubeID = parseYouTubeID(input);
     if (!youtubeID) throw new Error("Enter a valid YouTube URL or video ID.");
+    const existing = this.videos.find(item => item.youtubeID === youtubeID);
+    if (existing) {
+      if (["failed", "paused"].includes(existing.state)) await this.retry(existing.id);
+      return existing;
+    }
     const video = {
       id, title: details.title || `YouTube ${youtubeID}`, youtubeID, state: "preparing",
       message: "Waiting on the Raspberry Pi…", duration: null, createdAt: new Date().toISOString(),
@@ -179,9 +220,9 @@ export class Library {
 
   // The best a video can reach is capped by what YouTube offers for it.
   // sourceHeight is only the downloaded file's height (the format request
-  // caps it), so only sourceLimit, set when YouTube came back short, caps.
+  // caps it), so only sourceMax, set when YouTube came back short, caps.
   reachable(video, quality) {
-    const source = Number(video.sourceLimit);
+    const source = Number(video.sourceMax);
     return source > 0 ? Math.min(quality, QUALITIES.filter(value => value <= source).at(-1) || QUALITIES[0]) : quality;
   }
 
@@ -227,25 +268,33 @@ export class Library {
     if (index < 0) throw new Error("That item is no longer queued.");
     const [item] = this.queue.splice(index, 1);
     this.queue.splice(Math.max(0, Math.min(this.queue.length, Number(to) || 0)), 0, item);
-    this.notify();
+    await this.save();
   }
 
+  // Cancel stops the running download or encode too. A cancelled upgrade
+  // leaves the video as it was: ready, at its current quality.
   async cancelQueued(id) {
-    const index = this.queue.indexOf(id);
-    if (index < 0) throw new Error("Only a waiting item can be cancelled.");
-    this.queue.splice(index, 1);
     const video = this.get(id);
-    if (video) {
-      video.state = "paused";
-      video.message = "Preparation paused. Tap Retry when ready.";
-      await this.save();
-    }
+    if (video && this.active === video.id) { await this.stopActive(); return; }
+    const index = this.queue.indexOf(video?.id ?? id);
+    if (index < 0) throw new Error("That item is no longer queued.");
+    this.queue.splice(index, 1);
+    if (video?.upgrading) { video.upgrading = false; video.upgradeQuality = null; video.message = null; }
+    else if (video) { video.state = "paused"; video.message = "Preparation paused. Tap Retry when ready."; }
+    await this.save();
+  }
+
+  async stopActive() {
+    const job = this.activeJob;
+    if (!job) return;
+    job.controller.abort();
+    await job.done;
   }
 
   async remove(id) {
     const video = this.get(id);
     if (!video) return false;
-    if (this.active === video.id) throw new Error("Wait for preparation to finish before removing this video.");
+    if (this.active === video.id) await this.stopActive();
     if ([...this.variantJobs.entries()].some(([key, job]) => key.startsWith(video.id + ":") && job.state === "preparing")) throw new Error("Wait for quality preparation to finish before removing this video.");
     const files = [...Object.values(this.paths(video.id)), ...QUALITIES.flatMap(quality => Object.values(this.paths(video.id, quality)))];
     this.queue = this.queue.filter(item => item !== video.id);
@@ -261,10 +310,16 @@ export class Library {
     await this.saveSettings();
   }
 
-  mediaTask(task) {
-    const promise = this.mediaWork.then(task);
+  // One encode at a time. A cancelled job leaves the line at once instead of
+  // waiting for the encodes ahead of it.
+  mediaTask(task, signal) {
+    const promise = this.mediaWork.then(() => { signal?.throwIfAborted(); return task(); });
     this.mediaWork = promise.catch(() => {});
-    return promise;
+    if (!signal) return promise;
+    return Promise.race([promise, new Promise((_, reject) => {
+      if (signal.aborted) reject(signal.reason);
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    })]);
   }
 
   async qualityStatus(id, value) {
@@ -333,10 +388,15 @@ export class Library {
     }) };
   }
 
-  async search(query, limit = 20) {
+  // filter: the Home search chips (length, this week, newest), as YouTube's
+  // own results-page filters.
+  async search(query, limit = 20, filter = "any") {
     const text = String(query || "").trim();
     if (!text || text.length > 200) throw new Error("Enter a search of up to 200 characters.");
-    const result = await this.runner(this.ytDlp, [...this.ytArgs(), "--flat-playlist", "--dump-single-json", `ytsearch${limit}:${text}`]);
+    const sp = SEARCH_FILTERS[filter];
+    const target = sp ? ["--playlist-end", String(limit), `https://www.youtube.com/results?${new URLSearchParams({ search_query: text, sp })}`]
+      : [`ytsearch${limit}:${text}`];
+    const result = await this.runner(this.ytDlp, [...this.ytArgs(), "--flat-playlist", "--dump-single-json", ...target]);
     const object = JSON.parse(result.stdout);
     return mapEntries(object.entries);
   }
@@ -435,22 +495,29 @@ export class Library {
   drain() {
     if (this.active || this.queue.length === 0) return;
     const id = this.queue.shift();
+    const controller = new AbortController();
     this.active = id;
-    this.prepare(id).catch(() => {}).finally(() => { this.active = null; this.drain(); });
+    const job = { id, controller };
+    job.done = this.prepare(id, controller.signal).catch(() => {})
+      .finally(() => { this.active = null; this.activeJob = null; this.progress = null; this.drain(); });
+    this.activeJob = job;
   }
 
-  async prepare(id) {
+  async prepare(id, signal) {
     const video = this.get(id);
     if (!video) return;
     const targetQuality = video.upgradeQuality || video.quality || this.settings.quality;
     const previousQuality = video.quality, previousMediaQuality = video.mediaQuality;
     const wasReady = video.state === "ready";
     let files = this.paths(id, targetQuality);
+    const source = files.source;
     const url = `https://www.youtube.com/watch?v=${video.youtubeID}`;
+    const stats = { quality: null };
+    this.progress = { id: video.id, stage: "downloading", fraction: null, speed: null, remaining: null };
     try {
       video.message = "Reading YouTube details…";
       await this.save();
-      const metadataResult = await this.runner(this.ytDlp, [...this.ytArgs(), "--dump-single-json", "--no-playlist", url]);
+      const metadataResult = await this.runner(this.ytDlp, [...this.ytArgs(), "--dump-single-json", "--no-playlist", url], { signal });
       const metadata = JSON.parse(metadataResult.stdout);
       video.title = metadata.title || video.title;
       video.channel = metadata.channel || metadata.uploader || video.channel;
@@ -461,28 +528,55 @@ export class Library {
       await this.save();
       let height = parseQuality(targetQuality);
       const format = `bestvideo[height<=${height}][vcodec^=avc1]+bestaudio[ext=m4a]/best[height<=${height}][ext=mp4]/best[height<=${height}]`;
-      await this.runner(this.ytDlp, [...this.ytArgs(), "--no-playlist", "--no-progress", "--format", format,
-        "--merge-output-format", "mp4", "--output", files.source, url]);
-      const source = files.source;
-      const probe = await this.runner(this.ffprobe, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", source]);
-      const sourceHeight = Number(JSON.parse(probe.stdout).streams?.[0]?.height);
+      const downloadStarted = Date.now();
+      // Per file: video and audio download one after the other.
+      await this.runner(this.ytDlp, [...this.ytArgs(), "--no-playlist", "--newline", "--progress-template", DOWNLOAD_PROGRESS,
+        "--format", format, "--merge-output-format", "mp4", "--output", source, url], { signal, onLine: line => {
+        const match = line.match(/^VPP (\S+) (\S+) (\S+)/);
+        if (!match) return;
+        const done = Number(match[1]), total = Number(match[2]) || Number(match[3]);
+        if (done >= 0 && total > 0) this.progress.fraction = Math.min(1, done / total);
+      } });
+      stats.downloadSeconds = Math.max(1, Math.round((Date.now() - downloadStarted) / 1000));
+      const sourceBytes = await stat(source).then(info => info.size, () => 0);
+      if (sourceBytes) stats.downloadMbps = sourceBytes * 8 / stats.downloadSeconds / 1e6;
+      const probe = await this.runner(this.ffprobe, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", source], { signal });
+      const stream = JSON.parse(probe.stdout).streams?.[0] || {};
+      const sourceHeight = Number(stream.height), sourceWidth = Number(stream.width);
       if (!Number.isFinite(sourceHeight) || sourceHeight <= 0) throw new Error("Unable to read the downloaded video's resolution.");
-      if (sourceHeight < height) {
-        video.sourceLimit = sourceHeight;
-        if (wasReady) throw new Error(`This source is only ${sourceHeight}p. The current ${previousQuality}p copy is still available.`);
-        height = QUALITIES.filter(value => value <= sourceHeight).at(-1) || 360;
+      // Widescreen films are short for their class: 1920x800 is 1080p.
+      const sourceClass = Math.max(sourceHeight, sourceWidth > 0 ? Math.round(sourceWidth * 9 / 16) : 0);
+      if (sourceClass + 16 < height) {
+        video.sourceMax = sourceClass;
+        if (wasReady) throw new Error(`This source is only ${sourceClass}p. The current ${previousQuality}p copy is still available.`);
+        height = QUALITIES.filter(value => value <= sourceClass + 16).at(-1) || 360;
         files = this.paths(id, height);
       }
       video.sourceHeight = sourceHeight;
       video.message = `Preparing ${height}p for the Tesla browser…`;
+      Object.assign(this.progress, { stage: "processing", fraction: 0 });
       await this.save();
       await rm(files.temporary, { force: true });
+      const processingStarted = Date.now();
       await this.mediaTask(async () => {
-        await this.runner(this.ffmpeg, encodeArgs(source, files.temporary, height));
+        await this.runner(this.ffmpeg, ["-progress", "pipe:1", "-nostats", ...encodeArgs(source, files.temporary, height)], { signal, onLine: line => {
+          const [key, value] = line.split("=");
+          const seconds = Number(value) / 1e6;
+          if (key === "out_time_us" && seconds >= 0 && video.duration) this.progress.fraction = Math.min(1, seconds / video.duration);
+          if (key === "speed" && parseFloat(value) > 0) this.progress.speed = parseFloat(value);
+          if (this.progress.speed && video.duration && this.progress.fraction !== null)
+            this.progress.remaining = video.duration * (1 - this.progress.fraction) / this.progress.speed;
+        } });
         await rename(files.temporary, files.media);
         await this.buildSeekIndex(video, files);
-      });
-      await rm(source, { force: true });
+      }, signal);
+      stats.processingSeconds = Math.max(1, Math.round((Date.now() - processingStarted) / 1000));
+      if (video.duration) stats.processingSpeed = video.duration / stats.processingSeconds;
+      const outputBytes = await stat(files.media).then(info => info.size, () => 0);
+      if (outputBytes && video.duration) stats.outputKbps = outputBytes * 8 / video.duration / 1000;
+      stats.quality = height; stats.hardwareDecode = false;
+      this.lastPreparation = stats;
+      await this.removeLeftovers(name => name.startsWith(path.basename(source).replace(/mp4$/, "")));
       video.state = "ready";
       video.quality = height;
       video.mediaQuality = files.media === this.paths(id).media && !previousMediaQuality ? undefined : height;
@@ -493,12 +587,15 @@ export class Library {
       await this.save();
       this.warmQualities();
     } catch (error) {
-      video.state = wasReady ? "ready" : "failed";
+      const cancelled = Boolean(signal?.aborted);
+      const message = cancelled ? (wasReady ? "Upgrade cancelled." : "Cancelled. Tap Retry when ready.") : String(error.message || error).slice(0, 500);
+      video.state = wasReady ? "ready" : (cancelled ? "paused" : "failed");
       video.quality = previousQuality; video.mediaQuality = previousMediaQuality;
       video.upgrading = false; video.upgradeQuality = null;
-      if (wasReady) video.upgradeError = String(error.message || error).slice(0,500);
-      video.message = String(error.message || error).slice(0, 500);
+      if (wasReady) video.upgradeError = cancelled ? null : message;
+      video.message = wasReady ? null : message;
       await rm(files.temporary, { force: true });
+      await this.removeLeftovers(name => name.startsWith(path.basename(source).replace(/mp4$/, "")));
       await this.save();
       throw error;
     }
@@ -527,11 +624,30 @@ export class Library {
       const video = this.get(id);
       const active = index === 0 && Boolean(this.active);
       const stage = !active ? "queued" : (/^Preparing/.test(video?.message || "") ? "transcoding" : "downloading");
-      return { id, title: video?.title || id, videoId: video?.youtubeID || null, stage };
+      const quality = video?.upgradeQuality || video?.quality;
+      const progress = active && Number.isFinite(this.progress?.fraction) ? this.progress.fraction : null;
+      return { id, title: video?.title || id, videoId: video?.youtubeID || null, stage,
+        ...(quality ? { quality: `${quality}p` } : {}), ...(video?.upgrading ? { upgrade: true } : {}),
+        ...(progress !== null ? { progress } : {}),
+        ...(active && stage === "transcoding" && this.progress?.remaining >= 0 ? { etaSec: Math.round(this.progress.remaining) } : {}) };
     });
     return { items };
   }
+
+  // The preparation fields of /api/status.
+  statusView() {
+    const progress = this.active && this.progress?.id === this.active ? this.progress : null;
+    return { busy: Boolean(this.active), queuedCount: this.queue.length, preparingID: this.active || "",
+      preparationStage: !this.active ? "idle" : progress?.stage || "downloading",
+      preparationProgress: Number.isFinite(progress?.fraction) ? progress.fraction : null,
+      processingSpeed: progress?.stage === "processing" ? progress.speed : null,
+      preparationSecondsRemaining: progress?.stage === "processing" && progress.remaining >= 0 ? progress.remaining : null,
+      lastPreparation: this.lastPreparation, libraryRevision: this.revision };
+  }
 }
+
+const DOWNLOAD_PROGRESS = "download:VPP %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s";
+const SEARCH_FILTERS = { short: "EgIYAQ==", medium: "EgIYAw==", long: "EgIYAg==", week: "EgIIAw==", newest: "CAI=" };
 
 export function parseYouTubeID(value) {
   const text = String(value || "").trim();
