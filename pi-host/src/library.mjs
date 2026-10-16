@@ -178,8 +178,10 @@ export class Library {
   }
 
   // The best a video can reach is capped by what YouTube offers for it.
+  // sourceHeight is only the downloaded file's height (the format request
+  // caps it), so only sourceLimit, set when YouTube came back short, caps.
   reachable(video, quality) {
-    const source = Number(video.sourceHeight);
+    const source = Number(video.sourceLimit);
     return source > 0 ? Math.min(quality, QUALITIES.filter(value => value <= source).at(-1) || QUALITIES[0]) : quality;
   }
 
@@ -466,6 +468,7 @@ export class Library {
       const sourceHeight = Number(JSON.parse(probe.stdout).streams?.[0]?.height);
       if (!Number.isFinite(sourceHeight) || sourceHeight <= 0) throw new Error("Unable to read the downloaded video's resolution.");
       if (sourceHeight < height) {
+        video.sourceLimit = sourceHeight;
         if (wasReady) throw new Error(`This source is only ${sourceHeight}p. The current ${previousQuality}p copy is still available.`);
         height = QUALITIES.filter(value => value <= sourceHeight).at(-1) || 360;
         files = this.paths(id, height);

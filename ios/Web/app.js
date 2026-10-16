@@ -552,7 +552,7 @@ function renderLibrary(allVideos, preparingID) {
   const videos = allVideos.filter(inLibrary);
   const pending = allVideos.length - videos.length;
   const signature = JSON.stringify([videos.map(video => [video.id, video.state, video.title, video.message, video.channel,
-    video.publishedAt, video.duration, video.height, video.quality, video.sourceHeight, video.channelAvatar, savedResume(video), isWatched(video)]), preparingID, librarySort, libraryView,
+    video.publishedAt, video.duration, video.height, video.quality, video.sourceLimit, video.channelAvatar, savedResume(video), isWatched(video)]), preparingID, librarySort, libraryView,
     channelOrder, libraryFilter, qualitySetting, dataSaver(), pending]);
   if (signature === librarySignature) return;
   librarySignature = signature;
@@ -1390,13 +1390,13 @@ async function retryVideo(id) {
 // ---- Quality (phone /api/settings; hidden when the phone lacks it) ----
 let qualitySetting = null;
 const qualityHeight = quality => Number(String(quality || '').replace(/\D/g, '')) || 0;
-// Upgrades only count when YouTube has the quality (sourceHeight caps it);
+// Upgrades only count when YouTube has the quality (sourceLimit caps it);
 // downgrades swap to the smaller copy the Pi already keeps.
 const QUALITY_STEPS = [360, 540, 720, 1080];
 function videoHeight(video) { return Number(video.height) || qualityHeight(video.quality); }
 function isUpgradable(video) {
   if (!qualitySetting || video.youtubeID == null) return false;
-  const target = qualityHeight(qualitySetting), source = Number(video.sourceHeight);
+  const target = qualityHeight(qualitySetting), source = Number(video.sourceLimit);
   const reachable = source > 0 ? Math.min(target, QUALITY_STEPS.filter(value => value <= source).at(-1) || QUALITY_STEPS[0]) : target;
   return target > 0 && videoHeight(video) < reachable;
 }

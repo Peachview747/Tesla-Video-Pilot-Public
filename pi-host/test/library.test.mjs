@@ -118,9 +118,12 @@ test("upgrades stop at the source quality and downgrades keep the smaller copy",
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-quality-"));
   const library = await new Library({ dataDir, runner: async () => ({ stdout: "" }) }).init();
   const id = "00000000-0000-4000-8000-000000000001";
-  library.videos.push({ id: "00000000-0000-4000-8000-000000000002", state: "ready", quality: 720, sourceHeight: 720, youtubeID: "aaaaaaaaaaa" },
+  library.videos.push({ id: "00000000-0000-4000-8000-000000000002", state: "ready", quality: 720, sourceLimit: 720, youtubeID: "aaaaaaaaaaa" },
+    { id: "00000000-0000-4000-8000-000000000003", state: "ready", quality: 720, sourceHeight: 720, youtubeID: "ccccccccccc" },
     { id, state: "ready", quality: 1080, mediaQuality: 1080, sourceHeight: 1080, qualities: [360, 540, 720, 1080], youtubeID: "bbbbbbbbbbb" });
   assert.equal(await library.upgrade("00000000-0000-4000-8000-000000000002", 1080), false, "YouTube only has 720p");
+  library.drain = () => {};
+  assert.equal(await library.upgrade("00000000-0000-4000-8000-000000000003", 1080), true, "a 720p download was capped by the request, not by YouTube");
   for (const quality of [720, 1080]) {
     const files = library.paths(id, quality);
     await writeFile(files.media, "ts"); await writeFile(files.seek, "{}");
