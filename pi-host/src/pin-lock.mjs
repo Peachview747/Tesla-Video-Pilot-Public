@@ -1,8 +1,9 @@
 // PIN lock for everything the car reaches through the relay: YouTube,
-// Netflix and Hulu. The Pi itself (requests that did not come through the
-// relay) is never locked. A browser that enters the PIN gets a random device
-// key, kept in its localStorage and sent on every request (the relay cannot
-// carry cookies). Only hashes of the PIN, the reset answer and the keys are
+// Netflix, Hulu, Claude and Pi Health. The Pi itself (requests that did not
+// come through the relay) is never locked. A browser that enters the PIN gets
+// a random key for that visit, kept in the tab and sent on every request (the
+// relay cannot carry cookies, and a MAC address never reaches the Pi through
+// Cloudflare). Only hashes of the PIN, the reset answer and the keys are
 // stored. Wrong guesses lock everyone out for a growing time, so the PIN
 // cannot be worked out by trying; the lockout is shared, not per browser,
 // because a browser can claim to be anyone.
@@ -15,6 +16,9 @@ const scryptAsync = promisify(scrypt);
 const FREE_TRIES = 5;
 const MAX_LOCK_MS = 60 * 60_000;
 const SEEN_SAVE_MS = 10 * 60_000;
+// An unlock lasts one visit: it ends after 30 minutes with no requests (a
+// playing video keeps polling, so it counts as use) and after 12 hours at most.
+export const IDLE_MS = 30 * 60_000, MAX_MS = 12 * 60 * 60_000;
 
 export const validPin = pin => typeof pin === "string" && /^\d{4,8}$/.test(pin);
 const normalizeAnswer = answer => String(answer || "").trim().toLowerCase().replace(/\s+/g, " ");
@@ -64,6 +68,7 @@ export class PinLock {
     this.state = { ...this.state, ...saved, devices: Array.isArray(saved.devices) ? saved.devices : [] };
     // An older build kept the PIN in plain text; hash it.
     if (typeof saved.pin === "string" && validPin(saved.pin) && !this.state.pinHash) this.state.pinHash = await hashSecret(saved.pin);
+    this.expire();
     if ("pin" in this.state || "lockouts" in this.state || "backup" in this.state) {
       delete this.state.pin; delete this.state.lockouts; delete this.state.backup;
       await this.save();
@@ -86,11 +91,19 @@ export class PinLock {
     await this.save();
   }
 
-  // The device behind a key, or null.
+  // The device behind a key, or null. Expired unlocks are forgotten.
   device(key) {
     if (!key) return null;
+    this.expire();
     const hash = keyHash(key);
     return this.state.devices.find(device => device.keyHash === hash) || null;
+  }
+
+  expire() {
+    const now = this.now(), before = this.state.devices.length;
+    this.state.devices = this.state.devices.filter(device =>
+      now - (device.lastSeen || device.addedAt || 0) < IDLE_MS && now - (device.addedAt || 0) < MAX_MS);
+    if (this.state.devices.length !== before) void this.save().catch(() => {});
   }
 
   // Every request from the relay comes through here.

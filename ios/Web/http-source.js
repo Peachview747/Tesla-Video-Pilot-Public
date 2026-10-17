@@ -1,10 +1,10 @@
 // Same recorded-stream transport as MK8's JSMpegHttpSource, with pause backpressure.
-// PIN lock: the Pi gives each browser that enters the PIN a device key, kept in
-// localStorage. Every request to the Pi carries it.
+// PIN lock: the Pi gives a browser that enters the PIN a key for that visit,
+// kept in the tab (sessionStorage). Every request to the Pi carries it.
 export const DEVICE_KEY = 'vp-device-key';
 export function deviceHeaders(headers = {}) {
   let key = globalThis.videoPilotDeviceKey || '';
-  try { key = globalThis.localStorage?.getItem(DEVICE_KEY) || key; } catch {}
+  try { key = globalThis.sessionStorage?.getItem(DEVICE_KEY) || key; } catch {}
   return key ? {...headers, 'x-vp-device': key} : {...headers};
 }
 const reportDiagnostic = (event, fields = {}) => {

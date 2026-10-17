@@ -101,3 +101,14 @@ test("the server locks relayed requests, not the Pi itself or the page", async t
   const { key } = await (await fetch(origin + "/api/pin/unlock", { method: "POST", headers: { ...relay, "user-agent": TESLA }, body: JSON.stringify({ pin: "849590" }) })).json();
   assert.equal((await fetch(origin + "/api/queue", { headers: { ...relay, "x-vp-device": key } })).status, 200);
 });
+
+test("an unlock lasts one visit: 30 idle minutes or 12 hours at most", async () => {
+  const { pin, clock } = await lock();
+  const { key } = await pin.unlock("849590", TESLA);
+  clock.now += 29 * 60_000; assert.equal(pin.allows(key), true, "still in use");
+  for (let hour = 0; hour < 11; hour++) { clock.now += 20 * 60_000; assert.equal(pin.allows(key), true); clock.now += 20 * 60_000; assert.equal(pin.allows(key), true); clock.now += 20 * 60_000; pin.allows(key); }
+  clock.now += 60 * 60_000 - 1; assert.equal(pin.allows(key), false, "past 12 hours even while in use");
+  const second = (await pin.unlock("849590", TESLA)).key;
+  clock.now += 31 * 60_000; assert.equal(pin.allows(second), false, "30 minutes idle ends it");
+  assert.equal(pin.state.devices.length, 0, "expired unlocks are forgotten");
+});

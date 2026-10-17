@@ -3,11 +3,22 @@
 // Hulu, Claude, Pi Health): a button wherever a page puts [data-apps-menu],
 // opening a sheet that jumps straight to another app.
 (() => {
+  // Each visit asks for the PIN. The unlock key lives in this tab only and
+  // survives a page change only when it is a switch inside the portal (which
+  // marks a handoff just before leaving); a reload or a fresh open drops it.
+  try {
+    const handoff = Number(sessionStorage.getItem('vp-handoff')) || 0;
+    sessionStorage.removeItem('vp-handoff');
+    localStorage.removeItem('vp-device-key'); // remembered keys from before
+    if (Date.now() - handoff > 15000) sessionStorage.removeItem('vp-device-key');
+  } catch {}
+  const handoff = () => { try { sessionStorage.setItem('vp-handoff', String(Date.now())); } catch {} };
   const APPS = [['youtube', 'YouTube'], ['netflix', 'Netflix'], ['hulu', 'Hulu'], ['claude', 'Claude'], ['health', 'Pi Health'], ['portal', 'All apps']];
   const here = location.pathname.startsWith('/airoom') ? 'claude' : location.pathname.startsWith('/health') ? 'health' : '';
   function go(id) {
     // On the Video Pilot page itself, switch without reloading.
     if (globalThis.videoPilotOpen?.(id)) return;
+    handoff();
     location.href = id === 'claude' ? '/airoom/' : id === 'health' ? '/health/' : id === 'portal' ? '/' : `/?app=${id}`;
   }
   let sheet = null;
@@ -38,5 +49,5 @@
     }
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount); else mount();
-  globalThis.videoPilotApps = {open, close, mount};
+  globalThis.videoPilotApps = {open, close, mount, handoff};
 })();

@@ -4,7 +4,7 @@
 // everything else; the device key comes from the portal page.
 const $ = id => document.getElementById(id);
 function headers(extra = {}) {
-  let key = ''; try { key = localStorage.getItem('vp-device-key') || ''; } catch {}
+  let key = ''; try { key = sessionStorage.getItem('vp-device-key') || ''; } catch {}
   return key ? {...extra, 'x-vp-device': key} : extra;
 }
 async function call(path, body) {

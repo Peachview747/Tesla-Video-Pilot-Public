@@ -968,7 +968,7 @@ document.querySelectorAll?.('[data-signin-scroll]').forEach(button => button.onc
 let pinNeeded = false, pinDigits = '', pinBusy = false;
 function saveDeviceKey(key) {
   globalThis.videoPilotDeviceKey = key || '';
-  try { if (key) globalThis.localStorage?.setItem(DEVICE_KEY, key); else globalThis.localStorage?.removeItem(DEVICE_KEY); } catch {}
+  try { if (key) globalThis.sessionStorage?.setItem(DEVICE_KEY, key); else globalThis.sessionStorage?.removeItem(DEVICE_KEY); } catch {}
 }
 function renderPinDots() {
   const dots = $('pin-dots');
@@ -999,14 +999,15 @@ document.querySelectorAll?.('[data-portal-page]').forEach(link => link.onclick =
     const status = await api('/api/pin/status');
     if (status.enabled && !status.unlocked) { pendingPortalPage = target; pinNeeded = true; showPinScreen(); return; }
   } catch {}
+  globalThis.videoPilotApps?.handoff?.();
   globalThis.location.href = target;
 });
 async function pinUnlocked(key) {
   saveDeviceKey(key);
   pinNeeded = false; pinDigits = '';
   $('pin-lock').hidden = true;
-  if (pendingPortalPage) { const target = pendingPortalPage; pendingPortalPage = ''; globalThis.location.href = target; return; }
-  toast('Unlocked. This browser will not ask again.');
+  if (pendingPortalPage) { const target = pendingPortalPage; pendingPortalPage = ''; globalThis.videoPilotApps?.handoff?.(); globalThis.location.href = target; return; }
+  toast('Unlocked for this visit.');
   if (!$('live-section').hidden && liveService) void openLive(liveService);
   try { await refresh(true); } catch {}
 }
@@ -1321,6 +1322,7 @@ function applyWebUpdate() {
   if (!webUpdatePending || !$('player-section').hidden || !$('live-section').hidden || currentTab === 'signin-tab') return;
   webUpdatePending = false;
   reportDiagnostic('webUpdateReload', {from:loadedWebVersion});
+  globalThis.videoPilotApps?.handoff?.(); // a self-update reload is not a new visit
   void flushDiagnostics(true);
   globalThis.location?.reload?.();
 }
