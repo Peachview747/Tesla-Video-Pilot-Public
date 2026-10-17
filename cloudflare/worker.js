@@ -1,15 +1,15 @@
 import { PhoneTunnel } from "./phone-relay.js";
 export { PhoneTunnel };
 
-// Permanent front door for the Tesla Video Player.
-// The laptop's tunnel address changes every start; tesla.sh posts the new one
-// to /__set, and this Worker proxies everything through to it. Because the
-// browser only ever sees this address, the login cookie survives restarts.
+// Permanent front door for the Tesla Video Pilot host.
+// The relay object's name. A live relay object keeps its old code while the Pi
+// stays connected; a new name starts a fresh one after a protocol change.
+const RELAY = "mk8-pi-2026-10-16";
 
 const OFFLINE = `<!doctype html><meta name=viewport content="width=device-width">
 <body style="font-family:system-ui;background:#111;color:#eee;display:grid;place-items:center;height:100vh;margin:0">
-<div style="text-align:center"><h1>MK8 host is offline</h1>
-<p>Open MK8 on your iPhone and start hosting, or start your laptop host.</p></div>`;
+<div style="text-align:center"><h1>Video Pilot is offline</h1>
+<p>Check that the Raspberry Pi is powered on and connected to the internet.</p></div>`;
 
 export default {
   async fetch(req, env) {
@@ -17,48 +17,19 @@ export default {
 
     if (url.pathname.startsWith("/__iphone/")) {
       if (!["/__iphone/connect", "/__iphone/status"].includes(url.pathname)) return new Response("Not found", { status: 404 });
-      if (!env.PHONE_TUNNEL) return Response.json({ error: "Deploy the iPhone Worker update" }, { status: 503 });
-      const relay = env.PHONE_TUNNEL.get(env.PHONE_TUNNEL.idFromName("mk8-iphone"));
+      if (!env.PHONE_TUNNEL) return Response.json({ error: "Deploy the Video Pilot Worker update" }, { status: 503 });
+      const relay = env.PHONE_TUNNEL.get(env.PHONE_TUNNEL.idFromName(RELAY));
       return relay.fetch(req);
     }
 
-    if (url.pathname === "/__set" && req.method === "POST") {
-      if (!env.SECRET || req.headers.get("x-secret") !== env.SECRET) return new Response("no", { status: 403 });
-      const target = (await req.text()).trim();
-      if (!/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/.test(target) && target !== "")
-        return new Response("bad target", { status: 400 });
-      if (target === "") await env.KV.delete("target");
-      else await env.KV.put("target", target);
-      return new Response("ok");
-    }
-
-    // A connected iPhone owns the front door. Its errors must not accidentally
-    // route browser pairing or media mutations to the laptop.
+    // The Raspberry Pi uses the existing authenticated host tunnel. Internal
+    // endpoint names remain stable for protocol compatibility.
     if (env.PHONE_TUNNEL) {
-      const relay = env.PHONE_TUNNEL.get(env.PHONE_TUNNEL.idFromName("mk8-iphone"));
-      const response = await relay.fetch(req.clone());
+      const relay = env.PHONE_TUNNEL.get(env.PHONE_TUNNEL.idFromName(RELAY));
+      // Not a clone: an unread copy of a large body (AI Room audio) breaks the read.
+      const response = await relay.fetch(req);
       if (response.headers.get("x-mk8-phone") !== "offline") return response;
     }
-    const target = await env.KV.get("target");
-    if (!target) return new Response(OFFLINE, { status: 503, headers: { "content-type": "text/html" } });
-
-    // Join onto the target's origin as text: relative resolution would turn a
-    // '//other.host/…' path into a request to that other host.
-    const base = new URL(target);
-    const upstream = new URL(base.origin + url.pathname + url.search);
-    if (upstream.origin !== base.origin) return new Response("Bad path", { status: 400 });
-    const headers = new Headers(req.headers);
-    headers.delete("origin");
-    headers.delete("host");
-    try {
-      return await fetch(upstream, {
-        method: req.method,
-        headers,
-        body: ["GET", "HEAD"].includes(req.method) ? undefined : req.body,
-        redirect: "manual",
-      });
-    } catch (e) {
-      return new Response(OFFLINE, { status: 502, headers: { "content-type": "text/html" } });
-    }
+    return new Response(OFFLINE, { status: 503, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
   },
 };

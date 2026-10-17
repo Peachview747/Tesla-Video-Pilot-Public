@@ -1,0 +1,34 @@
+name: Test Raspberry Pi host
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'pi-host/**'
+      - 'ios/Web/**'
+      - '.github/workflows/video-pilot-pi.yml'
+  pull_request:
+    paths:
+      - 'pi-host/**'
+      - 'ios/Web/**'
+      - '.github/workflows/video-pilot-pi.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: pi-host/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: pi-host
+      - run: npm test
+        working-directory: pi-host
+      - run: node --test ios/Web/tests/*.test.js
+      - run: node --check pi-host/src/main.mjs

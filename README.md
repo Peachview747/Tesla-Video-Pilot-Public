@@ -5,9 +5,14 @@ is intended for people who want to inspect the project or build their own
 iPhone package. The private development repository remains the source of truth
 for private deployment files and credentials.
 
+Video Pilot can also run continuously on a Raspberry Pi 5 with Raspberry Pi OS
+64-bit. The Pi stores and prepares the media library; the Tesla browser remains
+the player at <https://tv.jch76.workers.dev>. See [the Raspberry Pi setup](pi-host/README.md).
+
 ## What is public
 
-- iPhone host, Tesla web UI, Cloudflare relay source, tests, and build scripts
+- Raspberry Pi and iPhone hosts, Tesla web UI, Cloudflare relay source, tests, and build scripts
+- an ARM64 GitHub Actions workflow that tests the Raspberry Pi host
 - a macOS GitHub Actions workflow that builds an unsigned arm64 IPA
 - instructions for local Mac builds and personal sideload signing
 
@@ -47,13 +52,18 @@ in your sideloading tool and sign it with your own Apple ID. Personal signing
 and iOS device trust are Apple-account responsibilities; this repository does
 not contain signing credentials.
 
-## Use the app
+## Use Video Pilot
 
-The iPhone app is the host. It serves the Tesla browser locally and can connect
-to a separately deployed Cloudflare Worker through the native relay. Enter your
-own `TV_SECRET` in the app's Keychain settings; never add it to source, an IPA,
-an issue, or an Actions log. A YouTube Data API key, when used, should also be
-entered at runtime rather than committed.
+For an always-on setup, install the Raspberry Pi host and enter the Cloudflare
+tunnel key with `sudo video-pilot-configure`. The Pi starts Video Pilot at boot,
+stores downloads under `/var/lib/video-pilot`, and reconnects to the Worker
+automatically. The Tesla continues to use <https://tv.jch76.workers.dev>.
+
+The iPhone build remains available during migration. It serves the Tesla browser
+locally and can connect to the same Cloudflare Worker through the native relay.
+
+Enter secrets only at runtime; never add them to source, an IPA, an issue, or an
+Actions log.
 
 The public URL in the sample configuration is only an endpoint reference, not
 an authentication secret. Deploy your own Worker and use your own secret when
@@ -65,6 +75,7 @@ sharing this code with other users. See [the iPhone guide](ios/README.md) and
 | Directory | Purpose |
 | --- | --- |
 | `ios/` | SwiftUI host, native relay, media preparation, tests, and IPA packaging |
+| `pi-host/` | Raspberry Pi service, installer, persistent library, and tests |
 | `cloudflare/` | Worker and phone-relay deployment files |
 | `app/` | Laptop/web stack and frontend source |
 | `.github/workflows/` | Public, manual macOS build workflow |

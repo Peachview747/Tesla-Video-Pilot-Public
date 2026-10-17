@@ -6,6 +6,11 @@ const app = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const ids = new Set([...html.matchAll(/\sid="([^"]+)"/g)].map(match => match[1]));
 
+test('the loading screen connects to Raspberry Pi', () => {
+  assert.match(html, /<h1>Connecting to Raspberry Pi<\/h1>/);
+  assert.doesNotMatch(html, /Connecting to your iPhone|Connecting to your Raspberry Pi/);
+});
+
 test('every element app.js looks up by ID exists in index.html', () => {
   const used = new Set([...app.matchAll(/\$\('([\w-]+)'\)/g)].map(match => match[1]));
   for (const view of ['channels', 'all']) used.add(`view-${view}`);

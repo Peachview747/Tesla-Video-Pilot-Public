@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause} from '../http-source.js';
+import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause, DEVICE_KEY, deviceHeaders} from '../http-source.js';
 import {DiagnosticsJournal, LiveStats} from '../diagnostics.js';
 
 // Pure UI logic from app.js, run in the same fake-DOM sandbox as playback.test.js.
@@ -22,7 +22,7 @@ function setup() {
     pause() { this.paused = true; } play() { this.paused = false; } destroy() {}
   }
   const context = vm.createContext({
-    JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause,
+    JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause, DEVICE_KEY, deviceHeaders,
     DiagnosticsJournal, LiveStats,
     document:{getElementById:element}, window:{JSMpeg:{Player}, addEventListener() {}},
     fetch:(url, options) => { requests.push({url, body:options?.body ? JSON.parse(options.body) : null}); return new Promise(() => {}); },
@@ -68,7 +68,8 @@ test('pausing and ending a library video report history to the phone', () => {
   const history = () => f.requests.filter(request => request.url === '/api/history').map(request => request.body);
   assert.deepEqual(history(), [{id:uuid, position:42, duration:100}]);
   f.element('pause').onclick();
-  f.evaluate('player.options.onEnded()');
+  // A real end arrives at the end; an early one reconnects (separate test).
+  f.evaluate('playback.position = 99; player.options.onEnded()');
   assert.deepEqual(history().at(-1), {id:uuid, position:100, duration:100, finished:true});
 });
 
@@ -104,6 +105,43 @@ test('queue uses the phone queue when present and the library otherwise', () => 
   assert.equal(entries[0].active, true);
 });
 
+test('library pages show only ready videos; the rest stay on Downloads', () => {
+  const f = setup();
+  f.evaluate(`lastLibrary = {videos:[{id:'r', title:'R', state:'ready'}, {id:'p', title:'P', state:'preparing'},
+    {id:'f', title:'F', state:'failed'}], preparingID:'p'}; channelState.spec = {name:'Other videos', libraryOnly:true}`);
+  assert.equal(f.evaluate(`channelLibraryVideos().map(video => video.id).join(',')`), 'r');
+  assert.equal(f.evaluate(`queueEntries(lastLibrary.videos, 'p').map(entry => entry.id).join(',')`), 'p');
+});
+test('Continue watching can be dismissed as watched or cleared', () => {
+  const f = setup();
+  const id = '00000000-0000-4000-8000-000000000009';
+  f.evaluate(`dismissContinue({id:'${id}', duration:1023})`);
+  f.evaluate(`dismissContinue({id:'${id}'}, false)`);
+  const history = f.requests.filter(request => String(request.url).endsWith('/api/history')).map(request => request.body);
+  assert.deepEqual(history, [{id, position:1023, duration:1023, finished:true}, {id, position:0}]);
+});
+test('search shows a channel only when it plainly matches the words typed', () => {
+  const f = setup();
+  assert.equal(f.evaluate(`channelMatches('SomeOrdinaryGamers', 'some ordinary gamers')`), true);
+  assert.equal(f.evaluate(`channelMatches('Rich Rebuilds', 'rich rebuilds tesla')`), true);
+  assert.equal(f.evaluate(`channelMatches('Daily Dose Of Internet', 'funny cats')`), false);
+  assert.equal(f.evaluate(`channelMatches('AB', 'ab')`), false, 'too short to trust');
+});
+test('the page reloads itself after a deploy, but never during a video', () => {
+  const f = setup();
+  f.evaluate(`globalThis.reloads = 0; globalThis.location = {reload() { reloads++; }}; document.getElementById('player-section').hidden = true; document.getElementById('live-section').hidden = true`);
+  f.evaluate(`noteWebVersion('100')`);
+  f.evaluate(`noteWebVersion('100')`);
+  assert.equal(f.evaluate('reloads'), 0, 'same version: no reload');
+  f.evaluate(`document.getElementById('player-section').hidden = false; noteWebVersion('200')`);
+  assert.equal(f.evaluate('reloads'), 0, 'a video is open: wait');
+  f.evaluate(`document.getElementById('player-section').hidden = true; applyWebUpdate()`);
+  assert.equal(f.evaluate('reloads'), 1, 'reloads once the player closes');
+  f.evaluate(`document.getElementById('live-section').hidden = false; noteWebVersion('300')`);
+  assert.equal(f.evaluate('reloads'), 1, 'Netflix or Hulu is open: wait');
+  f.evaluate(`document.getElementById('live-section').hidden = true; applyWebUpdate()`);
+  assert.equal(f.evaluate('reloads'), 2);
+});
 test('upgrades are offered only below the chosen quality', () => {
   const f = setup();
   assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', height:720})`), false, 'no quality setting from the phone');
@@ -113,6 +151,20 @@ test('upgrades are offered only below the chosen quality', () => {
   assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', height:1080})`), false);
   assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:'1080p'})`), false);
   assert.equal(f.evaluate(`isUpgradable({height:480})`), false, 'imports cannot be re-downloaded');
+  assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:720, sourceMax:720})`), false, 'YouTube only has 720p');
+  assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:720, sourceHeight:720})`), true, 'the download height is not a YouTube limit');
+  assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:720, upgrading:true})`), false, 'already upgrading');
+  assert.equal(f.evaluate(`videoStatus({state:'ready', upgrading:true, upgradeQuality:1080})`), 'Upgrading to 1080p…');
+  assert.equal(f.evaluate(`videoStatus({state:'ready', upgradeError:'This source is only 720p. The current 540p copy is still available.'})`), '');
+  assert.equal(f.evaluate(`videoStatus({state:'ready', upgradeError:'yt-dlp exited 1'})`), 'Upgrade failed: yt-dlp exited 1');
+  assert.deepEqual(JSON.parse(f.evaluate(`JSON.stringify(sortLibrary([{id:'old',createdAt:'2026-10-01T00:00:00Z'},{id:'new',createdAt:'2026-10-15T00:00:00Z'}],'oldest').map(v=>v.id))`)), ['old','new'], 'ISO added dates sort');
+  assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:540, sourceMax:640})`), false, '640p sources stop at 540p');
+  assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:720, sourceMax:1080})`), true);
+  assert.equal(f.evaluate(`isDowngradable({state:'ready', quality:1080})`), false, 'already at the chosen quality');
+  f.evaluate(`qualitySetting = '720p'`);
+  assert.equal(f.evaluate(`isDowngradable({state:'ready', quality:1080})`), true, '1080p videos offer a downgrade to 720p');
+  assert.equal(f.evaluate(`isDowngradable({state:'ready', quality:720})`), false);
+  assert.equal(f.evaluate(`isUpgradable({youtubeID:'x', quality:1080})`), false);
 });
 
 test('theme choice resolves system to the browser preference', () => {
@@ -132,4 +184,27 @@ test('library list is refetched only when the phone revision changes', () => {
   assert.equal(f.evaluate(`libraryNeedsFetch({libraryRevision:7}, true)`), true, 'user actions force a fetch');
   f.evaluate(`lastLibraryFetch.at = Date.now() - 31000`);
   assert.equal(f.evaluate(`libraryNeedsFetch({libraryRevision:7})`), true, 'safety refetch every 30 s');
+});
+test('a locked Pi asks for the PIN over a service, never over the service picker', () => {
+  const f = setup();
+  f.evaluate(`['portal','pin-lock','live-section','pin-reset'].forEach(id => document.getElementById(id).hidden = true);
+    document.getElementById('portal').hidden = false; document.getElementById('live-section').hidden = true`);
+  f.evaluate(`globalThis.videoPilotPinRequired()`);
+  assert.equal(f.evaluate(`document.getElementById('pin-lock').hidden`), true, 'the picker stays usable');
+  f.evaluate(`enterYouTube()`);
+  assert.equal(f.evaluate(`document.getElementById('pin-lock').hidden`), false, 'YouTube opens under the PIN screen');
+  f.evaluate(`pressPinDigit('8'); pressPinDigit('4')`);
+  assert.equal(f.evaluate('pinDigits'), '84');
+  f.evaluate(`saveDeviceKey('abc')`);
+  assert.equal(f.evaluate('globalThis.videoPilotDeviceKey'), 'abc');
+});
+test('taps on the live picture land on the right Pi pixel in Fit, Fill and Stretch', () => {
+  const f = setup();
+  // The car's live area: 773 x 545, taller than the 16:9 picture.
+  const tap = (x, y, fit) => f.evaluate(`JSON.stringify(liveTapPoint({left:0, top:0, width:773, height:545}, ${x}, ${y}, '${fit}'))`);
+  assert.equal(tap(386.5, 272.5, 'fit'), JSON.stringify({x:640, y:360}), 'the centre is the centre');
+  assert.equal(tap(386.5, 20, 'fit'), 'null', 'the bar above the centred picture is not the picture');
+  assert.equal(JSON.parse(tap(0, 0, 'stretch')).x, 0);
+  const fill = JSON.parse(tap(0, 0, 'fill'));
+  assert.ok(fill.x > 100 && fill.y === 0, 'Fill crops the sides, so the left edge is inside the picture');
 });

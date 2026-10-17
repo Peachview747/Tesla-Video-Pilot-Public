@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Hand the YouTube sign-in from Firefox on the Pi to Video Pilot.
+
+Sign in to youtube.com once in Firefox on the Pi (its screen or VNC). This
+runs from a user timer, copies the YouTube/Google cookies out of the Firefox
+profile and posts them to the local Video Pilot API whenever they change.
+Cookies never leave the Pi.
+"""
+import configparser, hashlib, json, os, shutil, sqlite3, sys, tempfile, urllib.request
+from pathlib import Path
+
+API = os.environ.get("VIDEO_PILOT_API", "http://127.0.0.1:5001")
+DOMAINS = (".youtube.com", "youtube.com", ".google.com", "google.com", "accounts.google.com")
+LOGIN_COOKIES = {"SAPISID", "__Secure-3PSID"}
+STATE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "video-pilot-cookie-sync"
+
+
+def firefox_profile():
+    for base in (Path.home() / ".config/mozilla/firefox", Path.home() / ".mozilla/firefox"):
+        ini = base / "profiles.ini"
+        if not ini.exists():
+            continue
+        config = configparser.ConfigParser()
+        config.read(ini)
+        # The profile Firefox actually opens is the [Install...] default.
+        paths = [config[s]["Default"] for s in config.sections() if s.startswith("Install") and "Default" in config[s]]
+        paths += [config[s]["Path"] for s in config.sections() if s.startswith("Profile") and config[s].get("Default") == "1"]
+        for name in paths:
+            profile = base / name
+            if (profile / "cookies.sqlite").exists():
+                return profile
+    return None
+
+
+def read_cookies(profile):
+    # Firefox keeps the database locked and recent writes in the WAL; read a copy.
+    with tempfile.TemporaryDirectory() as folder:
+        for suffix in ("", "-wal"):
+            source = profile / f"cookies.sqlite{suffix}"
+            if source.exists():
+                shutil.copy2(source, Path(folder) / f"cookies.sqlite{suffix}")
+        db = sqlite3.connect(Path(folder) / "cookies.sqlite")
+        try:
+            rows = db.execute("SELECT host, path, isSecure, expiry, name, value FROM moz_cookies").fetchall()
+        finally:
+            db.close()
+    rows = [row for row in rows if row[0].endswith(DOMAINS)]
+    lines = ["# Netscape HTTP Cookie File"]
+    for host, path, secure, expiry, name, value in sorted(rows):
+        # Firefox stores expiry in milliseconds on newer builds.
+        expiry = expiry // 1000 if expiry > 10**11 else expiry
+        lines.append("\t".join([host, "TRUE" if host.startswith(".") else "FALSE", path,
+                                "TRUE" if secure else "FALSE", str(expiry), name, value]))
+    return "\n".join(lines) + "\n", {row[4] for row in rows if row[0].endswith("youtube.com")}
+
+
+def main():
+    # --profile DIR reads a specific profile (the car sign-in session).
+    profile = Path(sys.argv[sys.argv.index("--profile") + 1]) if "--profile" in sys.argv else firefox_profile()
+    if profile and not (profile / "cookies.sqlite").exists():
+        profile = None
+    if not profile:
+        print("No Firefox profile with cookies yet.")
+        return 0
+    text, names = read_cookies(profile)
+    if not LOGIN_COOKIES & names:
+        print("Firefox is not signed in to YouTube.")
+        return 0
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    STATE.mkdir(parents=True, exist_ok=True)
+    marker = STATE / "last-sync"
+    if marker.exists() and marker.read_text().strip() == digest and "--force" not in sys.argv:
+        return 0
+    request = urllib.request.Request(f"{API}/api/youtube/cookies", data=json.dumps({"cookies": text}).encode(),
+                                     headers={"content-type": "application/json"}, method="POST")
+    with urllib.request.urlopen(request, timeout=10) as response:
+        if response.status != 200:
+            raise SystemExit(f"Video Pilot refused the cookies: HTTP {response.status}")
+    marker.write_text(digest)
+    print("YouTube sign-in synced to Video Pilot.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

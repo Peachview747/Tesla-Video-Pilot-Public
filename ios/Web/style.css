@@ -129,6 +129,7 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 5px; }
 .chip-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 18px; }
 .chip-group { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .start-chips { gap: 10px 28px; }
+#search-start:has(> #recent-searches[hidden]) { display: none; }
 .chip-label { color: var(--subtle); font-size: var(--fs-tiny); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .chip { min-height: 46px; padding: 8px 18px; border: 1px solid var(--stroke); border-radius: 999px; background: var(--surface); color: var(--text); font-size: var(--fs-small); font-weight: 600; }
 .chip[aria-pressed="true"] { background: var(--text); border-color: var(--text); color: var(--bg); }
@@ -143,7 +144,8 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 5px; }
 .feed .row-section { margin: 0; }
 .row-section { margin: 0 0 26px; }
 .row-scroller { display: grid; grid-auto-flow: column; grid-auto-columns: clamp(240px, 17.5vw, 320px); gap: var(--gap);
-  overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity; padding: 2px 2px 12px; scrollbar-width: thin; }
+  overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity; padding: 2px 2px 12px; scrollbar-width: none; }
+.row-scroller::-webkit-scrollbar { display: none; }
 .row-scroller > * { scroll-snap-align: start; }
 .feed-empty { padding: 28px; border-radius: var(--radius); background: var(--surface); border: 1px dashed var(--stroke-strong); color: var(--muted); }
 .feed-empty strong { display: block; margin-bottom: 4px; color: var(--text); font-size: var(--fs-h2); }
@@ -265,52 +267,123 @@ canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 250
 .timeline input { flex: 1; min-width: 0; height: 32px; margin: 0; accent-color: #8fb0cc; }
 .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 2px 2px; }
 .controls-spacer { flex: 1; }
-.controls button { min-width: 96px; min-height: 52px; padding: 8px 18px; border: 1px solid #ffffff1c; border-radius: 12px; background: #232c33; color: #e3e9ed; font-size: 16px; font-weight: 650; }
-.controls button.primary { min-width: 130px; background: #8fb0cc; color: #10171c; border-color: transparent; }
+.playback-quality-label { display:flex; align-items:center; gap:8px; color:#e3e9ed; font-size:14px; white-space:nowrap; }
+.playback-quality-label select { min-height:48px; max-width:190px; padding:8px 12px; border:1px solid #ffffff30; border-radius:12px; color:#e3e9ed; background:#232c33; font:inherit; }
+.quality-status { color:#c0cbd4; font-size:13px; margin:4px 8px; }
+.quality-status:empty { display:none; }
+.controls button { flex: none; min-width: 0; min-height: 52px; padding: 8px 18px; border: 1px solid #ffffff1c; border-radius: 12px; background: #232c33; color: #e3e9ed; font-size: 16px; font-weight: 650; white-space: nowrap; }
+.controls button.primary { min-width: 120px; background: #8fb0cc; color: #10171c; border-color: transparent; }
 .controls button[aria-pressed="true"] { background: #3b4f5e; }
 #exit-fullscreen { display: none; }
 
-/* Full-screen playback: the picture dominates; a compact control bar sits below it. */
-#player-shell.vp-fullscreen,
-#player-shell:fullscreen,
-#player-shell:-webkit-full-screen {
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
-  width: 100vw; height: 100vh; height: 100dvh; max-width: none; max-height: none; padding: 0 0 10px; border-radius: 0; background: #000; overflow: hidden;
+/* Full-screen playback (:is() so a browser that lacks one of the pseudo-classes
+   still applies the rest): the picture fills the screen and the controls float
+   over its bottom edge. While playing they fade out after a few idle seconds
+   (.vp-chrome-hidden); a tap on the picture brings them back. */
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen) {
+  display: flex; align-items: center; justify-content: center;
+  width: 100vw; height: 100vh; height: 100dvh; max-width: none; max-height: none; padding: 0; border-radius: 0; background: #000; overflow: hidden;
 }
 #player-shell.vp-fullscreen { position: fixed; inset: 0; z-index: 100; }
-#player-shell.vp-fullscreen canvas,
-#player-shell:fullscreen canvas,
-#player-shell:-webkit-full-screen canvas { flex: 0 1 auto; width: 100%; height: auto; max-height: calc(100vh - 116px); max-height: calc(100dvh - 116px); min-height: 0; border-radius: 0; }
-#player-shell.vp-fullscreen .controls,
-#player-shell:fullscreen .controls,
-#player-shell:-webkit-full-screen .controls { flex: 0 0 auto; width: calc(100% - 32px); justify-content: center; gap: 6px; padding: 5px 8px; border-radius: 12px; background: #151c21d9; }
-#player-shell.vp-fullscreen .controls button,
-#player-shell:fullscreen .controls button,
-#player-shell:-webkit-full-screen .controls button { min-width: 0; min-height: 42px; padding: 6px 14px; font-size: 14px; }
-#player-shell.vp-fullscreen .controls-spacer,
-#player-shell:fullscreen .controls-spacer,
-#player-shell:-webkit-full-screen .controls-spacer { flex: 0 0 24px; }
-#player-shell.vp-fullscreen .timeline,
-#player-shell:fullscreen .timeline,
-#player-shell:-webkit-full-screen .timeline { flex: 0 0 auto; width: calc(100% - 40px); padding: 0; font-size: 13px; }
-#player-shell.vp-fullscreen #exit-fullscreen,
-#player-shell:fullscreen #exit-fullscreen,
-#player-shell:-webkit-full-screen #exit-fullscreen {
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen) canvas { width: 100%; height: 100%; max-height: none; aspect-ratio: auto !important; object-fit: contain; border-radius: 0; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen)::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; z-index: 1; height: 180px;
+  background: linear-gradient(transparent, #000000d0); pointer-events: none; transition: opacity .25s; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen) .timeline { position: absolute; left: 20px; right: 20px; bottom: 74px; z-index: 2; padding: 0; font-size: 13px; transition: opacity .25s; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen) .controls { position: absolute; left: 16px; right: 16px; bottom: 12px; z-index: 2; flex-wrap: nowrap; gap: 6px; padding: 0; transition: opacity .25s; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen) .controls button { min-height: 48px; padding: 6px 14px; font-size: 15px; background: #232c33e6; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen) .controls button.primary { background: #8fb0cc; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen) .quality-status { position: absolute; left: 20px; bottom: 112px; z-index: 2; margin: 0; transition: opacity .25s; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen) #exit-fullscreen {
   display: block; position: absolute; top: 14px; right: 14px; z-index: 4; min-height: 46px; padding: 8px 16px;
-  border: 1px solid #ffffff55; border-radius: 12px; background: #151c21d9; color: #f1f1f1; font-size: 15px; font-weight: 650;
+  border: 1px solid #ffffff55; border-radius: 12px; background: #151c21d9; color: #f1f1f1; font-size: 15px; font-weight: 650; transition: opacity .25s;
+}
+/* Full-screen picture shape: Fit shows everything, Fill crops the sides to
+   lose the bars, Stretch fills the screen by distorting the picture. */
+#fit-mode { display: none; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen) #fit-mode { display: inline-block; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen).vp-fit-fill canvas { object-fit: cover; }
+#player-shell:is(.vp-fullscreen, :fullscreen, :-webkit-full-screen).vp-fit-stretch canvas { object-fit: fill; }
+/* Dropped connection: a panel over the paused picture with one big Retry. */
+.player-drop { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  padding: 20px; background: #000000b8; color: #f1f1f1; text-align: center; }
+.player-drop[hidden] { display: none; }
+.player-drop strong { font-size: 22px; }
+.player-drop span { color: #c9d3da; font-size: 15px; }
+.player-drop button { min-width: 160px; min-height: 56px; margin-top: 6px; padding: 10px 28px; border: 0; border-radius: 14px;
+  background: #8fb0cc; color: #10171c; font-size: 18px; font-weight: 750; }
+#player-shell.vp-chrome-hidden { cursor: none; }
+#player-shell.vp-chrome-hidden::after,
+#player-shell.vp-chrome-hidden .timeline,
+#player-shell.vp-chrome-hidden .controls,
+#player-shell.vp-chrome-hidden .quality-status,
+#player-shell.vp-chrome-hidden #exit-fullscreen { opacity: 0; pointer-events: none; }
+
+.card { position: relative; }
+.card-dismiss { position: absolute; top: 8px; right: 8px; z-index: 2; display: grid; place-items: center; width: 44px; height: 44px; padding: 0;
+  border: 0; border-radius: 50%; background: #0b0e10b8; color: #fff; font-size: 18px; line-height: 1; }
+.card-dismiss:active { transform: scale(.94); }
+.card-dismiss::before, .card-dismiss::after { content: ''; position: absolute; top: 50%; left: 50%; width: 18px; height: 2.5px;
+  border-radius: 2px; background: #fff; transform: translate(-50%, -50%) rotate(45deg); }
+.card-dismiss::after { transform: translate(-50%, -50%) rotate(-45deg); }
+.quality-actions { display: inline-flex; flex-wrap: wrap; gap: 8px; }
+/* Subscriptions: an A-to-Z directory of followed channels. */
+.subs-directory { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 4px 8px; }
+.subs-directory > .message-card { grid-column: 1 / -1; }
+.subs-channel { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; padding: 12px 4px; border: 0;
+  border-radius: 16px; background: transparent; color: var(--text); text-align: center; }
+.subs-channel.skeleton { min-height: 128px; background: var(--surface); }
+.subs-channel:active { background: var(--surface-3); }
+.subs-channel .avatar { width: 72px; height: 72px; font-size: 28px; }
+.subs-channel strong { display: block; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 650; }
+.subs-channel small { color: var(--muted); font-size: var(--fs-tiny); }
+/* Search: the matching channel above the videos, then similar channels. */
+.search-channels { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin: 0 0 16px; }
+.search-channel-top { display: flex; align-items: center; gap: 14px; min-width: 0; flex: 1 1 320px; padding: 12px 16px; border: 1px solid var(--stroke);
+  border-radius: var(--radius); background: var(--surface); color: var(--text); text-align: left; }
+.search-channel-top .avatar { width: 64px; height: 64px; font-size: 26px; }
+.search-channel-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.search-channel-text strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-h2); }
+.search-channel-text small { color: var(--muted); font-size: var(--fs-small); }
+.search-channel-similar { display: flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.search-channel-similar .chip-label { writing-mode: horizontal-tb; margin-right: 4px; }
+.search-channel-similar .subs-channel { width: 104px; padding: 6px 2px; }
+.search-channel-similar .subs-channel .avatar { width: 52px; height: 52px; font-size: 22px; }
+/* ---------- Tesla half screen (and other mid-size windows) ----------
+   The browser beside the map is roughly 800-1200 px wide. Keep the left rail
+   like the car's own apps, but slimmer, and tighten type and spacing so a
+   full row of videos fits without the page feeling cramped. */
+@media (max-width: 1280px) {
+  :root { --fs-base: 16px; --fs-title: 25px; --fs-h2: 19px; --fs-card: 15.5px; --gap: 12px; --rail: 92px; }
+  :root[data-text-size="large"] { --fs-base: 18.5px; --fs-title: 28px; --fs-h2: 21px; --fs-card: 17px; }
+  .rail { padding: 12px 6px; gap: 4px; }
+  .rail-brand { width: 44px; height: 44px; margin-bottom: 8px; border-radius: 13px; font-size: 15px; }
+  .nav-item { min-height: 68px; padding: 6px 2px; font-size: 11.5px; letter-spacing: -.01em; }
+  .nav-item svg { width: 26px; height: 26px; }
+  .nav-badge { top: 4px; right: 12px; }
+  .main { padding: 14px 18px 32px; }
+  .topbar { margin: -14px -18px 12px; padding: 12px 18px 10px; }
+  .search-bar { min-height: 56px; padding: 4px 4px 4px 16px; }
+  .search-bar input { height: 46px; font-size: 18px; }
+  .search-submit { min-height: 48px; padding: 0 22px; }
+  .page-header { margin: 2px 0 14px; gap: 10px 14px; }
+  .feed-header { margin: 0 0 10px; }
+  .row-section { margin-bottom: 18px; }
+  .row-scroller { grid-auto-columns: clamp(220px, 28vw, 280px); }
+  .video-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px var(--gap); }
+  .channel-grid { grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); }
+  .card-body { padding: 10px 12px 12px; gap: 4px; }
+  .preparation { padding: 10px 16px; margin-bottom: 12px; }
+  .settings-card { padding: 18px; }
+  .stat-list.two-col { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  .player-overlay { padding: 10px; }
+  .controls { gap: 6px; }
+  .controls button { min-height: 48px; padding: 6px 14px; font-size: 15px; }
+  .controls button.primary { min-width: 104px; }
+  .playback-quality-label select { min-height: 48px; }
 }
 
-/* ---------- Narrow screens (phones, split-screen) ---------- */
+/* ---------- Narrow windows ---------- */
 @media (max-width: 900px) {
-  :root { --rail: 0px; }
-  .app { flex-direction: column; }
-  .rail { position: fixed; top: auto; bottom: 0; left: 0; right: 0; flex-direction: row; width: 100%; height: auto; padding: 6px 8px;
-    border-right: 0; border-top: 1px solid var(--stroke); gap: 4px; }
-  .rail-brand, .rail-spacer { display: none; }
-  .nav-item { flex: 1; min-height: 60px; font-size: 12px; }
-  .rail-status { flex: 0 0 76px; font-size: 11px; }
-  .main { padding: 14px 16px 110px; }
-  .topbar { margin: -14px -16px 14px; padding: 12px 16px; }
   .preparation { grid-template-columns: minmax(0, 1fr) auto; }
   .preparation progress { grid-column: 1 / -1; grid-row: 2; }
   .queue-item { grid-template-columns: 110px minmax(0, 1fr); }
@@ -318,8 +391,133 @@ canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 250
   .queue-actions { grid-column: 1 / -1; }
   .stat-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .filter-input { width: 100%; }
-  .search-submit { padding: 0 18px; }
-  .controls button { min-width: 0; flex: 1; }
-  .controls-spacer { display: none; }
+  .controls-spacer { flex: 1 0 0; }
+  .quality-word { display: none; }
+  .playback-quality-label select { max-width: 124px; padding: 6px 10px; }
+  /* The car's font is wider than most; buttons keep their label width and the
+     row wraps rather than squeezing text out of its box. */
+  .controls button { padding: 6px 12px; }
 }
+
+/* ---------- Short windows (the Model 3 half screen is 773 x 601) ----------
+   Height is the scarce dimension: keep headers, the download banner and the
+   player chrome thin so content and video get the room. */
+@media (max-height: 700px) {
+  :root { --fs-title: 22px; --fs-h2: 17.5px; }
+  .rail { padding: 8px 6px; gap: 2px; }
+  .rail-brand { width: 38px; height: 38px; margin-bottom: 4px; border-radius: 11px; font-size: 13px; }
+  .nav-item { min-height: 58px; gap: 2px; }
+  .nav-item svg { width: 24px; height: 24px; }
+  .main { padding-top: 10px; }
+  .topbar { margin-top: -10px; padding-top: 8px; padding-bottom: 8px; }
+  .search-bar { min-height: 50px; }
+  .search-bar input { height: 40px; font-size: 17px; }
+  .search-submit { min-height: 42px; }
+  .preparation { grid-template-columns: minmax(0, auto) minmax(90px, 1fr) auto; padding: 8px 14px; margin-bottom: 10px; gap: 4px 12px; }
+  .preparation progress { grid-column: auto; grid-row: auto; height: 6px; }
+  .preparation-detail { display: none; }
+  .page-header { margin-bottom: 10px; }
+  .feed-header { margin-bottom: 6px; }
+  .row-section { margin-bottom: 12px; }
+  .card-actions > button { min-height: 44px; }
+  #search-filters { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-bottom: 12px; }
+  #search-filters::-webkit-scrollbar { display: none; }
+  #search-filters .chip { flex: none; min-height: 42px; }
+  .player-overlay { padding: 6px 10px; align-items: flex-start; }
+  .player-dialog { gap: 6px; }
+  .player-heading .back-button { min-height: 42px; padding: 4px 14px 4px 8px; }
+  .player-heading h2 { font-size: 17px; }
+  .player-shell { padding: 6px; }
+  canvas { max-height: calc(100vh - 168px); max-height: calc(100dvh - 168px); }
+  .timeline { padding: 6px 4px 2px; }
+  .controls button { min-height: 46px; }
+  .playback-quality-label select { min-height: 46px; }
+}
+
+/* ---------- Phones: rail becomes a bottom bar ---------- */
+@media (max-width: 600px) {
+  :root { --rail: 0px; }
+  .app { flex-direction: column; }
+  .rail { position: fixed; top: auto; bottom: 0; left: 0; right: 0; flex-direction: row; width: 100%; height: auto; padding: 6px 8px;
+    border-right: 0; border-top: 1px solid var(--stroke); gap: 4px; }
+  .rail-brand, .rail-spacer { display: none; }
+  .nav-item { flex: 1; min-height: 60px; font-size: 11px; }
+  .rail-status { flex: 0 0 64px; font-size: 11px; }
+  .main { padding: 14px 14px 110px; }
+  .topbar { margin: -14px -14px 14px; padding: 12px 14px; }
+  .search-submit { padding: 0 16px; }
+}
+/* Car sign-in: a live picture of Firefox on the Pi; taps map to its pixels. */
+.signin-type { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.signin-type .filter-input { flex: 1 1 260px; width: auto; }
+.signin-keys { margin-bottom: 14px; }
+.signin-screen { max-width: 900px; border: 1px solid var(--stroke); border-radius: 14px; overflow: hidden; background: var(--surface); }
+.signin-screen img { display: block; width: 100%; aspect-ratio: 900 / 1000; object-fit: contain; touch-action: manipulation; cursor: pointer; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* Netflix and Hulu: the Pi's browser, live */
+button.rail-brand { border: 0; cursor: pointer; }
+.portal { position: fixed; inset: 0; z-index: 55; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; padding: 20px 16px; background: var(--bg); overflow: auto; }
+.portal[hidden] { display: none; }
+.portal h1 { font-size: var(--fs-title); font-weight: 750; }
+.portal-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; width: 100%; max-width: 980px; }
+a.portal-tile { text-decoration: none; }
+.portal-tile.claude { background: #f5e7dc; color: #8e4c33; font-family: Georgia, serif; font-weight: 600; letter-spacing: 0; }
+.claude-mark { display: grid; place-items: center; width: 1.4em; height: 1.4em; border-radius: 50%; background: #ba6949; color: #fff6ef; font-size: .8em; }
+.portal-tile.health { background: #1a1f22; color: #4cc38a; font-size: clamp(20px, 3.6vw, 34px); }
+.portal-tile { display: flex; align-items: center; justify-content: center; gap: 10px; aspect-ratio: 16 / 10; border: 0; border-radius: 18px; font-size: clamp(22px, 4vw, 38px); font-weight: 800; letter-spacing: .03em; box-shadow: 0 6px 20px #0003; }
+.portal-tile:active { transform: scale(.97); }
+.portal-tile.youtube { background: #fff; color: #0f0f0f; letter-spacing: -.01em; }
+.portal-tile.netflix { background: #141414; color: #e50914; }
+.portal-tile.hulu { background: #0b0c0f; color: #1ce783; text-transform: lowercase; font-size: clamp(26px, 4.6vw, 44px); }
+.yt-mark { position: relative; width: 1.35em; height: .95em; border-radius: .26em; background: #ff0000; flex: none; }
+.yt-mark::after { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-35%, -50%); border-style: solid; border-width: .22em 0 .22em .38em; border-color: transparent transparent transparent #fff; }
+.portal-note { max-width: 620px; color: var(--muted, inherit); opacity: .8; text-align: center; font-size: var(--fs-small); }
+@media (max-width: 600px) { .portal-tiles { grid-template-columns: 1fr; max-width: 360px; } }
+.live-overlay { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: #000; color: #e3e9ed; }
+.live-overlay[hidden] { display: none; }
+.live-bar, .live-type { display: flex; align-items: center; gap: 6px; padding: 6px 8px; overflow-x: auto; flex: none; background: #0d1114; }
+.live-type[hidden] { display: none; }
+.live-bar h2 { font-size: 17px; white-space: nowrap; }
+.live-bar .back-button { min-height: 44px; flex: none; }
+.live-bar button:not(.back-button), .live-type button { flex: none; min-height: 44px; padding: 6px 12px; border: 1px solid #ffffff1c; border-radius: 12px; background: #232c33; color: #e3e9ed; font-size: 15px; font-weight: 650; white-space: nowrap; }
+.live-bar button[aria-pressed="true"], .live-type button[aria-pressed="true"] { background: #3b4f5e; }
+.live-type button.primary { background: #8fb0cc; color: #10171c; border-color: transparent; }
+.live-type .filter-input { flex: 1 1 200px; min-width: 160px; }
+.live-stage { position: relative; flex: 1; min-height: 0; }
+/* Not the YouTube player's canvas rule: that caps the height, which pinned the picture to the top. */
+#live-screen { position: absolute; inset: 0; display: block; width: 100%; height: 100%; max-height: none; margin: 0; border-radius: 0; object-fit: contain; touch-action: manipulation; background: #000; }
+#live-screen.fill { object-fit: cover; }
+#live-screen.stretch { object-fit: fill; }
+
+/* PIN lock */
+.pin-overlay { position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center; padding: 12px 16px; background: var(--bg); overflow: auto; }
+.pin-overlay[hidden] { display: none; }
+.pin-card { width: 100%; max-width: 360px; text-align: center; }
+.pin-card h2 { font-size: var(--fs-h2); font-weight: 750; margin-bottom: 8px; }
+.pin-dots { display: flex; justify-content: center; gap: 12px; min-height: 18px; margin: 6px 0; }
+.pin-dots span { width: 14px; height: 14px; border-radius: 50%; background: var(--text); }
+.pin-message { min-height: 1.4em; margin: 4px 0 8px; color: var(--bad); font-size: var(--fs-small); }
+.pin-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.pin-pad button { min-height: 58px; border: 1px solid var(--stroke); border-radius: 14px; background: var(--surface); color: var(--text); font-size: 26px; font-weight: 650; }
+.pin-pad button:active { transform: scale(.96); }
+.pin-pad .pin-go { background: var(--accent); color: var(--accent-text); border-color: transparent; font-size: 18px; }
+.pin-links { display: flex; justify-content: space-between; margin-top: 14px; }
+.pin-question { margin: 6px 0 12px; font-weight: 650; }
+#pin-reset .filter-input { width: 100%; margin-bottom: 10px; }
+#pin-reset .button-row { justify-content: center; }
+@media (max-height: 700px) { .pin-pad button { min-height: 50px; font-size: 22px; } .pin-card h2 { margin-bottom: 2px; } }
+.pin-manage { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0; }
+.pin-manage .filter-input { flex: 1 1 140px; min-width: 0; }
+.devices-list { display: flex; flex-direction: column; gap: 8px; }
+.device-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); }
+.device-row div { flex: 1; min-width: 0; }
+.device-row strong { display: block; }
+.device-row small { color: var(--muted); }
+html.live-open, html.live-open body { overflow: hidden; }
+
+.portal-status { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; min-height: 30px; }
+.status-chip { padding: 5px 12px; border-radius: 999px; background: var(--surface, #ffffff14); border: 1px solid var(--stroke, #ffffff22); font-size: var(--fs-small, 13px); font-weight: 600; }
+.status-chip.good { color: #2f9e64; } .status-chip.warn { color: #c98a12; } .status-chip.bad { color: #d4472b; }
+.rail [data-apps-menu], .rail .apps-button { align-self: center; }
+.live-bar .apps-button { min-height: 40px; }
