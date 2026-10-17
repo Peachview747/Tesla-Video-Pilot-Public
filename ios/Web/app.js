@@ -988,10 +988,23 @@ function requirePin() {
   if (serviceOpen()) showPinScreen();
 }
 globalThis.videoPilotPinRequired = requirePin;
+// Claude (AI Room) and Pi Health are their own pages behind the same PIN:
+// ask for it here first, then go.
+let pendingPortalPage = '';
+document.querySelectorAll?.('[data-portal-page]').forEach(link => link.onclick = async event => {
+  event.preventDefault?.();
+  const target = link.getAttribute('href');
+  try {
+    const status = await api('/api/pin/status');
+    if (status.enabled && !status.unlocked) { pendingPortalPage = target; pinNeeded = true; showPinScreen(); return; }
+  } catch {}
+  globalThis.location.href = target;
+});
 async function pinUnlocked(key) {
   saveDeviceKey(key);
   pinNeeded = false; pinDigits = '';
   $('pin-lock').hidden = true;
+  if (pendingPortalPage) { const target = pendingPortalPage; pendingPortalPage = ''; globalThis.location.href = target; return; }
   toast('Unlocked. This browser will not ask again.');
   if (!$('live-section').hidden && liveService) void openLive(liveService);
   try { await refresh(true); } catch {}
@@ -1023,7 +1036,7 @@ globalThis.addEventListener?.('keydown', event => {
   else if (event.key === 'Enter') void submitPin();
 });
 $('pin-cancel').onclick = () => {
-  $('pin-lock').hidden = true;
+  $('pin-lock').hidden = true; pendingPortalPage = '';
   if (!$('live-section').hidden) void closeLive();
   showPortal();
 };

@@ -135,6 +135,7 @@ export class PiTunnel {
     } finally { peer.sending = false; }
   }
 
+  connected() { return this.socket?.readyState === this.WebSocketImpl.OPEN; }
   sendJSON(value) { if (this.socket?.readyState === this.WebSocketImpl.OPEN) this.socket.send(JSON.stringify(value)); }
   cancel(id, abort = true) { const peer = this.peers.get(id); if (!peer) return; this.peers.delete(id); if (abort) peer.controller.abort(); peer.reader?.cancel().catch(() => {}); }
   cancelAll() { for (const id of [...this.peers.keys()]) this.cancel(id); }

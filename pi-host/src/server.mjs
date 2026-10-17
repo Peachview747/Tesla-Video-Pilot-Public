@@ -27,12 +27,42 @@ async function webVersion(webRoot) {
   return String(Math.floor(Math.max(...times)));
 }
 
+// AI Room (chat and voice with Claude) and Pi Health live inside the portal:
+// their pages are served here and their requests go, behind the portal PIN,
+// to AI Room's local control API, which holds the admin rights.
+const AIROOM_FILES = { "/airoom/": "index.html", "/airoom/index.html": "index.html", "/airoom/app.js": "app.js", "/airoom/style.css": "style.css" };
+const HEALTH_FILES = { "/health/": "health.html", "/health/health.js": "health.js", "/health/health.css": "health.css" };
+const ROOM_ACTIONS = new Set(["state", "export", "send", "new", "refresh", "login", "stop", "voice", "speak", "hear"]);
+const PAGE_HEADERS = { "x-content-type-options": "nosniff", "referrer-policy": "no-referrer" };
+const PAGE_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob: data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'";
+
 export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5001, host = "127.0.0.1", version = "Pi",
-  signinURL = "http://127.0.0.1:5002", liveURL = "http://127.0.0.1:5003", pinLock = null }) {
+  signinURL = "http://127.0.0.1:5002", liveURL = "http://127.0.0.1:5003", pinLock = null,
+  controlURL = "http://127.0.0.1:5020", controlKey = null, airoomWeb = null, tunnelConnected = () => null }) {
+  const control = async (path, body = {}, timeout = 15_000) => {
+    if (!controlKey) { const error = new Error("AI Room is not connected to the portal on this Pi."); error.status = 503; throw error; }
+    let response;
+    try {
+      response = await fetch(`${controlURL}${path}`, { method: "POST", signal: AbortSignal.timeout(timeout),
+        headers: { "content-type": "application/json", "x-pi-control-key": controlKey }, body: JSON.stringify(body) });
+    } catch { const error = new Error("AI Room is not running on the Pi."); error.status = 503; throw error; }
+    return { status: response.status, body: await response.json().catch(() => ({ error: "AI Room sent an unreadable answer." })) };
+  };
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
       if (!["GET", "POST"].includes(req.method)) return send(res, 405, { error: "Method not allowed." });
+      if (req.method === "GET" && (AIROOM_FILES[url.pathname] || HEALTH_FILES[url.pathname] || url.pathname === "/airoom" || url.pathname === "/health")) {
+        if (url.pathname === "/airoom" || url.pathname === "/health") return send(res, 301, "", "text/plain", { location: url.pathname + "/" });
+        const name = AIROOM_FILES[url.pathname] || HEALTH_FILES[url.pathname];
+        const dir = AIROOM_FILES[url.pathname] ? airoomWeb : webRoot;
+        if (!dir) return send(res, 404, { error: "AI Room is not installed for the portal." });
+        let data = await readFile(path.join(dir, name));
+        // The same AI Room page, told to use the portal's API and PIN.
+        if (name === "index.html" && AIROOM_FILES[url.pathname])
+          data = Buffer.from(String(data).replace("<head>", '<head><meta name="api-base" content="/api/airoom/"><meta name="in-portal" content="1"><base href="/airoom/">'));
+        return send(res, 200, data, TYPES[path.extname(name)] || "application/octet-stream", { ...PAGE_HEADERS, "content-security-policy": PAGE_CSP });
+      }
       if (ASSETS.has(url.pathname) && req.method === "GET") {
         const name = url.pathname === "/" ? "index.html" : path.basename(url.pathname);
         const file = name === "jsmpeg.min.js" && decoderPath ? decoderPath : path.join(webRoot, name);
@@ -61,6 +91,36 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
       }
       if (pinLock && req.headers["x-video-pilot-relay"] && !pinLock.allows(deviceKey))
         return send(res, 401, { error: "Enter the PIN.", pinRequired: true });
+      const room = url.pathname.match(/^\/api\/airoom\/([a-z]+)$/);
+      if (room) {
+        if (!ROOM_ACTIONS.has(room[1])) return send(res, 404, { error: "Unknown room action." });
+        const audio = room[1] === "voice" || room[1] === "hear";
+        const body = req.method === "GET" ? { room: url.searchParams.get("room") || "" } : await bodyJSON(req, audio ? 3_500_000 : 65_536);
+        const result = await control(`/room/${room[1]}`, body, ["send", "voice"].includes(room[1]) ? 610_000 : 60_000);
+        return send(res, result.status, result.body);
+      }
+      if (url.pathname === "/api/health" && req.method === "GET") {
+        const local = { tunnel: tunnelConnected(), ...library.statusView?.(),
+          failed: library.videos.filter(video => ["failed", "paused"].includes(video.state)).length, videos: library.videos.length };
+        try {
+          const result = await control("/health", {}, 20_000);
+          return send(res, result.status, { ...result.body, videoPilot: local });
+        } catch (error) { return send(res, 200, { error: error.message, videoPilot: local }); }
+      }
+      if (url.pathname === "/api/health/actions" && req.method === "GET") {
+        const result = await control("/actions").catch(() => ({ body: { actions: [] } }));
+        return send(res, 200, { actions: [{ id: "retry-failed", label: "Retry failed downloads" }, ...(result.body.actions || [])] });
+      }
+      if (url.pathname === "/api/health/action" && req.method === "POST") {
+        const body = await bodyJSON(req, 1024);
+        if (body.id === "retry-failed") {
+          const failed = library.videos.filter(video => ["failed", "paused"].includes(video.state));
+          for (const video of failed) await library.retry(video.id).catch(() => {});
+          return send(res, 200, { ok: true, output: failed.length ? `Retrying ${failed.length} download${failed.length === 1 ? "" : "s"}.` : "Nothing to retry." });
+        }
+        const result = await control("/action", { id: String(body.id || "") }, 200_000);
+        return send(res, result.status, result.body);
+      }
       if (url.pathname === "/api/status" && req.method === "GET") return send(res, 200, {
         webVersion: await webVersion(webRoot),
         hosting: true, publicAccess: true, authentication: "tunnel-key",
@@ -241,7 +301,7 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
       }
       return send(res, 404, { error: "Not found." });
     } catch (error) {
-      if (!res.headersSent) send(res, /valid|quality|waiting|large/i.test(error.message || "") ? 400 : 500, { error: String(error.message || error) });
+      if (!res.headersSent) send(res, error.status || (/valid|quality|waiting|large/i.test(error.message || "") ? 400 : 500), { error: String(error.message || error) });
       else res.destroy(error);
     }
   });

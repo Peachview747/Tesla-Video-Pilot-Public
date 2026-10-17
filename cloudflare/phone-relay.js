@@ -29,7 +29,13 @@ function binaryID(bytes) {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-async function boundedBody(request) {
+// Chunked: spreading a large body into one call overflows the stack.
+function base64(bytes) {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+}
+async function boundedBody(request, limit = 16384) {
   if (!request.body) return new Uint8Array();
   const reader = request.body.getReader();
   const chunks = [];
@@ -39,7 +45,7 @@ async function boundedBody(request) {
       const { value, done } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > 16384) { await reader.cancel(); throw new Error("Request body is too large"); }
+      if (size > limit) { await reader.cancel(); throw new Error("Request body is too large"); }
       chunks.push(value);
     }
   } finally { reader.releaseLock(); }
@@ -96,7 +102,9 @@ export class PhoneTunnel {
     if (this.pending.size >= MAX_REQUESTS) return json({ error: "Pi is busy. Close another player and retry." }, 429);
 
     let body;
-    try { body = await boundedBody(request); }
+    // AI Room voice turns carry a recording (WAV, up to about a minute).
+    const audio = /^\/api\/airoom\/(voice|hear)$/.test(url.pathname);
+    try { body = await boundedBody(request, audio ? 3_500_000 : 16384); }
     catch { return json({ error: "Request body is too large" }, 413); }
     // Recheck after awaiting the body; disconnects and simultaneous requests can race.
     if (!this.connected()) return json({ error: "Video Pilot host is disconnected" }, 503, { "x-mk8-phone": "offline" });
@@ -147,11 +155,16 @@ export class PhoneTunnel {
       request.signal.addEventListener("abort", entry.abort, { once: true });
       // Media streams answer fast; browse calls (/api/foryou, /api/channel)
       // make several YouTube requests on the phone and can need longer cold.
-      const firstByteMs = url.pathname.startsWith("/api/") && !url.pathname.startsWith("/api/stream/") ? API_FIRST_BYTE_MS : 15000;
+      // Claude (AI Room) can work for minutes; Pi Health commands (speed test,
+      // updates) take up to a few minutes too.
+      const firstByteMs = /^\/api\/airoom\/(send|voice)$/.test(url.pathname) ? 615_000
+        : url.pathname === "/api/health/action" ? 210_000
+        : url.pathname.startsWith("/api/airoom/") ? 65_000
+        : url.pathname.startsWith("/api/") && !url.pathname.startsWith("/api/stream/") ? API_FIRST_BYTE_MS : 15000;
       entry.timer = setTimeout(() => this.fail(id, "Pi did not respond"), firstByteMs);
       try {
         this.send({ type: "request", id, method: request.method, target: url.pathname + url.search,
-          headers, body: btoa(String.fromCharCode(...body)) });
+          headers, body: base64(body) });
       } catch { this.fail(id, "Pi disconnected"); }
     });
   }

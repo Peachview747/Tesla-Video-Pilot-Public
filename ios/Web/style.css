@@ -461,6 +461,10 @@ button.rail-brand { border: 0; cursor: pointer; }
 .portal[hidden] { display: none; }
 .portal h1 { font-size: var(--fs-title); font-weight: 750; }
 .portal-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; width: 100%; max-width: 980px; }
+a.portal-tile { text-decoration: none; }
+.portal-tile.claude { background: #f5e7dc; color: #8e4c33; font-family: Georgia, serif; font-weight: 600; letter-spacing: 0; }
+.claude-mark { display: grid; place-items: center; width: 1.4em; height: 1.4em; border-radius: 50%; background: #ba6949; color: #fff6ef; font-size: .8em; }
+.portal-tile.health { background: #1a1f22; color: #4cc38a; font-size: clamp(20px, 3.6vw, 34px); }
 .portal-tile { display: flex; align-items: center; justify-content: center; gap: 10px; aspect-ratio: 16 / 10; border: 0; border-radius: 18px; font-size: clamp(22px, 4vw, 38px); font-weight: 800; letter-spacing: .03em; box-shadow: 0 6px 20px #0003; }
 .portal-tile:active { transform: scale(.97); }
 .portal-tile.youtube { background: #fff; color: #0f0f0f; letter-spacing: -.01em; }
