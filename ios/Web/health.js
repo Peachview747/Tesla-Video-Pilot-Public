@@ -95,5 +95,4 @@ async function refresh() {
   try { render(await call('/api/health')); if (rebooting) { rebooting = false; loadActions(); } }
   catch (error) { if (!rebooting) { $('error').hidden = false; $('error').textContent = error.message; } }
 }
-$('back').onclick = () => { location.href = '/'; };
 loadActions(); refresh(); setInterval(() => { if (!document.hidden) refresh(); }, 5000);

@@ -5,6 +5,7 @@ let player = null, current = null, currentOffset = 0, seekTimer = null;
 let fullscreenFallback = false;
 let playback = null;
 let refreshing = false;
+let portalStatusAt = 0; // the portal's live status, refreshed every 10 s by the heartbeat
 let seekGeneration = 0;
 let seekChain = Promise.resolve();
 let playbackQuality = 'auto', activeQuality = 0, qualityRequestSeq = 0;
@@ -1112,6 +1113,7 @@ $('pin-change').onclick = async () => {
 // deploy) or a #tab link goes straight back into YouTube.
 function showPortal() {
   $('portal').hidden = false;
+  void refreshPortalStatus();
   try { globalThis.sessionStorage?.removeItem('vp-in-youtube'); } catch {}
 }
 function enterYouTube() {
@@ -1266,6 +1268,43 @@ $('live-fit').onclick = () => {
 };
 document.querySelectorAll?.('[data-live-key]').forEach(button => button.onclick = () => void liveInput({type:'key', key:button.dataset.liveKey}));
 document.querySelectorAll?.('[data-live-scroll]').forEach(button => button.onclick = () => void liveInput({type:'scroll', y:Number(button.dataset.liveScroll)}));
+
+// ---- Switching apps ----
+// The Apps switcher (apps-menu.js) switches inside this page when it can;
+// Claude and Pi Health are their own pages, which link back with ?app=.
+globalThis.videoPilotOpen = id => {
+  if (!['youtube', 'netflix', 'hulu', 'portal'].includes(id)) return false;
+  if (!$('player-section').hidden) $('close').onclick?.();
+  if (id === 'netflix' || id === 'hulu') { if ($('live-section').hidden || liveService !== id) void openLive(id); return true; }
+  if (!$('live-section').hidden) void closeLive();
+  if (id === 'youtube') enterYouTube(); else showPortal();
+  return true;
+};
+{
+  const app = String(globalThis.location?.search || '').match(/[?&]app=(youtube|netflix|hulu|portal)\b/)?.[1];
+  if (app) {
+    try { globalThis.history?.replaceState?.(null, '', globalThis.location.pathname + globalThis.location.hash); } catch {}
+    globalThis.videoPilotOpen(app);
+  }
+}
+// Live status on the portal: the Pi at a glance (behind the PIN like the rest).
+async function refreshPortalStatus() {
+  if ($('portal').hidden || pinNeeded) return;
+  portalStatusAt = Date.now();
+  try {
+    const health = await api('/api/health', null, 20000), vp = health.videoPilot || {}, v = health.vitals;
+    const chip = (text, level = '') => element('span', 'status-chip' + (level ? ' ' + level : ''), text);
+    const data = v?.disks?.find(disk => disk.path !== '/');
+    const stage = {downloading: 'Downloading', processing: 'Converting'}[vp.preparationStage];
+    $('portal-status').replaceChildren(...[
+      v && chip(`${Math.round(v.temperature)} °C`, v.temperature >= 80 ? 'bad' : v.temperature >= 70 ? 'warn' : 'good'),
+      chip(vp.busy ? `${stage || 'Working'}${Number.isFinite(vp.preparationProgress) ? ` ${Math.round(vp.preparationProgress * 100)}%` : ''}${vp.queuedCount ? ` · ${vp.queuedCount} waiting` : ''}` : (vp.failed ? `${vp.failed} downloads need a retry` : 'Downloads idle'), vp.failed ? 'warn' : ''),
+      health.activity && chip(health.activity.aiRoomBusy ? 'Claude is working' : 'Claude idle'),
+      data && chip(`${(data.free / 1e9).toFixed(0)} GB free`, data.free / data.total < 0.1 ? 'bad' : data.free / data.total < 0.2 ? 'warn' : ''),
+      v?.power?.undervoltageNow && chip('Low voltage!', 'bad'),
+    ].filter(Boolean));
+  } catch { $('portal-status').replaceChildren(); }
+}
 
 // ---- Self-update ----
 // Fixes deployed to the Pi never reached a page already open in the car, so
@@ -2741,4 +2780,5 @@ void refresh();
 setInterval(() => {
   if (Date.now() - lastPollAt >= pollInterval() - 50) void refresh();
   if (currentTab === 'settings-tab') renderLiveDiagnostics();
+  if (!document.hidden && Date.now() - portalStatusAt >= 10000) void refreshPortalStatus();
 }, 1000);

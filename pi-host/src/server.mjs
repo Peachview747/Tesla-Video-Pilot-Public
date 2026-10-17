@@ -5,7 +5,7 @@ import path from "node:path";
 import {QUALITIES, parseQuality} from "./quality.mjs";
 
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8" };
-const ASSETS = new Set(["/", "/index.html", "/app.js", "/http-source.js", "/diagnostics.js", "/style.css", "/jsmpeg.min.js"]);
+const ASSETS = new Set(["/", "/index.html", "/app.js", "/http-source.js", "/diagnostics.js", "/style.css", "/jsmpeg.min.js", "/apps-menu.js", "/apps-menu.css"]);
 
 function send(res, status, body, type = "application/json; charset=utf-8", headers = {}) {
   const bytes = Buffer.isBuffer(body) ? body : Buffer.from(typeof body === "string" ? body : JSON.stringify(body));
@@ -21,7 +21,7 @@ async function bodyJSON(req, limit = 16384) {
 
 // A version for the deployed web files (their newest change time), so an open
 // page in the car can tell it is out of date and reload itself.
-const WEB_FILES = ["index.html", "app.js", "style.css", "http-source.js", "diagnostics.js"];
+const WEB_FILES = ["index.html", "app.js", "style.css", "http-source.js", "diagnostics.js", "apps-menu.js", "apps-menu.css"];
 async function webVersion(webRoot) {
   const times = await Promise.all(WEB_FILES.map(name => stat(path.join(webRoot, name)).then(info => info.mtimeMs, () => 0)));
   return String(Math.floor(Math.max(...times)));
@@ -60,7 +60,7 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
         let data = await readFile(path.join(dir, name));
         // The same AI Room page, told to use the portal's API and PIN.
         if (name === "index.html" && AIROOM_FILES[url.pathname])
-          data = Buffer.from(String(data).replace("<head>", '<head><meta name="api-base" content="/api/airoom/"><meta name="in-portal" content="1"><base href="/airoom/">'));
+          data = Buffer.from(String(data).replace("<head>", '<head><meta name="api-base" content="/api/airoom/"><meta name="in-portal" content="1"><base href="/airoom/"><link rel="stylesheet" href="/apps-menu.css"><script src="/apps-menu.js" defer></script>'));
         return send(res, 200, data, TYPES[path.extname(name)] || "application/octet-stream", { ...PAGE_HEADERS, "content-security-policy": PAGE_CSP });
       }
       if (ASSETS.has(url.pathname) && req.method === "GET") {

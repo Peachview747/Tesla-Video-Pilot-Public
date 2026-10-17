@@ -1,0 +1,14 @@
+.apps-button { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 8px 14px; border-radius: 12px; border: 1px solid #ffffff2b; background: #ffffff14; color: inherit; font: inherit; font-weight: 650; cursor: pointer; }
+.apps-button::before { content: ''; width: 14px; height: 14px; background: radial-gradient(circle, currentColor 2px, transparent 2.5px) 0 0 / 7px 7px; opacity: .85; }
+.apps-sheet { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; padding: 16px; background: #000a; }
+.apps-sheet[hidden] { display: none; }
+.apps-panel { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; width: min(620px, 100%); padding: 16px; border-radius: 20px; background: #15191b; box-shadow: 0 20px 60px #0008; }
+.apps-item { min-height: 76px; border: 0; border-radius: 14px; font: 700 18px/1.2 system-ui, sans-serif; cursor: pointer; }
+.apps-item[aria-current=page] { outline: 3px solid #6ea8ff; outline-offset: 2px; }
+.apps-youtube { background: #fff; color: #0f0f0f; }
+.apps-netflix { background: #141414; color: #e50914; letter-spacing: .04em; text-transform: uppercase; }
+.apps-hulu { background: #0b0c0f; color: #1ce783; text-transform: lowercase; font-size: 22px; }
+.apps-claude { background: #f5e7dc; color: #8e4c33; font-family: Georgia, serif; }
+.apps-health { background: #1a1f22; color: #4cc38a; }
+.apps-portal { background: #262d31; color: #e8ecee; }
+@media (max-width: 480px) { .apps-panel { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

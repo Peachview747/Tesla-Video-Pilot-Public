@@ -515,3 +515,9 @@ a.portal-tile { text-decoration: none; }
 .device-row strong { display: block; }
 .device-row small { color: var(--muted); }
 html.live-open, html.live-open body { overflow: hidden; }
+
+.portal-status { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; min-height: 30px; }
+.status-chip { padding: 5px 12px; border-radius: 999px; background: var(--surface, #ffffff14); border: 1px solid var(--stroke, #ffffff22); font-size: var(--fs-small, 13px); font-weight: 600; }
+.status-chip.good { color: #2f9e64; } .status-chip.warn { color: #c98a12; } .status-chip.bad { color: #d4472b; }
+.rail [data-apps-menu], .rail .apps-button { align-self: center; }
+.live-bar .apps-button { min-height: 40px; }

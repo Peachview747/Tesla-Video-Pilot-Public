@@ -1,8 +1,8 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pi Health</title>
-<link rel="stylesheet" href="/health/health.css"><script src="/health/health.js" defer></script></head>
+<link rel="stylesheet" href="/health/health.css"><link rel="stylesheet" href="/apps-menu.css"><script src="/apps-menu.js" defer></script><script src="/health/health.js" defer></script></head>
 <body>
-<header class="bar"><button id="back" type="button">← Services</button><h1>Pi Health</h1><span id="updated" class="muted"></span></header>
+<header class="bar"><span data-apps-menu></span><h1>Pi Health</h1><span id="updated" class="muted"></span></header>
 <p id="error" class="error" hidden></p>
 <main>
   <section><h2>Vitals</h2><div id="vitals" class="tiles"></div></section>
