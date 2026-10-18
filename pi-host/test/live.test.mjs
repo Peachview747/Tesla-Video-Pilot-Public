@@ -18,7 +18,7 @@ test("Netflix opens in a kept Chromium profile with Widevine, and taps stay on s
   await mkdir(widevine); await writeFile(path.join(widevine, "manifest.json"), "{}");
   const fake = fakes();
   const session = new LiveSession({ home, widevine, exec: fake.exec, launch: fake.launch, idleMs: 1e9 });
-  await assert.rejects(session.start("disney"), /Netflix or Hulu/);
+  await assert.rejects(session.start("disney"), /Netflix, Hulu or TextNow/);
   await session.start("netflix");
   assert.deepEqual(fake.launched.map(child => path.basename(child.file)), ["Xvfb", "chromium"]);
   assert.ok(fake.launched[1].args.includes("https://www.netflix.com/browse"));

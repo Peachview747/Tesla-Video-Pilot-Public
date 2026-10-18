@@ -19,6 +19,8 @@ export const SCREEN = { width: 1280, height: 720 };
 export const SERVICES = {
   netflix: { name: "Netflix", url: "https://www.netflix.com/browse" },
   hulu: { name: "Hulu", url: "https://www.hulu.com/hub/home" },
+  // Signed in once here, the Pi can later send alert texts through it.
+  textnow: { name: "TextNow", url: "https://www.textnow.com/messaging" },
 };
 const SINK = "video-pilot-live";
 const KEYS = new Set(["Return", "BackSpace", "Tab", "Escape", "Up", "Down", "Left", "Right", "space", "f", "alt+Left"]);
@@ -69,7 +71,7 @@ export class LiveSession {
 
   async start(service) {
     const target = SERVICES[service];
-    if (!target) throw new Error("Choose Netflix or Hulu.");
+    if (!target) throw new Error("Choose Netflix, Hulu or TextNow.");
     this.stopBrowser();
     await mkdir(this.profile, { recursive: true });
     await this.seedWidevine();

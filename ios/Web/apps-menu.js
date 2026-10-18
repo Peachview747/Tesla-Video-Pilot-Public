@@ -13,7 +13,7 @@
     if (Date.now() - handoff > 15000) sessionStorage.removeItem('vp-device-key');
   } catch {}
   const handoff = () => { try { sessionStorage.setItem('vp-handoff', String(Date.now())); } catch {} };
-  const APPS = [['youtube', 'YouTube'], ['netflix', 'Netflix'], ['hulu', 'Hulu'], ['claude', 'Claude'], ['health', 'Pi Health'], ['portal', 'All apps']];
+  const APPS = [['youtube', 'YouTube'], ['netflix', 'Netflix'], ['hulu', 'Hulu'], ['claude', 'Claude'], ['health', 'Pi Health'], ['textnow', 'TextNow'], ['portal', 'All apps']];
   const here = location.pathname.startsWith('/airoom') ? 'claude' : location.pathname.startsWith('/health') ? 'health' : '';
   function go(id) {
     // On the Video Pilot page itself, switch without reloading.

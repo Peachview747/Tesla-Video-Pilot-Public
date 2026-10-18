@@ -15,3 +15,4 @@
 .alert-banner { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 300; width: min(640px, calc(100vw - 32px)); padding: 14px 18px; border-radius: 14px; background: #1f2622; color: #f2f4ef; border: 1px solid #ba6949; box-shadow: 0 12px 40px #0007; font: 600 16px/1.4 system-ui, sans-serif; cursor: pointer; }
 .alert-banner::before { content: 'Pi  '; color: #e8a27f; font-weight: 800; }
 .alert-banner[hidden] { display: none; }
+.apps-textnow { background: #5b2bd1; color: #fff; }
