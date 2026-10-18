@@ -107,6 +107,15 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
           return send(res, result.status, { ...result.body, videoPilot: local });
         } catch (error) { return send(res, 200, { error: error.message, videoPilot: local }); }
       }
+      // Spoken alerts for every portal page: new ones, and their audio.
+      if (url.pathname === "/api/alerts" && req.method === "GET") {
+        const result = await control("/alerts", { since: Number(url.searchParams.get("since")) || 0 }).catch(() => ({ status: 200, body: { alerts: [], latest: 0 } }));
+        return send(res, result.status, result.body);
+      }
+      if (url.pathname === "/api/say" && req.method === "POST") {
+        const result = await control("/say", await bodyJSON(req, 2048), 30_000);
+        return send(res, result.status, result.body);
+      }
       if (url.pathname === "/api/health/actions" && req.method === "GET") {
         const result = await control("/actions").catch(() => ({ body: { actions: [] } }));
         return send(res, 200, { actions: [{ id: "retry-failed", label: "Retry failed downloads" }, ...(result.body.actions || [])] });

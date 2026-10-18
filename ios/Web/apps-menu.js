@@ -49,5 +49,53 @@
     }
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount); else mount();
-  globalThis.videoPilotApps = {open, close, mount, handoff};
+
+  // Spoken alerts: every 20 s, ask the Pi for alerts since the last one this
+  // tab heard; show each as a banner and say it in Claude's voice. A page that
+  // is listening to you (Claude voice) sets videoPilotAlertsQuiet and only
+  // gets the banner.
+  const ALERT_KEY = 'vp-alert-seen';
+  let banner = null, bannerTimer = null, player = null;
+  function deviceKey() { try { return sessionStorage.getItem('vp-device-key') || ''; } catch { return ''; } }
+  async function call(path, body) {
+    const key = deviceKey();
+    const response = await fetch(path, {method: body ? 'POST' : 'GET', cache: 'no-store',
+      headers: {...(key ? {'x-vp-device': key} : {}), ...(body ? {'content-type': 'application/json'} : {})}, body: body ? JSON.stringify(body) : undefined});
+    if (!response.ok) throw new Error(String(response.status));
+    return response.json();
+  }
+  function show(text) {
+    if (!banner) {
+      banner = document.createElement('div'); banner.className = 'alert-banner'; banner.setAttribute('role', 'status');
+      banner.onclick = () => { banner.hidden = true; };
+      document.body.append(banner);
+    }
+    banner.textContent = text; banner.hidden = false;
+    clearTimeout(bannerTimer); bannerTimer = setTimeout(() => { banner.hidden = true; }, 12000);
+  }
+  async function say(text) {
+    if (globalThis.videoPilotAlertsQuiet?.()) return;
+    let voice = ''; try { voice = localStorage.getItem('airoom-voice') || ''; } catch {}
+    const {audio, mime} = await call('/api/say', {text, voice});
+    player = player || new Audio();
+    player.src = `data:${mime};base64,${audio}`;
+    await player.play();
+  }
+  let checking = false;
+  async function checkAlerts() {
+    if (checking || document.hidden) return;
+    checking = true;
+    try {
+      let seen = null; try { seen = sessionStorage.getItem(ALERT_KEY); } catch {}
+      const {alerts, latest} = await call(`/api/alerts?since=${seen === null ? 0 : Number(seen)}`);
+      try { sessionStorage.setItem(ALERT_KEY, String(latest)); } catch {}
+      // A new visit starts from now; it does not replay older alerts.
+      if (seen === null || !alerts.length) return;
+      const text = alerts.map(alert => alert.text).join(' ');
+      show(text);
+      await say(text).catch(() => {});
+    } catch {} finally { checking = false; }
+  }
+  setInterval(checkAlerts, 20000); setTimeout(checkAlerts, 3000);
+  globalThis.videoPilotApps = {open, close, mount, handoff, checkAlerts};
 })();
