@@ -13,12 +13,27 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const scryptAsync = promisify(scrypt);
-const FREE_TRIES = 5;
+// Wrong guesses are counted per visitor (5 free, then a growing lockout for
+// that visitor only) and across everyone (a generous backstop), so a stranger
+// guessing from the internet is shut out without locking the owner out.
+const VISITOR_FREE = 5, GLOBAL_FREE = { pin: 30, answer: 10 }, MAX_VISITORS = 2000;
 const MAX_LOCK_MS = 60 * 60_000;
 const SEEN_SAVE_MS = 10 * 60_000;
 // An unlock lasts one visit: it ends after 30 minutes with no requests (a
 // playing video keeps polling, so it counts as use) and after 12 hours at most.
 export const IDLE_MS = 30 * 60_000, MAX_MS = 12 * 60 * 60_000;
+
+// Who is guessing, for the limits above: an IPv4 address, or an IPv6 /64 (one
+// home or phone owns millions of addresses in its /64).
+export function visitorKey(ip) {
+  const text = String(ip || "").trim().toLowerCase().replace(/^::ffff:/, "");
+  if (!text) return "unknown";
+  if (!text.includes(":")) return text;
+  const [head, tail = ""] = text.split("::");
+  const a = head ? head.split(":") : [], b = tail ? tail.split(":") : [];
+  const groups = text.includes("::") ? [...a, ...Array(Math.max(0, 8 - a.length - b.length)).fill("0"), ...b] : a;
+  return groups.slice(0, 4).map(group => group.padStart(4, "0")).join(":") + "::/64";
+}
 
 export const validPin = pin => typeof pin === "string" && /^\d{4,8}$/.test(pin);
 const normalizeAnswer = answer => String(answer || "").trim().toLowerCase().replace(/\s+/g, " ");
@@ -58,6 +73,7 @@ export class PinLock {
     this.state = { pinHash: "", question: "", answerHash: "", devices: [], pinFailures: 0, pinLockedUntil: 0, answerFailures: 0, answerLockedUntil: 0 };
     this.lastSeenSave = 0;
     this.checking = Promise.resolve();
+    this.visitors = new Map();
   }
 
   get enabled() { return Boolean(this.state.pinHash); }
@@ -129,31 +145,51 @@ export class PinLock {
     return error;
   }
 
-  // Checks a guess against the PIN or the reset answer, with the shared lockout:
-  // FREE_TRIES wrong guesses, then 1 minute, doubling each time up to an hour.
+  // Checks a guess against the PIN or the reset answer. Each visitor gets
+  // VISITOR_FREE wrong guesses, then a lockout of 1 minute doubling up to an
+  // hour; everyone together gets GLOBAL_FREE before a shared lockout.
   // One guess at a time: guesses sent together would all pass the lockout
   // check before any of them counted.
-  verify(kind, guess) {
-    const check = this.checking.then(() => this.verifyOne(kind, guess));
+  verify(kind, guess, who = "local") {
+    const check = this.checking.then(() => this.verifyOne(kind, guess, who));
     this.checking = check.catch(() => {});
     return check;
   }
 
-  async verifyOne(kind, guess) {
-    const failures = `${kind}Failures`, lockedUntil = `${kind}LockedUntil`;
+  visitor(who, kind) {
+    const now = this.now(), key = `${kind}:${who}`;
+    let entry = this.visitors.get(key);
+    if (!entry) {
+      if (this.visitors.size >= MAX_VISITORS) {
+        for (const [k, v] of this.visitors) if (v.lockedUntil < now && now - v.at > MAX_LOCK_MS) this.visitors.delete(k);
+        if (this.visitors.size >= MAX_VISITORS) for (const k of [...this.visitors.keys()].slice(0, MAX_VISITORS / 4)) this.visitors.delete(k);
+      }
+      entry = { failures: 0, lockedUntil: 0, at: now }; this.visitors.set(key, entry);
+    } else if (entry.lockedUntil < now && now - entry.at > MAX_LOCK_MS) entry.failures = 0;
+    return entry;
+  }
+
+  async verifyOne(kind, guess, who) {
+    const failures = `${kind}Failures`, lockedUntil = `${kind}LockedUntil`, visitor = this.visitor(who, kind);
+    if (visitor.lockedUntil > this.now()) throw this.lockError(visitor.lockedUntil);
     if (this.state[lockedUntil] > this.now()) throw this.lockError(this.state[lockedUntil]);
     const stored = kind === "pin" ? this.state.pinHash : this.state.answerHash;
     const ok = kind === "pin" ? validPin(guess) && await matches(guess, stored) : await matches(normalizeAnswer(guess), stored);
     if (ok) {
+      visitor.failures = 0; visitor.lockedUntil = 0;
       if (this.state[failures]) { this.state[failures] = 0; this.state[lockedUntil] = 0; await this.save(); }
       return;
     }
+    visitor.failures += 1; visitor.at = this.now();
+    const visitorOver = visitor.failures - VISITOR_FREE;
+    if (visitorOver >= 0) visitor.lockedUntil = this.now() + Math.min(MAX_LOCK_MS, 60_000 * 2 ** visitorOver);
     this.state[failures] += 1;
-    const over = this.state[failures] - FREE_TRIES;
+    const over = this.state[failures] - GLOBAL_FREE[kind];
     if (over >= 0) this.state[lockedUntil] = this.now() + Math.min(MAX_LOCK_MS, 60_000 * 2 ** over);
     await this.save();
+    if (visitorOver >= 0) throw this.lockError(visitor.lockedUntil);
     if (over >= 0) throw this.lockError(this.state[lockedUntil]);
-    const left = FREE_TRIES - this.state[failures];
+    const left = VISITOR_FREE - visitor.failures;
     const error = new Error(kind === "pin" ? `Wrong PIN. ${left} ${left === 1 ? "try" : "tries"} before a lockout.` : `That is not the answer. ${left} ${left === 1 ? "try" : "tries"} left.`);
     error.status = 403;
     throw error;
@@ -167,39 +203,39 @@ export class PinLock {
     return key;
   }
 
-  async unlock(pin, userAgent) {
+  async unlock(pin, userAgent, who) {
     if (!this.enabled) throw new Error("No PIN is set.");
-    await this.verify("pin", pin);
+    await this.verify("pin", pin, who);
     return { key: await this.addDevice(userAgent) };
   }
 
   // Forgot the PIN: the reset answer sets a new one and signs every device out.
-  async reset(answer, newPin, userAgent) {
+  async reset(answer, newPin, userAgent, who) {
     if (!this.state.answerHash) throw new Error("No reset question is set.");
     if (!validPin(newPin)) throw new Error("The new PIN must be 4 to 8 digits.");
-    await this.verify("answer", answer);
+    await this.verify("answer", answer, who);
     this.state.pinHash = await hashSecret(newPin);
     this.state.devices = []; this.state.pinFailures = 0; this.state.pinLockedUntil = 0;
     return { key: await this.addDevice(userAgent) };
   }
 
   // A new PIN signs every device out; the one that changed it gets a fresh key.
-  async changePin(pin, newPin, userAgent) {
+  async changePin(pin, newPin, userAgent, who) {
     if (!validPin(newPin)) throw new Error("The new PIN must be 4 to 8 digits.");
-    await this.verify("pin", pin);
+    await this.verify("pin", pin, who);
     this.state.pinHash = await hashSecret(newPin);
     this.state.devices = [];
     return { key: await this.addDevice(userAgent) };
   }
 
-  async devices(pin, key) {
-    await this.verify("pin", pin);
+  async devices(pin, key, who) {
+    await this.verify("pin", pin, who);
     const current = this.device(key);
     return this.state.devices.map(({ id, name, addedAt, lastSeen }) => ({ id, name, addedAt, lastSeen, current: current?.id === id }));
   }
 
-  async removeDevice(pin, id) {
-    await this.verify("pin", pin);
+  async removeDevice(pin, id, who) {
+    await this.verify("pin", pin, who);
     const before = this.state.devices.length;
     this.state.devices = this.state.devices.filter(device => device.id !== id);
     await this.save();

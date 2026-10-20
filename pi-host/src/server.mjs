@@ -2,6 +2,7 @@ import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
+import { visitorKey } from "./pin-lock.mjs";
 import {QUALITIES, parseQuality} from "./quality.mjs";
 
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8" };
@@ -38,7 +39,11 @@ const PAGE_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-s
 
 export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5001, host = "127.0.0.1", version = "Pi",
   signinURL = "http://127.0.0.1:5002", liveURL = "http://127.0.0.1:5003", pinLock = null,
-  controlURL = "http://127.0.0.1:5020", controlKey = null, airoomWeb = null, tunnelConnected = () => null }) {
+  controlURL = "http://127.0.0.1:5020", controlKey = null, airoomWeb = null, tunnelConnected = () => null,
+  publicPort = null }) {
+  // publicPort: a second listener for the HTTPS front (Caddy) on the internet
+  // side. Everything arriving on it counts as outside, whatever headers it carries.
+  let publicActual = null;
   const control = async (path, body = {}, timeout = 15_000) => {
     if (!controlKey) { const error = new Error("AI Room is not connected to the portal on this Pi."); error.status = 503; throw error; }
     let response;
@@ -48,7 +53,7 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
     } catch { const error = new Error("AI Room is not running on the Pi."); error.status = 503; throw error; }
     return { status: response.status, body: await response.json().catch(() => ({ error: "AI Room sent an unreadable answer." })) };
   };
-  const server = http.createServer(async (req, res) => {
+  const handle = async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
       if (!["GET", "POST"].includes(req.method)) return send(res, 405, { error: "Method not allowed." });
@@ -74,6 +79,12 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
       }
       // PIN lock: everything from the relay needs a device key, except the
       // lock's own calls. Requests made on the Pi itself are never locked.
+      // Outside = through Cloudflare's relay (which marks its requests) or on the
+      // public port; only the Pi itself is trusted. The visitor is who the lockouts count.
+      const onPublicPort = publicActual !== null && req.socket.localPort === publicActual;
+      const outside = Boolean(req.headers["x-video-pilot-relay"]) || onPublicPort;
+      const visitor = !outside ? "local" : visitorKey(onPublicPort
+        ? String(req.headers["x-forwarded-for"] || "").split(",")[0] : req.headers["cf-connecting-ip"]);
       const deviceKey = String(req.headers["x-vp-device"] || "");
       const pinRoute = url.pathname.match(/^\/api\/pin\/(status|unlock|reset|change|devices|remove)$/);
       if (pinRoute && pinLock) {
@@ -82,14 +93,14 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
         try {
           if (name === "status") return send(res, 200, pinLock.status(deviceKey));
           const body = await bodyJSON(req, 2048), agent = req.headers["user-agent"];
-          if (name === "unlock") return send(res, 200, await pinLock.unlock(String(body.pin || ""), agent));
-          if (name === "reset") return send(res, 200, await pinLock.reset(body.answer, String(body.newPin || ""), agent));
-          if (name === "change") return send(res, 200, await pinLock.changePin(String(body.pin || ""), String(body.newPin || ""), agent));
-          if (name === "devices") return send(res, 200, { devices: await pinLock.devices(String(body.pin || ""), deviceKey) });
-          return send(res, 200, await pinLock.removeDevice(String(body.pin || ""), String(body.id || "")));
+          if (name === "unlock") return send(res, 200, await pinLock.unlock(String(body.pin || ""), agent, visitor));
+          if (name === "reset") return send(res, 200, await pinLock.reset(body.answer, String(body.newPin || ""), agent, visitor));
+          if (name === "change") return send(res, 200, await pinLock.changePin(String(body.pin || ""), String(body.newPin || ""), agent, visitor));
+          if (name === "devices") return send(res, 200, { devices: await pinLock.devices(String(body.pin || ""), deviceKey, visitor) });
+          return send(res, 200, await pinLock.removeDevice(String(body.pin || ""), String(body.id || ""), visitor));
         } catch (error) { return send(res, error.status || 400, { error: String(error.message || error) }); }
       }
-      if (pinLock && req.headers["x-video-pilot-relay"] && !pinLock.allows(deviceKey))
+      if (pinLock && outside && !pinLock.allows(deviceKey))
         return send(res, 401, { error: "Enter the PIN.", pinRequired: true });
       const room = url.pathname.match(/^\/api\/airoom\/([a-z]+)$/);
       if (room) {
@@ -191,7 +202,7 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
       // Sign-in cookies are pushed by the Firefox sync on the Pi itself. The
       // relay marks every request it forwards, so the car link cannot set them.
       if (url.pathname === "/api/youtube/cookies" && req.method === "POST") {
-        if (req.headers["x-video-pilot-relay"]) return send(res, 403, { error: "Sign in with Firefox on the Pi." });
+        if (outside) return send(res, 403, { error: "Sign in with Firefox on the Pi." });
         await library.saveCookies((await bodyJSON(req, 512 * 1024)).cookies); return send(res, 200, { saved: true });
       }
       // Car sign-in: the desktop user's helper runs Firefox on a virtual
@@ -313,10 +324,19 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
       if (!res.headersSent) send(res, error.status || (/valid|quality|waiting|large/i.test(error.message || "") ? 400 : 500), { error: String(error.message || error) });
       else res.destroy(error);
     }
-  });
+  };
+  const server = http.createServer(handle);
+  const publicServer = publicPort === null ? null : http.createServer(handle);
   return {
-    server,
-    start: () => new Promise((resolve, reject) => { server.once("error", reject); server.listen(port, host, resolve); }),
-    stop: () => new Promise(resolve => server.close(resolve)),
+    server, publicServer,
+    start: () => new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(port, host, () => {
+        if (!publicServer) return resolve();
+        publicServer.once("error", reject);
+        publicServer.listen(publicPort, host, () => { publicActual = publicServer.address().port; resolve(); });
+      });
+    }),
+    stop: () => Promise.all([server, publicServer].filter(Boolean).map(item => new Promise(resolve => item.close(resolve)))),
   };
 }

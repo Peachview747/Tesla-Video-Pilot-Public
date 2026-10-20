@@ -1,0 +1,25 @@
+# HTTPS front for the portal on the public internet. setup-public.sh fills in
+# the host name and certificate paths. Caddy runs as the unprivileged user
+# "nobody" on port 8443 (the router forwards external 443 here) and passes
+# everything to Video Pilot's public port (5101), which is always PIN-locked.
+# Only the secret host name is served; an IP address, the bare domain or any
+# other name gets the connection dropped without an answer.
+{
+	admin off
+	auto_https off
+}
+
+https://:8443 {
+	tls __CERT__ __KEY__
+	header -Server
+	@portal host __HOST__
+	handle @portal {
+		# No buffering: video and Claude's replies stream as they are made.
+		reverse_proxy 127.0.0.1:5101 {
+			flush_interval -1
+		}
+	}
+	handle {
+		abort
+	}
+}

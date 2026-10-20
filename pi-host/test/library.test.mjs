@@ -186,9 +186,9 @@ test("cancel stops the running job; a cancelled upgrade leaves the video ready",
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-cancel-"));
   const runner = (command, args, { signal } = {}) => new Promise((resolve, reject) => {
     if (args.includes("--dump-single-json")) return resolve({ stdout: '{"duration":30}' });
-    writeFile(args[args.indexOf("--output") + 1] + ".part", "partial").then(() => {
-      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-    });
+    // Listen first: the test cancels as soon as the .part file shows up.
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    writeFile(args[args.indexOf("--output") + 1] + ".part", "partial");
   });
   const library = await new Library({ dataDir, runner }).init();
   const ready = { id: "00000000-0000-4000-8000-000000000001", youtubeID: "dQw4w9WgXcQ", state: "ready", quality: 720 };

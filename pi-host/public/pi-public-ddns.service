@@ -1,0 +1,8 @@
+[Unit]
+Description=Tell DuckDNS this home's current internet address
+ConditionPathExists=/opt/pi-public/duckdns.env
+ConditionPathExists=/opt/pi-public/public.env
+
+[Service]
+Type=oneshot
+ExecStart=/opt/pi-public/ddns.sh

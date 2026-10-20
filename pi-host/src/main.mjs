@@ -23,7 +23,9 @@ const controlKey = await readFile(process.env.PI_CONTROL_KEY || "/opt/pi-control
 let tunnel = null;
 const http = createVideoPilotServer({ library, webRoot: path.resolve(root, "ios/Web"),
   decoderPath: path.resolve(root, "app/client/public/jsmpeg.min.js"), port, version: "0.1.40-pi", pinLock,
-  controlKey, airoomWeb: process.env.AIROOM_WEB || "/opt/ai-room/web", tunnelConnected: () => tunnel?.connected() ?? null });
+  controlKey, airoomWeb: process.env.AIROOM_WEB || "/opt/ai-room/web", tunnelConnected: () => tunnel?.connected() ?? null,
+  // The HTTPS front (Caddy) forwards here; always treated as outside.
+  publicPort: process.env.VIDEO_PILOT_PUBLIC_PORT === "off" ? null : Number(process.env.VIDEO_PILOT_PUBLIC_PORT || 5101) });
 await http.start();
 library.drain();
 library.warmQualities();

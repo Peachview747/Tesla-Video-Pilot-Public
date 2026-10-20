@@ -1,0 +1,14 @@
+[Unit]
+Description=Public HTTPS front for the Video Pilot portal (Caddy, runs as nobody)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/pi-public/Caddyfile
+ConditionPathExists=/opt/pi-public/certs/fullchain.pem
+
+[Service]
+ExecStart=/usr/bin/sudo -n -u nobody /usr/bin/env XDG_DATA_HOME=/opt/pi-public/caddy-data XDG_CONFIG_HOME=/opt/pi-public/caddy-config /opt/pi-public/bin/caddy run --config /opt/pi-public/Caddyfile --adapter caddyfile
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

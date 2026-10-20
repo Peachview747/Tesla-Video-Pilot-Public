@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { PinLock, deviceName } from "../src/pin-lock.mjs";
+import { PinLock, deviceName, visitorKey } from "../src/pin-lock.mjs";
 import { createVideoPilotServer } from "../src/server.mjs";
 
 const TESLA = "Mozilla/5.0 (X11; GNU/Linux) AppleWebKit/537.36 (KHTML, like Gecko) Chromium/136.0 Chrome/136.0 Safari/537.36 Tesla/2026.32";
@@ -111,4 +111,49 @@ test("an unlock lasts one visit: 30 idle minutes or 12 hours at most", async () 
   const second = (await pin.unlock("849590", TESLA)).key;
   clock.now += 31 * 60_000; assert.equal(pin.allows(second), false, "30 minutes idle ends it");
   assert.equal(pin.state.devices.length, 0, "expired unlocks are forgotten");
+});
+
+test("a visitor who guesses wrong is locked out alone; the owner elsewhere still gets in", async () => {
+  const { pin } = await lock();
+  for (let i = 0; i < 4; i++) await assert.rejects(pin.unlock("000000", TESLA, "198.51.100.7"), { status: 403 });
+  await assert.rejects(pin.unlock("000000", TESLA, "198.51.100.7"), { status: 429 });
+  await assert.rejects(pin.unlock("849590", TESLA, "198.51.100.7"), { status: 429 }, "even the right PIN is refused to a locked visitor");
+  assert.ok((await pin.unlock("849590", TESLA, "203.0.113.5")).key, "another visitor is unaffected");
+});
+
+test("many visitors together trip the shared backstop, which then lets up", async () => {
+  const { pin, clock } = await lock();
+  for (let i = 0; i < 29; i++) await assert.rejects(pin.unlock("000000", TESLA, `10.0.0.${i}`), { status: 403 });
+  await assert.rejects(pin.unlock("000000", TESLA, "10.0.1.1"), { status: 429 });
+  await assert.rejects(pin.unlock("849590", TESLA, "10.0.2.2"), { status: 429 });
+  clock.now += 61_000;
+  assert.ok((await pin.unlock("849590", TESLA, "10.0.2.2")).key);
+});
+
+test("visitors are IPv4 addresses or whole IPv6 /64s", () => {
+  assert.equal(visitorKey("203.0.113.9"), "203.0.113.9");
+  assert.equal(visitorKey("::ffff:203.0.113.9"), "203.0.113.9");
+  assert.equal(visitorKey("2603:8000:1234:5678:aaaa:bbbb:cccc:dddd"), "2603:8000:1234:5678::/64");
+  assert.equal(visitorKey("2603:8000:1234:5678::1"), visitorKey("2603:8000:1234:5678:ffff::2"));
+  assert.equal(visitorKey("2603:8000::1"), "2603:8000:0000:0000::/64");
+  assert.equal(visitorKey(""), "unknown");
+});
+
+test("the public port is always locked, whatever headers say, and counts visitors by forwarded address", async t => {
+  const { pin } = await lock();
+  const library = { queueView: () => ({ items: [] }) };
+  const root = path.resolve(import.meta.dirname, "../..");
+  const host = createVideoPilotServer({ library, webRoot: path.join(root, "ios/Web"), port: 0, publicPort: 0, pinLock: pin });
+  await host.start(); t.after(() => host.stop());
+  const local = `http://127.0.0.1:${host.server.address().port}`, outside = `http://127.0.0.1:${host.publicServer.address().port}`;
+  assert.equal((await fetch(local + "/api/queue")).status, 200, "the Pi itself is not locked");
+  assert.equal((await fetch(outside + "/api/queue")).status, 401, "the public port needs no marker header to be locked");
+  assert.equal((await fetch(outside + "/")).status, 200, "the page itself loads, then asks for the PIN");
+  const guess = (ip, value) => fetch(outside + "/api/pin/unlock", { method: "POST",
+    headers: { "x-forwarded-for": ip, "user-agent": TESLA }, body: JSON.stringify({ pin: value }) });
+  for (let i = 0; i < 4; i++) assert.equal((await guess("198.51.100.7", "000000")).status, 403);
+  assert.equal((await guess("198.51.100.7", "000000")).status, 429);
+  assert.equal((await guess("198.51.100.7", "849590")).status, 429);
+  const { key } = await (await guess("203.0.113.5", "849590")).json();
+  assert.equal((await fetch(outside + "/api/queue", { headers: { "x-vp-device": key } })).status, 200, "another visitor gets in");
 });
