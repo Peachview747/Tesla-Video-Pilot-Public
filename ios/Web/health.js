@@ -60,7 +60,7 @@ function render(data) {
     ...(n?.links || []).map(l => row(l.state === 'connected' ? 'good' : 'bad', l.type === 'ethernet' ? 'Ethernet' : 'Wi-Fi', `${l.state}${l.connection ? ` · ${l.connection}` : ''}`)),
     ...(n ? [row(n.internet ? 'good' : 'bad', 'Internet', n.internet ? `Reachable · ${n.pingMs ?? '—'} ms` : 'Not reachable')] : []),
     row(vp.tunnel ? 'good' : vp.tunnel === false ? 'bad' : '', 'Video Pilot car link', vp.tunnel ? 'Connected to Cloudflare' : 'Disconnected'),
-    ...(n ? [row(n.aiRoomRelay ? 'good' : 'bad', 'AI Room site link', n.aiRoomRelay ? 'Connected to Cloudflare' : 'Disconnected')] : []));
+    ...(n && n.aiRoomRelay !== null ? [row(n.aiRoomRelay ? 'good' : 'bad', 'AI Room site link', n.aiRoomRelay ? 'Connected to Cloudflare' : 'Disconnected')] : []));
   const stage = {downloading: 'Downloading', processing: 'Converting'}[vp.preparationStage];
   const prep = row(vp.busy ? 'warn' : 'good', 'Video Pilot', vp.busy
     ? `${stage || 'Working'}${Number.isFinite(vp.preparationProgress) ? ` · ${Math.round(vp.preparationProgress * 100)}%` : ''}${vp.queuedCount ? ` · ${vp.queuedCount} waiting` : ''}`
