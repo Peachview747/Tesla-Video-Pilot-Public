@@ -522,3 +522,6 @@ html.live-open, html.live-open body { overflow: hidden; }
 .status-chip.good { color: #2f9e64; } .status-chip.warn { color: #c98a12; } .status-chip.bad { color: #d4472b; }
 .rail [data-apps-menu], .rail .apps-button { align-self: center; }
 .live-bar .apps-button { min-height: 40px; }
+
+/* Drawn backspace key (no ⌫ in the Tesla font). */
+.key-icon { width: 1.4em; height: 1.4em; vertical-align: -0.3em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
