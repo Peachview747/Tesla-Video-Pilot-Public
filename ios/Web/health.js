@@ -105,6 +105,7 @@ async function gateCall(path, body, question) {
   if (path.endsWith('/enroll')) loadGate();
 }
 function renderGate(g) {
+  gateLast = g;
   const button = (label, onclick, cls = '') => { const b = el('button', cls, label); b.type = 'button'; b.onclick = onclick; return b; };
   const open = g.windowUntil > Date.now();
   const here = g.here || gateHere;
@@ -124,10 +125,21 @@ function renderGate(g) {
   }
   if (g.enforced) actions.push(open ? button('Stop adding', () => gateCall('/api/gate/close', {}))
     : button('Let a new browser in (10 min)', () => gateCall('/api/gate/open', {minutes: 10})));
+  actions.push(button(g.recoveryMade ? 'Make a new recovery key' : 'Make a recovery key', makeRecoveryKey));
   $('gate-actions').replaceChildren(...actions);
+  $('gate').append(row(g.recoveryMade ? 'good' : 'warn', 'Recovery key', g.recoveryMade
+    ? `Made ${new Date(g.recoveryMade).toLocaleDateString()}. Open /recover/<key> on any browser to let it in.`
+    : 'None yet. Make one and write it down, in case you lose every trusted browser.'));
+  if (shownKey) { const box = el('pre', 'recovery-key', shownKey); $('gate').append(box); }
   if (here === 'relay') $('gate-note').textContent += ' To add a browser, open the portal at its own web address on that browser.';
 }
-let gateHere = '';
+let gateHere = '', shownKey = '';
+async function makeRecoveryKey() {
+  if (gateLast?.recoveryMade && !confirm('Make a new recovery key? The old one stops working.')) return;
+  try { const result = await call('/api/gate/recovery', {}); shownKey = `Your recovery key (shown once, write it down):\n${result.key}`; renderGate(result); }
+  catch (error) { $('gate-note').textContent = error.message; }
+}
+let gateLast = null;
 async function loadGate() { try { renderGate(await call('/api/gate')); } catch { $('gate-note').textContent = 'Trusted browsers are not set up on this Pi.'; } }
 loadActions(); refresh(); loadGate();
 setInterval(() => { if (!document.hidden) refresh(); }, 5000);

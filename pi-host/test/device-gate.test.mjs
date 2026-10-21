@@ -77,3 +77,29 @@ test("on the public port an untrusted browser gets nothing; enrolling needs the 
   await fetch(local + "/api/gate/open", { method: "POST", body: JSON.stringify({ minutes: 10 }) });
   assert.equal((await fetch(outside + "/")).status, 200, "an open window lets a new browser reach the PIN");
 });
+
+test("a recovery key opens the door once from any browser, then a new key replaces it", async t => {
+  const dataDir = await dir();
+  const pin = await new PinLock({ dataDir }).load();
+  await pin.configure({ pin: "135790", question: "q?", answer: "a" });
+  const gate = await new DeviceGate({ dataDir }).load();
+  await gate.enroll("iPhone", "");
+  const key = await gate.makeRecoveryKey();
+  assert.match(key, /^[A-HJ-NP-Z2-9]{5}(-[A-HJ-NP-Z2-9]{5}){3}$/);
+  assert.doesNotMatch(await readFile(path.join(dataDir, "device-gate.json"), "utf8"), new RegExp(key.replace(/-/g, "")));
+  const library = { queueView: () => ({ items: [] }) };
+  const root = path.resolve(import.meta.dirname, "../..");
+  const host = createVideoPilotServer({ library, webRoot: path.join(root, "ios/Web"), port: 0, publicPort: 0, pinLock: pin, gate });
+  await host.start(); t.after(() => host.stop());
+  const outside = `http://127.0.0.1:${host.publicServer.address().port}`;
+  assert.equal((await fetch(outside + "/")).headers.get("x-gate"), "deny");
+  assert.equal((await fetch(outside + "/recover/AAAAA-BBBBB-CCCCC-DDDDD")).headers.get("x-gate"), "deny", "a wrong key gets nothing");
+  const page = await fetch(outside + `/recover/${key.toLowerCase()}`);
+  assert.equal(page.status, 200, "the key works in any case");
+  const next = (await page.text()).match(/<code>([A-Z0-9-]+)<\/code>/)[1];
+  assert.notEqual(next, key);
+  assert.equal((await fetch(outside + "/")).status, 200, "the door is open for a new browser");
+  assert.equal((await fetch(outside + `/recover/${key}`)).headers.get("x-gate"), "deny", "the used key is spent");
+  await gate.closeWindow();
+  assert.equal((await fetch(outside + `/recover/${next}`)).status, 200, "the new key works");
+});

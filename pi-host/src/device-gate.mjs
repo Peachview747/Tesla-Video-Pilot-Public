@@ -14,6 +14,14 @@ export const COOKIE = "vp_pass";
 const COOKIE_MAX_AGE = 400 * 24 * 60 * 60;   // browsers cap cookies at 400 days
 const WINDOW_MAX_MS = 30 * 60_000, SEEN_SAVE_MS = 10 * 60_000, REFRESH_MS = 7 * 24 * 60 * 60_000;
 const hash = pass => createHash("sha256").update(String(pass)).digest("hex");
+// Recovery keys: 20 letters and digits in groups of five, easy to write down
+// (no 0/O or 1/I). About 100 bits, so they cannot be guessed.
+const KEY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const normalizeKey = key => String(key || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+function newKey() {
+  const bytes = randomBytes(20);
+  return [...bytes].map(byte => KEY_ALPHABET[byte % 32]).join("").match(/.{5}/g).join("-");
+}
 
 export function readPass(cookieHeader = "") {
   for (const part of String(cookieHeader).split(";")) {
@@ -28,7 +36,7 @@ export class DeviceGate {
   constructor({ dataDir, file = "device-gate.json", now = () => Date.now() } = {}) {
     this.file = path.join(dataDir, file);
     this.now = now;
-    this.state = { enforced: false, devices: [], windowUntil: 0 };
+    this.state = { enforced: false, devices: [], windowUntil: 0, recoveryHash: "", recoveryMade: 0 };
     this.lastSeenSave = 0;
   }
   async load() {
@@ -82,6 +90,22 @@ export class DeviceGate {
     await this.save();
     return { pass, device: view(device) };
   }
+  // A new recovery key replaces the old one; it is shown once and only its
+  // hash is kept.
+  async makeRecoveryKey() {
+    const key = newKey();
+    this.state.recoveryHash = hash(normalizeKey(key)); this.state.recoveryMade = this.now();
+    await this.save();
+    return key;
+  }
+  // The right key opens the window for a new browser and is used up; a fresh
+  // key is made and returned so the owner always holds one.
+  async recover(key) {
+    const given = normalizeKey(key);
+    if (!this.state.recoveryHash || given.length !== 20 || hash(given) !== this.state.recoveryHash) return null;
+    this.state.windowUntil = this.now() + 10 * 60_000;
+    return { next: await this.makeRecoveryKey(), windowUntil: this.state.windowUntil };
+  }
   async remove(id) {
     const before = this.state.devices.length;
     this.state.devices = this.state.devices.filter(device => device.id !== id);
@@ -95,6 +119,7 @@ export class DeviceGate {
   }
   status(current = null) {
     return { enforced: this.state.enforced, windowUntil: this.windowOpen() ? this.state.windowUntil : 0,
+      recoveryMade: this.state.recoveryHash ? this.state.recoveryMade : 0,
       devices: this.state.devices.map(device => ({ ...view(device), current: current?.id === device.id })) };
   }
 }

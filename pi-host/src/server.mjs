@@ -38,6 +38,20 @@ const ROOM_ACTIONS = new Set(["state", "export", "send", "new", "refresh", "logi
 const PAGE_HEADERS = { "x-content-type-options": "nosniff", "referrer-policy": "no-referrer" };
 const PAGE_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob: data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'";
 
+// Shown after a recovery key is used: what to do next, and the new key.
+function recoveredPage({ next, windowUntil }) {
+  const minutes = Math.round((windowUntil - Date.now()) / 60000);
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Recovery</title>
+<style>body{font:18px/1.5 system-ui,sans-serif;background:#111517;color:#e8ecee;max-width:560px;margin:0 auto;padding:24px 16px}
+code{display:block;font:700 26px ui-monospace,monospace;letter-spacing:.06em;background:#1d2427;padding:14px;border-radius:10px;margin:10px 0;word-break:break-all}
+a{display:inline-block;margin-top:16px;padding:12px 20px;border-radius:12px;background:#4cc38a;color:#0b1210;font-weight:700;text-decoration:none}</style></head>
+<body><h1>You're let in for ${minutes} minutes</h1>
+<p>Open the portal, enter the PIN, then go to Pi Health → Trusted browsers → <b>Trust this browser</b>.</p>
+<p>That recovery key is now used up. <b>Your new recovery key</b> (write it down, it is shown only once):</p>
+<code>${next}</code>
+<a href="/">Open the portal</a></body></html>`;
+}
+
 export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5001, host = "127.0.0.1", version = "Pi",
   signinURL = "http://127.0.0.1:5002", liveURL = "http://127.0.0.1:5003", pinLock = null,
   controlURL = "http://127.0.0.1:5020", controlKey = null, airoomWeb = null, tunnelConnected = () => null,
@@ -60,6 +74,14 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
       const onPublicPort = publicActual !== null && req.socket.localPort === publicActual;
       // Trusted browsers: on the public port, a browser without a known pass
       // gets nothing at all (the HTTPS front drops the connection on x-gate).
+      // A recovery key (written down by the owner) opens the door for a new
+      // browser from anywhere; a wrong one gets no answer like any stranger.
+      const recovery = onPublicPort && gate && req.method === "GET" && url.pathname.match(/^\/recover\/([A-Za-z0-9-]{20,40})$/);
+      if (recovery) {
+        const result = await gate.recover(recovery[1]);
+        if (!result) return send(res, 404, "", "text/plain", { "x-gate": "deny" });
+        return send(res, 200, recoveredPage(result), "text/html; charset=utf-8", { ...PAGE_HEADERS, "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'", "referrer-policy": "no-referrer" });
+      }
       const pass = onPublicPort && gate ? gate.check(req.headers.cookie) : null;
       if (pass && !pass.allowed) return send(res, 404, "", "text/plain", { "x-gate": "deny" });
       if (pass?.refresh) res.setHeader("set-cookie", passCookie(pass.refresh));
@@ -109,7 +131,7 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
       if (pinLock && outside && !pinLock.allows(deviceKey))
         return send(res, 401, { error: "Enter the PIN.", pinRequired: true });
       // Trusted browsers, managed from Pi Health (behind the PIN like the rest).
-      const gateRoute = url.pathname.match(/^\/api\/gate(?:\/(open|close|enroll|remove|rename))?$/);
+      const gateRoute = url.pathname.match(/^\/api\/gate(?:\/(open|close|enroll|remove|rename|recovery))?$/);
       if (gateRoute && gate) {
         const name = gateRoute[1];
         if (!name) return send(res, 200, { ...gate.status(pass?.device), here: onPublicPort ? (pass?.device ? "trusted" : "new") : outside ? "relay" : "pi" });
@@ -118,6 +140,7 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
         try {
           if (name === "open") return send(res, 200, await gate.openWindow(body.minutes));
           if (name === "close") return send(res, 200, await gate.closeWindow());
+          if (name === "recovery") return send(res, 200, { key: await gate.makeRecoveryKey(), ...gate.status(pass?.device) });
           if (name === "remove") return send(res, 200, await gate.remove(String(body.id || "")));
           if (name === "rename") return send(res, 200, await gate.rename(String(body.id || ""), body.name));
           if (!onPublicPort) return send(res, 400, { error: "Open the portal at its own web address (not the Cloudflare one) on the browser you want to add." });

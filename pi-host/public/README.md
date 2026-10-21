@@ -31,4 +31,4 @@ tap "Let a new browser in (10 min)" on a trusted one (or via the Cloudflare
 address, or `curl -X POST -d '{"minutes":10}' 127.0.0.1:5001/api/gate/open` on
 the Pi), then open the public address on the new browser, enter the PIN and
 trust it. State: `/var/lib/video-pilot/device-gate.json` (hashes only).
-Lost every device? Open a window from the Pi as above.
+Lost every device? Open /recover/<recovery key> on any browser (make the key in Pi Health; each key works once and the page shows the next one), or open a window from the Pi as above.
