@@ -9,9 +9,11 @@ import { DeviceGate } from "./device-gate.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../..");
+// The car reaches the portal directly over HTTPS (Caddy -> the public port).
+// The old Cloudflare relay tunnel (retired 2026-10-20) runs only if a tunnel
+// key is configured again with video-pilot-configure.
 const publicURL = process.env.VIDEO_PILOT_URL || "https://tv.jch76.workers.dev";
 const secret = process.env.VIDEO_PILOT_SECRET;
-if (!secret) throw new Error("VIDEO_PILOT_SECRET is required. Run: sudo video-pilot-configure");
 const port = Number(process.env.VIDEO_PILOT_PORT || 5001);
 const dataDir = process.env.VIDEO_PILOT_DATA || "/var/lib/video-pilot";
 const library = await new Library({
@@ -31,8 +33,8 @@ const http = createVideoPilotServer({ library, webRoot: path.resolve(root, "ios/
 await http.start();
 library.drain();
 library.warmQualities();
-tunnel = new PiTunnel({ publicURL, secret, localURL: `http://127.0.0.1:${port}` });
-const shutdown = async () => { tunnel.stop(); await http.stop(); process.exit(0); };
+if (secret) tunnel = new PiTunnel({ publicURL, secret, localURL: `http://127.0.0.1:${port}` });
+const shutdown = async () => { tunnel?.stop(); await http.stop(); process.exit(0); };
 process.on("SIGTERM", shutdown); process.on("SIGINT", shutdown);
-console.log(`Video Pilot Pi host listening on 127.0.0.1:${port}`);
-await tunnel.run();
+console.log(`Video Pilot Pi host listening on 127.0.0.1:${port}${tunnel ? "" : " (no Cloudflare tunnel)"}`);
+if (tunnel) await tunnel.run();

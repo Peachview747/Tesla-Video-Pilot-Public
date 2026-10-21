@@ -59,7 +59,7 @@ function render(data) {
   $('network').replaceChildren(
     ...(n?.links || []).map(l => row(l.state === 'connected' ? 'good' : 'bad', l.type === 'ethernet' ? 'Ethernet' : 'Wi-Fi', `${l.state}${l.connection ? ` · ${l.connection}` : ''}`)),
     ...(n ? [row(n.internet ? 'good' : 'bad', 'Internet', n.internet ? `Reachable · ${n.pingMs ?? '—'} ms` : 'Not reachable')] : []),
-    row(vp.tunnel ? 'good' : vp.tunnel === false ? 'bad' : '', 'Video Pilot car link', vp.tunnel ? 'Connected to Cloudflare' : 'Disconnected'),
+    ...(vp.tunnel === null || vp.tunnel === undefined ? [] : [row(vp.tunnel ? 'good' : 'bad', 'Cloudflare link (old)', vp.tunnel ? 'Connected to Cloudflare' : 'Disconnected')]),
     ...(n && n.aiRoomRelay !== null ? [row(n.aiRoomRelay ? 'good' : 'bad', 'AI Room site link', n.aiRoomRelay ? 'Connected to Cloudflare' : 'Disconnected')] : []));
   const stage = {downloading: 'Downloading', processing: 'Converting'}[vp.preparationStage];
   const prep = row(vp.busy ? 'warn' : 'good', 'Video Pilot', vp.busy
