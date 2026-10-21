@@ -5,13 +5,16 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Video Pilot</title>
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/apps-menu.css">
+  <script src="/apps-menu.js" defer></script>
   <script src="/jsmpeg.min.js" defer></script>
   <script src="/app.js" type="module"></script>
 </head>
 <body>
   <div class="app">
     <nav id="rail" class="rail" aria-label="Video Pilot sections">
-      <div class="rail-brand" aria-hidden="true">VP</div>
+      <button id="to-portal" class="rail-brand" type="button" aria-label="All services" title="All services">VP</button>
+      <span data-apps-menu></span>
       <button class="nav-item active" type="button" data-tab="home-tab" aria-current="page">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 10.5 12 3.8l8.5 6.7V20a1 1 0 0 1-1 1h-5v-6.2h-5V21h-5a1 1 0 0 1-1-1z"/></svg>
         <span>Home</span>
@@ -24,6 +27,10 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v11M7.5 10l4.5 4.5 4.5-4.5M4 19.5h16"/></svg>
         <span>Downloads</span>
         <span id="nav-queue-badge" class="nav-badge" hidden></span>
+      </button>
+      <button class="nav-item" type="button" data-tab="subs-tab">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="6.5" width="17" height="13" rx="2"/><path d="M6 3.5h12M10.5 10v6l5-3z"/></svg>
+        <span>Subscriptions</span>
       </button>
       <button class="nav-item" type="button" data-tab="settings-tab">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2.2"/><circle cx="10" cy="17" r="2.2"/></svg>
@@ -42,8 +49,8 @@
       <section id="connecting-panel" class="connecting">
         <div class="connecting-card">
           <div class="spinner" aria-hidden="true"></div>
-          <h1>Connecting to your iPhone</h1>
-          <p>Open Video Pilot on the iPhone and start hosting. This page reconnects by itself.</p>
+          <h1>Connecting to Raspberry Pi</h1>
+          <p>Make sure Video Pilot is running on the Pi. This page reconnects by itself.</p>
         </div>
       </section>
 
@@ -79,6 +86,7 @@
               <h2 id="search-summary" class="view-title"></h2>
             </div>
             <div id="search-filters" class="chip-row" role="group" aria-label="Search filters"><button type="button" class="chip" data-filter="any" aria-pressed="true">All</button><button type="button" class="chip" data-filter="short" aria-pressed="false">Under 4 min</button><button type="button" class="chip" data-filter="medium" aria-pressed="false">4–20 min</button><button type="button" class="chip" data-filter="long" aria-pressed="false">Over 20 min</button><button type="button" class="chip" data-filter="week" aria-pressed="false">This week</button><button type="button" class="chip" data-filter="newest" aria-pressed="false">Newest</button></div>
+            <div id="search-channels" class="search-channels" hidden></div>
             <div id="results" class="video-grid"></div>
             <div class="load-more-row"><button id="load-more" class="button" type="button" hidden>Load more results</button></div>
           </div>
@@ -86,7 +94,7 @@
           <div id="feed-view" class="feed-view">
             <div id="search-start" class="chip-row start-chips">
               <div id="recent-searches" class="chip-group" hidden></div>
-              <div class="chip-group" aria-label="Popular searches"><span class="chip-label">Try</span><button type="button" class="chip" data-query="trending now">Trending</button><button type="button" class="chip" data-query="music">Music</button><button type="button" class="chip" data-query="latest news">News</button><button type="button" class="chip" data-query="Tesla">Tesla</button></div>
+              
             </div>
             <div class="feed-header">
               <h1 class="page-title">For you</h1>
@@ -122,6 +130,37 @@
         </section>
 
         <!-- LIBRARY -->
+        <section id="subs-tab" class="tab-panel" hidden>
+          <div class="page-header">
+            <div><h1 class="page-title">Subscriptions</h1><p id="subs-status" class="muted"></p></div>
+            <div class="library-toolbar">
+              <span id="subs-filter-wrap" hidden><input id="subs-filter" class="filter-input" type="search" placeholder="Find a channel" aria-label="Find a channel" autocomplete="off" spellcheck="false"></span>
+              <button id="subs-refresh" class="button quiet small" type="button">Refresh</button>
+            </div>
+          </div>
+          <div id="subs-channels" class="subs-directory"></div>
+        </section>
+
+        <section id="signin-tab" class="tab-panel" hidden>
+          <div class="page-header">
+            <div><h1 class="page-title">Sign in to YouTube</h1><p id="signin-status" class="muted" role="status"></p></div>
+            <button id="signin-close" class="button quiet small" type="button">Cancel</button>
+          </div>
+          <div class="signin-type">
+            <input id="signin-text" class="filter-input" type="text" placeholder="Tap a field below, type here, then Send" aria-label="Text to type on the sign-in page" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <button id="signin-hide" class="button quiet small" type="button" aria-pressed="false">Hide</button>
+            <button id="signin-send" class="button small" type="button">Send</button>
+          </div>
+          <div class="button-row signin-keys">
+            <button class="button quiet small" type="button" data-signin-key="BackSpace"><svg class="key-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h12v14H8l-6-7z"/><path d="M11 9l6 6M17 9l-6 6"/></svg> Delete</button>
+            <button class="button quiet small" type="button" data-signin-key="Tab">Tab</button>
+            <button class="button quiet small" type="button" data-signin-key="Return">Enter</button>
+            <button class="button quiet small" type="button" data-signin-scroll="-1">Scroll up</button>
+            <button class="button quiet small" type="button" data-signin-scroll="1">Scroll down</button>
+          </div>
+          <div class="signin-screen"><img id="signin-screen" alt="Google sign-in page on the Pi"></div>
+        </section>
+
         <section id="library-tab" class="tab-panel" hidden>
           <div class="page-header">
             <div><h1 class="page-title">Library</h1><p id="library-count" class="muted"></p></div>
@@ -132,7 +171,7 @@
               <input id="library-filter" class="filter-input" type="search" placeholder="Filter library" aria-label="Filter library" autocomplete="off" spellcheck="false">
             </div>
           </div>
-          <section id="continue-panel" class="row-section" hidden><div class="section-header"><h2>Continue watching</h2></div><div id="continue-list" class="row-scroller"></div></section>
+          <section id="continue-panel" class="row-section" hidden><div class="section-header"><h2>Continue watching</h2><div id="continue-tools" class="section-tools"></div></div><div id="continue-list" class="row-scroller"></div></section>
           <div id="library" class="library-list"></div>
         </section>
 
@@ -162,16 +201,16 @@
               <h2>Playback</h2>
               <label class="setting toggle"><span class="setting-label"><strong>Resume where I left off</strong><small>Start videos at the last watched position.</small></span><input id="pref-resume" type="checkbox" checked><span class="switch" aria-hidden="true"></span></label>
               <label class="setting toggle"><span class="setting-label"><strong>Open player full screen</strong><small>Fill the screen as soon as a video starts.</small></span><input id="pref-fullscreen" type="checkbox"><span class="switch" aria-hidden="true"></span></label>
-              <label class="setting toggle"><span class="setting-label"><strong>Audio boost</strong><small>Gentle 115% volume with a limiter for quiet videos.</small></span><input id="pref-boost" type="checkbox"><span class="switch" aria-hidden="true"></span></label>
+              <label class="setting toggle"><span class="setting-label"><strong>Audio boost</strong><small>Louder, evened-out sound for quiet videos and road noise. Peaks are limited so it never distorts.</small></span><input id="pref-boost" type="checkbox"><span class="switch" aria-hidden="true"></span></label>
               <div class="setting"><div class="setting-label"><strong>Read-ahead buffer</strong><small>More buffer rides through weak cellular coverage.</small></div>
                 <div class="segmented" role="radiogroup" aria-label="Read-ahead buffer" id="buffer-choice"><button type="button" data-buffer="normal" aria-pressed="true">12 s</button><button type="button" data-buffer="large" aria-pressed="false">30 s</button></div></div>
-              <div id="quality-setting" class="setting" hidden><div class="setting-label"><strong>Download quality</strong><small>Applies to new downloads. 1080p uses about twice the data.</small></div>
-                <div class="segmented" role="radiogroup" aria-label="Download quality" id="quality-choice"><button type="button" data-quality="720p" aria-pressed="false">720p</button><button type="button" data-quality="1080p" aria-pressed="false">1080p</button></div></div>
+              <div id="quality-setting" class="setting" hidden><div class="setting-label"><strong>Download quality</strong><small>Maximum for new downloads. Change playback quality in the player to save hotspot data.</small></div>
+                <div class="segmented" role="radiogroup" aria-label="Download quality" id="quality-choice"><button type="button" data-quality="360p" aria-pressed="false">360p</button><button type="button" data-quality="540p" aria-pressed="false">540p</button><button type="button" data-quality="720p" aria-pressed="false">720p</button><button type="button" data-quality="1080p" aria-pressed="false">1080p</button></div></div>
             </article>
 
             <article class="settings-card">
               <h2>Data saver</h2>
-              <label class="setting toggle"><span class="setting-label"><strong>Data saver</strong><small>Smaller thumbnails and slower background checks.</small></span><input id="pref-datasaver" type="checkbox"><span class="switch" aria-hidden="true"></span></label>
+              <label class="setting toggle"><span class="setting-label"><strong>Data saver</strong><small>Defaults playback to 360p, with smaller thumbnails and slower background checks.</small></span><input id="pref-datasaver" type="checkbox"><span class="switch" aria-hidden="true"></span></label>
               <div class="stat-list">
                 <div><span>Status checks</span><strong id="stat-poll">every 2 s</strong></div>
                 <div><span>Thumbnails</span><strong id="stat-thumbs">Standard</strong></div>
@@ -204,8 +243,8 @@
               <div class="stat-list">
                 <div><span>Tunnel</span><strong id="conn-tunnel">—</strong></div>
                 <div><span>Response time</span><strong id="conn-rtt">—</strong></div>
-                <div><span>iPhone receiving</span><strong id="conn-down">—</strong></div>
-                <div><span>iPhone sending</span><strong id="conn-up">—</strong></div>
+                <div><span>Pi receiving</span><strong id="conn-down">—</strong></div>
+                <div><span>Pi sending</span><strong id="conn-up">—</strong></div>
                 <div><span>Active streams</span><strong id="conn-streams">0</strong></div>
                 <div><span>YouTube account</span><strong id="settings-youtube">—</strong></div>
                 <div><span>Host authorization</span><strong id="settings-auth">—</strong></div>
@@ -214,12 +253,36 @@
             </article>
 
             <article class="settings-card">
+              <h2>YouTube account</h2>
+              <div class="stat-list">
+                <div><span>Status</span><strong id="yt-account-status">—</strong></div>
+              </div>
+              <p class="muted small-text">Sign in right here: the Pi opens Google's sign-in page and shows it on this screen. Your account is used for downloads and Subscriptions and stays on the Pi.</p>
+              <div class="button-row"><button id="yt-signin" class="button" type="button">Sign in to YouTube</button><button id="yt-signout" class="button quiet danger" type="button" hidden>Sign out on the Pi</button></div>
+            </article>
+
+            <article class="settings-card">
               <h2>About</h2>
               <div class="stat-list">
                 <div><span>Version</span><strong id="settings-version">—</strong></div>
                 <div><span>Search</span><strong id="settings-search">—</strong></div>
+                <div><span>Screen</span><strong id="settings-screen">—</strong></div>
+                <div><span>Audio</span><strong id="settings-audio">—</strong></div>
               </div>
-              <p class="muted small-text">Connect or disconnect Google in Video Pilot → Settings on the iPhone. Google tokens never reach the car.</p>
+            </article>
+            <article class="settings-card">
+              <h2>PIN and devices</h2>
+              <p class="muted small-text">Browsers that entered the PIN skip it. Seeing or changing this list needs the PIN. A new PIN signs out every other device.</p>
+              <div class="pin-manage">
+                <input id="devices-pin" class="filter-input" type="password" inputmode="numeric" placeholder="PIN" aria-label="Current PIN" autocomplete="off">
+                <button id="devices-show" class="button quiet" type="button">Show devices</button>
+              </div>
+              <div id="devices-list" class="devices-list"></div>
+              <div class="pin-manage">
+                <input id="pin-change-new" class="filter-input" type="password" inputmode="numeric" placeholder="New PIN" aria-label="New PIN" autocomplete="off">
+                <button id="pin-change" class="button quiet" type="button">Change PIN</button>
+              </div>
+              <p id="devices-status" class="muted small-text" role="status"></p>
             </article>
           </div>
             <article class="settings-card diagnostics-card">
@@ -269,11 +332,92 @@
           <button id="pause" class="primary" type="button">Pause</button>
           <button id="forward10" type="button">+10 s</button>
           <span class="controls-spacer"></span>
+          <label class="playback-quality-label"><span class="quality-word">Quality</span> <select id="playback-quality" aria-label="Playback quality"><option value="auto">Default</option><option value="360">360p · Save data</option><option value="540">540p</option><option value="720">720p HD</option><option value="1080">1080p HD</option></select></label>
           <button id="mute" type="button">Mute</button>
-          <button id="audio-boost" type="button" aria-pressed="false" title="Enable a gentle 115% audio boost">Audio</button>
+          <button id="audio-boost" type="button" aria-pressed="false" title="Boost quiet audio">Audio</button>
+          <button id="fit-mode" type="button" title="Fit, Fill or Stretch the picture">Fit</button>
           <button id="fullscreen" type="button">Full screen</button>
         </div>
+        <p id="quality-status" class="quality-status" role="status" aria-live="polite"></p>
         <button id="exit-fullscreen" type="button" hidden>Exit full screen</button>
+        <div id="player-drop" class="player-drop" role="alertdialog" aria-labelledby="drop-title" hidden>
+          <strong id="drop-title">Connection to the Pi dropped</strong>
+          <span id="drop-time"></span>
+          <button id="drop-retry" type="button">Retry</button>
+        </div>
+      </div>
+    </div>
+  </section>
+  <!-- PORTAL: pick a service. YouTube is the original Video Pilot app. -->
+  <section id="portal" class="portal" aria-labelledby="portal-title" hidden>
+    <h1 id="portal-title">Video Pilot</h1>
+    <div class="portal-tiles">
+      <button id="portal-youtube" class="portal-tile youtube" type="button"><span class="yt-mark" aria-hidden="true"></span><span>YouTube</span></button>
+      <button class="portal-tile netflix" type="button" data-live-service="netflix"><span>NETFLIX</span></button>
+      <button class="portal-tile hulu" type="button" data-live-service="hulu"><span>hulu</span></button>
+      <a class="portal-tile claude" href="/airoom/" data-portal-page><span class="claude-mark" aria-hidden="true">C</span><span>Claude</span></a>
+      <a class="portal-tile health" href="/health/" data-portal-page><span>Pi Health</span></a>
+      <button class="portal-tile textnow" type="button" data-live-service="textnow"><span>TextNow</span></button>
+    </div>
+    <div id="portal-status" class="portal-status" aria-live="polite"></div>
+    <p class="portal-note">Netflix and Hulu play in a browser on the Pi and stream here live. Sign in once; the Pi remembers it.</p>
+  </section>
+
+  <!-- PIN LOCK: shown over whichever service is open until the PIN is entered. -->
+  <section id="pin-lock" class="pin-overlay" role="dialog" aria-modal="true" aria-labelledby="pin-title" hidden>
+    <div class="pin-card">
+      <div id="pin-enter">
+        <h2 id="pin-title">Enter PIN</h2>
+        <div id="pin-dots" class="pin-dots" aria-hidden="true"></div>
+        <p id="pin-message" class="pin-message" role="status"></p>
+        <div class="pin-pad">
+          <button type="button" data-pin-digit="1">1</button><button type="button" data-pin-digit="2">2</button><button type="button" data-pin-digit="3">3</button>
+          <button type="button" data-pin-digit="4">4</button><button type="button" data-pin-digit="5">5</button><button type="button" data-pin-digit="6">6</button>
+          <button type="button" data-pin-digit="7">7</button><button type="button" data-pin-digit="8">8</button><button type="button" data-pin-digit="9">9</button>
+          <button id="pin-clear" type="button" aria-label="Delete"><svg class="key-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h12v14H8l-6-7z"/><path d="M11 9l6 6M17 9l-6 6"/></svg></button><button type="button" data-pin-digit="0">0</button><button id="pin-unlock" class="pin-go" type="button">Unlock</button>
+        </div>
+        <div class="pin-links"><button id="pin-cancel" class="link-button" type="button">Back to services</button><button id="pin-forgot" class="link-button" type="button">Forgot PIN?</button></div>
+      </div>
+      <div id="pin-reset" hidden>
+        <h2>Reset PIN</h2>
+        <p id="pin-question" class="pin-question"></p>
+        <input id="pin-answer" class="filter-input" type="text" placeholder="Answer" aria-label="Answer to the reset question" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <input id="pin-new" class="filter-input" type="password" inputmode="numeric" placeholder="New PIN, 4 to 8 digits" aria-label="New PIN" autocomplete="off">
+        <p id="pin-reset-message" class="pin-message" role="status"></p>
+        <div class="button-row"><button id="pin-reset-back" class="button quiet" type="button">Back</button><button id="pin-reset-submit" class="button" type="button">Reset PIN</button></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- LIVE (Netflix / Hulu on the Pi) -->
+  <section id="live-section" class="live-overlay" aria-modal="true" aria-labelledby="live-title" role="dialog" hidden>
+    <div class="live-bar">
+      <button id="live-close" class="back-button" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>Close</span></button>
+      <span data-apps-menu></span>
+      <h2 id="live-title"></h2>
+      <span id="live-status" class="playback-status" role="status"></span>
+      <span class="controls-spacer"></span>
+      <button id="live-keyboard" type="button" aria-pressed="false">Type</button>
+      <button type="button" data-live-key="alt+Left">Back</button>
+      <button type="button" data-live-key="space">Play/Pause</button>
+      <button type="button" data-live-scroll="-1">▲</button>
+      <button type="button" data-live-scroll="1">▼</button>
+      <button id="live-mute" type="button">Mute</button>
+      <button id="live-fit" type="button">Fit</button>
+    </div>
+    <div id="live-type" class="live-type" hidden>
+      <input id="live-text" class="filter-input" type="text" placeholder="Tap a field on the screen, type here, then Send" aria-label="Text to type on the Pi" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button id="live-hide" type="button" aria-pressed="false">Hide</button>
+      <button type="button" data-live-key="BackSpace" aria-label="Delete"><svg class="key-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h12v14H8l-6-7z"/><path d="M11 9l6 6M17 9l-6 6"/></svg></button>
+      <button type="button" data-live-key="Tab">Tab</button>
+      <button type="button" data-live-key="Escape">Esc</button>
+      <button id="live-send" class="primary" type="button">Send</button>
+    </div>
+    <div class="live-stage">
+      <canvas id="live-screen" width="1280" height="720" aria-label="Live picture from the Pi"></canvas>
+      <div id="live-drop" class="player-drop" role="alertdialog" aria-labelledby="live-drop-title" hidden>
+        <strong id="live-drop-title">The live picture stopped</strong>
+        <button id="live-retry" type="button">Reconnect</button>
       </div>
     </div>
   </section>

@@ -82,14 +82,13 @@ test("rejects an incorrect key and exposes an authenticated setup check", async 
   assert.deepEqual(await valid.json(), { protocol: "mk8-relay-v1", configured: true, connected: false });
 });
 
-test("keeps laptop routing and target updates when the phone is absent", async t => {
+test("shows Raspberry Pi guidance when the host is absent", async t => {
   const f = await fixture(t);
-  assert.equal((await f.fetch("/")).status, 503);
-  assert.equal((await f.fetch("/__set", { method: "POST", headers: { "x-secret": "wrong" }, body: "https://example.trycloudflare.com" })).status, 403);
-  assert.equal((await f.fetch("/__set", { method: "POST", headers: { "x-secret": SECRET }, body: "https://example.trycloudflare.com" })).status, 200);
-  const response = await f.fetch("/api/library");
-  assert.equal(await response.text(), "laptop response");
-  assert.equal(f.upstream.at(-1), "https://example.trycloudflare.com/api/library");
+  const response = await f.fetch("/");
+  assert.equal(response.status, 503);
+  assert.match(await response.text(), /Raspberry Pi/);
+  assert.equal((await f.fetch("/__set", { method: "POST" })).status, 503);
+  assert.deepEqual(f.upstream, []);
 });
 
 test("streams exact binary bytes through the real Worker runtime", async t => {
@@ -201,9 +200,8 @@ test("multiplexes two streams without mixing payloads", async t => {
   assert.equal((await after.arrayBuffer()).byteLength, 100000);
 });
 
-test("disconnect terminates active streams and falls back to the laptop for new requests", async t => {
+test("disconnect terminates active streams and shows the offline page for new requests", async t => {
   const f = await fixture(t);
-  await f.fetch("/__set", { method: "POST", headers: { "x-secret": SECRET }, body: "https://example.trycloudflare.com" });
   const { socket } = await f.connect();
   phone(socket, () => ({ body: Buffer.alloc(100000, 3), holdAfter: 1 }));
   const active = await f.fetch("/video");
@@ -215,7 +213,9 @@ test("disconnect terminates active streams and falls back to the laptop for new 
   try { for (;;) { const value = await reader.read(); if (value.done) break; received += value.value.length; } } catch {}
   assert.ok(received < 100000, "a disconnected stream must not appear complete");
   assert.equal((await (await f.fetch("/__iphone/status")).json()).connected, false);
-  assert.equal(await (await f.fetch("/")).text(), "laptop response");
+  const offline = await f.fetch("/");
+  assert.equal(offline.status, 503);
+  assert.match(await offline.text(), /Raspberry Pi/);
 });
 
 test("bounds request bodies and active requests, and replaces a stale phone cleanly", async t => {

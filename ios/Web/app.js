@@ -1,24 +1,29 @@
-import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause} from './http-source.js';
+import {JSMpegHttpSource, JSMpegLiveSource, DEVICE_KEY, deviceHeaders, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause} from './http-source.js';
 import {DiagnosticsJournal, LiveStats} from './diagnostics.js';
 const $ = id => document.getElementById(id);
 let player = null, current = null, currentOffset = 0, seekTimer = null;
 let fullscreenFallback = false;
 let playback = null;
 let refreshing = false;
+let portalStatusAt = 0; // the portal's live status, refreshed every 10 s by the heartbeat
 let seekGeneration = 0;
 let seekChain = Promise.resolve();
+let playbackQuality = 'auto', activeQuality = 0, qualityRequestSeq = 0;
+try { const saved = globalThis.localStorage?.getItem('vp-playback-quality'); if (['auto','360','540','720','1080'].includes(saved)) playbackQuality = saved; } catch {}
 // Tesla browsers can have a large system volume while the WebAudio output is
 // still quiet. Keep a modest, reversible gain boost in the browser rather
 // than changing the source file (which would require re-preparing videos and
 // could permanently clip loud sources).
 const audioBoostKey = 'video-pilot-audio-boost-v2';
-// Start at unity gain. A previous build enabled a 170%/135% boost by default;
-// that could clip already-hot sources on Tesla's WebAudio path. Audio + is
-// still available as a conservative, reversible 115% option.
-const audioBoostVolume = 1.15;
+// Start at unity gain. Audio boost is a loudness chain, not plain gain: 2x
+// (+6 dB) into a compressor that evens out loud and quiet parts, then a
+// brick-wall limiter so peaks never clip. 115% alone was inaudible once the
+// old limiter squashed it back down. Without WebAudio compressors, fall back
+// to the gentle plain gain that cannot clip much.
+const audioBoostVolume = 2, audioBoostFallbackVolume = 1.15;
 let audioBoost = false;
 let audioMuted = false;
-let audioLimiter = null;
+let audioLimiter = null; // [compressor, limiter] while the boost chain is wired
 try {
   const savedAudioBoost = globalThis.localStorage?.getItem(audioBoostKey);
   if (savedAudioBoost != null) audioBoost = savedAudioBoost === 'on';
@@ -110,7 +115,7 @@ async function api(path, body, timeout = 12000) {
     if (!response) reportDiagnostic('apiError', {responseStatus:0,
       elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - started),
       error:String(error?.message || 'network-failure')});
-    if (!response) throw new Error('The iPhone did not respond. Keep Video Pilot open on the iPhone.');
+    if (!response) throw new Error('The Raspberry Pi did not respond. Make sure Video Pilot is running on the Pi.');
     throw error;
   }
 }
@@ -160,14 +165,16 @@ function reportDiagnostic(event, fields = {}) {
 }
 function timedFetch(url, options = {}, timeout = 4000, readBody = null) {
   const controller = typeof globalThis.AbortController === 'function' ? new AbortController() : null;
-  const request = controller ? {...options, signal:controller.signal} : options;
+  const request = {...options, headers:deviceHeaders(options.headers || {}), ...(controller ? {signal:controller.signal} : {})};
   let timer;
   const deadline = new Promise((_, reject) => {
     timer = setTimeout(() => { controller?.abort?.(); reject(new Error('request-timeout')); }, timeout);
     timer?.unref?.();
   });
-  const operation = fetch(url, request).then(async response =>
-    readBody ? {response, body:await readBody(response)} : response);
+  const operation = fetch(url, request).then(async response => {
+    if (response.status === 401) globalThis.videoPilotPinRequired?.();
+    return readBody ? {response, body:await readBody(response)} : response;
+  });
   return Promise.race([operation, deadline]).finally(() => clearTimeout(timer));
 }
 async function flushDiagnostics(keepalive = false) {
@@ -197,8 +204,9 @@ persistDiagnostics();
 // ---- Navigation ----
 // Persistent left rail (bottom bar on narrow screens). The channel page is a
 // sub-page: the rail keeps highlighting the section it was opened from.
-const NAV_TABS = ['home-tab', 'library-tab', 'queue-tab', 'settings-tab'];
+const NAV_TABS = ['home-tab', 'library-tab', 'queue-tab', 'subs-tab', 'settings-tab'];
 let currentTab = 'home-tab';
+let signinActive = false;
 let navParent = 'home-tab';
 function showTab(id) {
   if (id === 'player-section') return;
@@ -216,7 +224,15 @@ function showTab(id) {
   if (id === 'settings-tab') { renderSettings(); renderLiveDiagnostics(); }
   if (id === 'queue-tab') void refreshQueueApi();
   if (id === 'library-tab') rerenderLibrary();
+  if (id === 'subs-tab') void loadSubscriptions();
+  if (id !== 'signin-tab' && signinActive) void stopSignin();
 }
+// "#library", "#subs" etc. open that tab, so a Tesla bookmark can land on it.
+function hashTab() {
+  const id = String(globalThis.location?.hash || '').slice(1) + '-tab';
+  return NAV_TABS.includes(id) ? id : '';
+}
+globalThis.addEventListener?.('hashchange', () => { if (hashTab() && !$('host-ui').hidden) showTab(hashTab()); });
 function goTo(id) {
   if (id === currentTab && id === 'home-tab' && searchState.query) clearSearch();
   showTab(id); window.scrollTo?.({top:0, behavior:'smooth'});
@@ -260,18 +276,20 @@ let librarySignature = '';
 let lastLibrary = null;
 let lastStatus = null;
 const releaseTime = video => { const time = Date.parse(video.publishedAt || ''); return Number.isFinite(time) ? time : null; };
+// createdAt is an ISO date from the Pi (a number from older hosts).
+const addedTime = video => { const time = Number(video.createdAt) || Date.parse(video.createdAt || ''); return Number.isFinite(time) ? time : 0; };
 function formatRelease(video) {
   const time = releaseTime(video);
   if (time === null) return '';
   try { return new Date(time).toLocaleDateString('en-US', {year:'numeric', month:'short', day:'numeric'}); }
   catch { return String(video.publishedAt).slice(0, 10); }
 }
-// Library order for the Tesla's Sort menu. The iPhone already lists videos
+// Library order for the Tesla's Sort menu. The Pi already lists videos
 // newest-added first; videos without a release date always sort last.
 function sortLibrary(videos, mode) {
   const byRelease = direction => (a, b) => {
     const left = releaseTime(a), right = releaseTime(b);
-    if (left === null && right === null) return direction * ((Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
+    if (left === null && right === null) return direction * (addedTime(a) - addedTime(b));
     if (left === null || right === null) return left === null ? 1 : -1;
     return direction * (left - right);
   };
@@ -341,14 +359,18 @@ function videoThumb(video, onPlay, {image = thumbnailFor(video), duration = form
 function videoAction(video, preparingID) {
   if (video.state === 'ready') {
     const resume = savedResume(video);
-    return {label:resume ? `Resume · ${formatTime(resume)}` : (isWatched(video) ? 'Watch again' : 'Play'), run:() => play(video), primary:true};
+    return {label:resume ? `Resume · ${formatTime(resume)}` : (isWatched(video) ? 'Watch again' : 'Play'), run:() => play(video), primary:true, remove:() => removeVideo(video.id)};
   }
   if (video.state === 'failed' || video.state === 'paused') return {label:'Retry', run:() => retryVideo(video.id), primary:true, remove:() => removeVideo(video.id)};
   const active = video.id?.toLowerCase() === preparingID?.toLowerCase();
   return {label:active ? 'Cancel' : 'Remove', run:() => removeVideo(video.id)};
 }
 function videoStatus(video) {
-  if (video.state === 'ready') return '';
+  if (video.state === 'ready') {
+    // A short source is expected, not a failure; the Upgrade button just goes away.
+    if (video.upgrading) return `Upgrading to ${video.upgradeQuality ? `${video.upgradeQuality}p` : 'a higher quality'}…`;
+    return video.upgradeError && !/source is only/i.test(video.upgradeError) ? `Upgrade failed: ${video.upgradeError}` : '';
+  }
   if (video.state === 'preparing') return video.message || 'Preparing…';
   return video.message || video.state;
 }
@@ -384,6 +406,32 @@ function librarySpec(video) {
   return {};
 }
 function upgradeButton(videos) {
+  const buttons = [upgradeOnly(videos), downgradeButton(videos)].filter(Boolean);
+  if (!buttons.length) return null;
+  const group = element('span', 'quality-actions'); group.append(...buttons);
+  return group;
+}
+function downgradeButton(videos) {
+  const larger = videos.filter(isDowngradable);
+  if (!larger.length) return null;
+  const label = `${String(qualityHeight(qualitySetting))}p`;
+  const button = element('button', 'button quiet small', `Downgrade ${larger.length} to ${label}`); button.type = 'button';
+  button.title = `Keep the ${label} copy and delete the larger files to free space.`;
+  button.onclick = async () => {
+    if (globalThis.confirm && !globalThis.confirm(`Switch ${larger.length} video${larger.length === 1 ? '' : 's'} to ${label} and delete the larger copies? You can upgrade again later.`)) return;
+    button.disabled = true;
+    try {
+      const all = larger.length === (lastLibrary?.videos || []).filter(isDowngradable).length;
+      let changed = 0;
+      if (all) changed = Number((await api('/api/library/downgrade', {}, 120000))?.changed) || 0;
+      else for (const video of larger) changed += Number((await api('/api/library/downgrade', {id:video.id}, 120000))?.changed) || 0;
+      toast(`${changed} video${changed === 1 ? '' : 's'} now ${label}.`);
+      await refresh(true);
+    } catch (error) { notice(error.message); button.disabled = false; }
+  };
+  return button;
+}
+function upgradeOnly(videos) {
   const upgradable = videos.filter(isUpgradable);
   if (!upgradable.length) return null;
   const button = element('button', 'button quiet small', `Upgrade ${upgradable.length} to ${qualitySetting}`); button.type = 'button';
@@ -419,7 +467,7 @@ function videoCard(video, preparingID, showChannel = true, number = 0) {
 function channelTile(name, videos) {
   const tile = element('button', 'channel-tile'); tile.type = 'button';
   const head = element('span', 'channel-tile-head');
-  head.append(avatarNode(name));
+  head.append(avatarNode(name, videos.find(video => video.channelAvatar)?.channelAvatar));
   const text = element('span', 'channel-tile-text');
   text.append(element('strong', '', name));
   const latest = sortLibrary(videos, 'newest')[0];
@@ -442,14 +490,50 @@ function channelTile(name, videos) {
     : withID ? {id:withID.channelId} : withVideo ? {video:withVideo.youtubeID} : {})});
   return tile;
 }
+// Continue watching can go stale (finished elsewhere, or abandoned). ✕ marks a
+// video watched; Clear all just forgets the positions. Both update the Pi's
+// history too, which drives Home's Continue watching row.
+function dismissContinue(video, watched = true) {
+  if (!video?.id) return;
+  clearResume(video);
+  if (watched) markWatched(video);
+  const total = finiteDuration(video.duration);
+  api('/api/history', watched ? {id:video.id, position:total || 1, ...(total ? {duration:total} : {}), finished:true}
+    : {id:video.id, position:0}).catch(() => {});
+}
+function continueDismiss(video, card) {
+  // The X is drawn in CSS; the Tesla browser's fonts have no ✕ glyph.
+  const button = element('button', 'card-dismiss'); button.type = 'button';
+  button.title = 'Remove from Continue watching (marks it watched)';
+  button.setAttribute?.('aria-label', `Remove ${video.title || 'video'} from Continue watching`);
+  button.onclick = event => {
+    event?.stopPropagation?.();
+    dismissContinue(video); feedState.loadedAt = 0;
+    const row = card.parentNode; card.remove?.();
+    if (row && !row.childNodes?.length) row.closest?.('section')?.setAttribute?.('hidden', '');
+    rerenderLibrary();
+  };
+  return button;
+}
+function clearContinueButton(videos, onDone) {
+  const button = element('button', 'button quiet small', 'Clear all'); button.type = 'button';
+  button.title = 'Forget the saved positions so these leave Continue watching';
+  button.onclick = () => {
+    if (globalThis.confirm && !globalThis.confirm('Clear Continue watching? Saved positions are forgotten; videos stay in your library.')) return;
+    for (const video of videos()) dismissContinue(video, false);
+    onDone();
+  };
+  return button;
+}
 function renderContinue(videos) {
   const items = videos.filter(video => video.state === 'ready' && !isWatched(video) && savedResume(video) >= 10)
     .sort((a, b) => Number(prefs.get('video-pilot-resume-at:' + b.id, 0)) - Number(prefs.get('video-pilot-resume-at:' + a.id, 0)))
     .slice(0, 10);
   $('continue-panel').hidden = !items.length || Boolean(libraryFilter);
+  $('continue-tools').replaceChildren(...(items.length ? [clearContinueButton(() => items, () => { rerenderLibrary(); feedState.loadedAt = 0; })] : []));
   $('continue-list').replaceChildren(...items.map(video => {
     const tile = element('article', 'card');
-    tile.append(videoThumb(video, () => play(video)));
+    tile.append(videoThumb(video, () => play(video)), continueDismiss(video, tile));
     const body = element('div', 'card-body');
     body.append(element('h3', '', video.title));
     body.append(element('p', 'card-note', [video.channel, `${formatTime(savedResume(video))} of ${formatDuration(video.duration) || '—'}`].filter(Boolean).join(' · ')));
@@ -466,12 +550,17 @@ function groupByChannel(videos) {
   }
   return groups;
 }
-function renderLibrary(videos, preparingID) {
-  lastLibrary = {videos, preparingID};
+// Only finished videos belong in the library; queued, preparing and failed
+// ones live on the Downloads tab until they are ready to play.
+const inLibrary = video => video.state === 'ready';
+function renderLibrary(allVideos, preparingID) {
+  lastLibrary = {videos:allVideos, preparingID};
   if (currentTab !== 'library-tab' && librarySignature) return;
+  const videos = allVideos.filter(inLibrary);
+  const pending = allVideos.length - videos.length;
   const signature = JSON.stringify([videos.map(video => [video.id, video.state, video.title, video.message, video.channel,
-    video.publishedAt, video.duration, video.height, savedResume(video), isWatched(video)]), preparingID, librarySort, libraryView,
-    channelOrder, libraryFilter, qualitySetting, dataSaver()]);
+    video.publishedAt, video.duration, video.height, video.quality, video.sourceMax, video.upgrading, video.upgradeError, video.channelAvatar, savedResume(video), isWatched(video)]), preparingID, librarySort, libraryView,
+    channelOrder, libraryFilter, qualitySetting, dataSaver(), pending]);
   if (signature === librarySignature) return;
   librarySignature = signature;
   if ($('library-sort').value !== librarySort) $('library-sort').value = librarySort;
@@ -487,7 +576,8 @@ function renderLibrary(videos, preparingID) {
   const filtered = query ? videos.filter(video => `${video.title} ${video.channel || ''}`.toLowerCase().includes(query)) : videos;
   const library = $('library'); library.replaceChildren();
   library.className = libraryView === 'channels' && !query ? 'channel-grid' : 'video-grid';
-  if (!videos.length) { library.append(messageCard('Your library is empty', 'Search on Home and tap Add to library. Videos you add download to the iPhone and play here.', {label:'Go to Home', run:() => goTo('home-tab')})); return; }
+  if (!videos.length && pending) { library.append(messageCard('Nothing ready yet', `${pending} video${pending === 1 ? ' is' : 's are'} on the Downloads tab and will appear here once ${pending === 1 ? 'it is' : 'they are'} ready to play.`, {label:'Go to Downloads', run:() => goTo('queue-tab')})); return; }
+  if (!videos.length) { library.append(messageCard('Your library is empty', 'Search on Home and tap Add to library. Videos you add download to the Pi and play here.', {label:'Go to Home', run:() => goTo('home-tab')})); return; }
   if (!filtered.length) { library.append(messageCard('No matches', `Nothing in your library matches “${libraryFilter}”.`)); return; }
   if (libraryView === 'all' || query) {
     let group = null;
@@ -530,7 +620,7 @@ function channelLibraryVideos() {
   const spec = channelState.spec, channel = channelState.channel;
   if (!spec) return [];
   const names = new Set([spec.name, channel?.name].filter(Boolean).map(name => name.trim().toLowerCase()));
-  return videos.filter(video => {
+  return videos.filter(inLibrary).filter(video => {
     if (spec.libraryOnly) return !(video.channel || '').trim();
     if (channel?.id && video.channelId) return video.channelId === channel.id;
     if (spec.id && video.channelId) return video.channelId === spec.id;
@@ -541,7 +631,7 @@ function renderChannelLibrary(force = false) {
   if (!channelState.spec) return;
   const videos = channelLibraryVideos();
   const preparingID = lastLibrary?.preparingID;
-  const signature = JSON.stringify([videos.map(video => [video.id, video.state, video.message, savedResume(video), isWatched(video)]), channelOrder, preparingID]);
+  const signature = JSON.stringify([videos.map(video => [video.id, video.state, video.message, video.upgrading, video.upgradeError, savedResume(video), isWatched(video)]), channelOrder, preparingID, qualitySetting]);
   if (!force && signature === channelState.librarySignature) return;
   channelState.librarySignature = signature;
   $('channel-library').hidden = !videos.length;
@@ -570,7 +660,7 @@ function renderChannelHeader() {
   const name = channel?.name || spec.name || 'Channel';
   $('channel-name').textContent = name;
   $('channel-meta').textContent = [channel?.handle, channel?.subscribers].filter(Boolean).join(' · ');
-  const avatar = avatarNode(name, channel?.avatar, true);
+  const avatar = avatarNode(name, channel?.avatar || channelLibraryVideos().find(video => video.channelAvatar)?.channelAvatar, true);
   avatar.id = 'channel-avatar';
   $('channel-avatar').replaceWith?.(avatar);
 }
@@ -581,7 +671,8 @@ function openChannel(spec) {
   Object.assign(channelState, {spec, channel:null, videos:[], continuation:null, loading:false, librarySignature:''});
   hideSuggestions();
   const back = channelState.returnTo?.tab;
-  $('channel-back-label').textContent = back === 'library-tab' ? 'Library' : (back === 'home-tab' && searchState.query ? 'Search' : 'Back');
+  $('channel-back-label').textContent = back === 'library-tab' ? 'Library' : back === 'subs-tab' ? 'Subscriptions'
+    : (back === 'home-tab' && searchState.query ? 'Search' : 'Back');
   renderChannelHeader();
   $('channel-videos').replaceChildren();
   $('channel-more').hidden = true;
@@ -666,7 +757,7 @@ function queueEntries(videos, activeID = '') {
       formatBytesPerSecond(item.speedBps), formatEta(item.etaSec)].filter(Boolean).join(' · '), api:true}));
   const isActive = video => video.id?.toLowerCase() === activeID?.toLowerCase();
   return videos.filter(video => video.state === 'preparing')
-    .sort((a, b) => isActive(b) - isActive(a) || (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0))
+    .sort((a, b) => isActive(b) - isActive(a) || addedTime(a) - addedTime(b))
     .map(video => ({id:video.id, title:video.title, youtubeID:video.youtubeID, active:isActive(video), progress:null,
       detail:video.message || (isActive(video) ? 'Preparing now' : 'Waiting'), api:false}));
 }
@@ -725,7 +816,7 @@ function renderQueue(videos, activeID = '') {
   queueSignature = signature;
   $('queue-summary').textContent = count ? `${count} video${count === 1 ? '' : 's'} downloading or waiting` : 'Nothing downloading right now.';
   $('queue-list').replaceChildren(...(count ? entries.map(queueRow)
-    : [messageCard('All caught up', 'Videos you add are downloaded and converted on the iPhone, then appear in your library.')]));
+    : [messageCard('All caught up', 'Videos you add are downloaded and converted on the Pi, then appear in your library.')]));
   $('failed-panel').hidden = !failed.length;
   $('failed-list').replaceChildren(...failed.map((video, index) => {
     const row = queueRow({id:video.id, title:video.title, youtubeID:video.youtubeID, active:false, progress:null,
@@ -743,6 +834,497 @@ async function retryAll() {
   if (failed.length) toast(`Retrying ${failed.length} video${failed.length === 1 ? '' : 's'}.`);
   await refresh(true);
   return failed.length;
+}
+
+// ---- Subscriptions ----
+// A directory of every channel the account follows, A to Z, for finding a
+// specific person. New uploads live on Home; this tab shows no videos.
+const subsState = {loadedAt:0, loading:false, seq:0, channels:[]};
+function renderSubsChannels() {
+  const query = String($('subs-filter').value || '').trim().toLowerCase();
+  const shown = query ? subsState.channels.filter(channel => channel.name.toLowerCase().includes(query)) : subsState.channels;
+  $('subs-channels').replaceChildren(...(shown.length ? shown.map(channel => {
+    const button = element('button', 'subs-channel'); button.type = 'button'; button.title = `Open ${channel.name}`;
+    button.append(avatarNode(channel.name, channel.avatar), element('strong', '', channel.name));
+    if (channel.subscribers) button.append(element('small', '', channel.subscribers.replace(' subscribers', '')));
+    button.onclick = () => openChannel({id:channel.id, name:channel.name});
+    return button;
+  }) : [messageCard('No matches', `None of the channels you follow match “${$('subs-filter').value.trim()}”.`)]));
+}
+$('subs-filter').oninput = () => { if (subsState.channels.length) renderSubsChannels(); };
+async function loadSubscriptions(refresh = false) {
+  if (subsState.loading || (!refresh && Date.now() - subsState.loadedAt < 15 * 60_000)) return;
+  const seq = ++subsState.seq; subsState.loading = true;
+  $('subs-status').textContent = 'Loading your channels…';
+  if (!subsState.channels.length) $('subs-channels').replaceChildren(...Array.from({length:12}, () => element('div', 'subs-channel skeleton')));
+  try {
+    const result = await api('/api/subscriptions/channels' + (refresh ? '?refresh=1' : ''), null, 60000);
+    if (seq !== subsState.seq) return;
+    subsState.loadedAt = Date.now();
+    $('subs-filter-wrap').hidden = !result?.signedIn;
+    if (!result?.signedIn) {
+      subsState.channels = []; $('subs-status').textContent = '';
+      $('subs-channels').replaceChildren(messageCard('Sign in to see your subscriptions',
+        'Sign in to your YouTube account and every channel you follow shows up here.',
+        {label:'Sign in to YouTube', run:() => void startSignin()}));
+      return;
+    }
+    subsState.channels = Array.isArray(result.channels) ? result.channels : [];
+    $('subs-status').textContent = `${subsState.channels.length} channel${subsState.channels.length === 1 ? '' : 's'}`;
+    if (subsState.channels.length) renderSubsChannels();
+    else $('subs-channels').replaceChildren(messageCard('No subscriptions yet', 'Channels you subscribe to on YouTube show up here.'));
+  } catch (error) {
+    if (seq !== subsState.seq) return;
+    $('subs-status').textContent = '';
+    $('subs-channels').replaceChildren(messageCard('Could not load your channels', error.message,
+      {label:'Try again', run:() => void loadSubscriptions(true)}));
+  } finally { if (seq === subsState.seq) subsState.loading = false; }
+}
+$('subs-refresh').onclick = () => void loadSubscriptions(true);
+$('yt-signout').onclick = async () => {
+  if (!globalThis.confirm?.('Sign the Pi out of YouTube? Downloads keep working without an account.')) return;
+  try { await api('/api/youtube/signout', {}); subsState.loadedAt = 0; toast('Signed out of YouTube on the Pi.'); await refresh(true); }
+  catch (error) { notice(error.message); }
+};
+
+// ---- YouTube sign-in from the car ----
+// The Pi runs Google's sign-in in Firefox on a virtual screen. This page shows
+// a live picture of it; taps are mapped to its pixels and text is typed in.
+const SIGNIN_SIZE = {width:900, height:1000};
+let signinShotTimer = null, signinPollTimer = null;
+function signinStatus(text) { $('signin-status').textContent = text; }
+function nextSigninShot(delay = 600) {
+  clearTimeout(signinShotTimer);
+  if (signinActive) signinShotTimer = setTimeout(() => void loadSigninShot(), delay);
+}
+// Fetched rather than set as the image URL, so the request carries the device key.
+async function loadSigninShot() {
+  try {
+    const {response, body} = await timedFetch('/api/signin/screen?t=' + Date.now(), {cache:'no-store'}, 8000, r => r.ok ? r.blob() : null);
+    if (!signinActive) return;
+    if (!response.ok || !body) return nextSigninShot(1500);
+    const image = $('signin-screen'), old = image.src;
+    image.src = URL.createObjectURL(body);
+    if (String(old).startsWith('blob:')) URL.revokeObjectURL(old);
+  } catch { nextSigninShot(1500); }
+}
+$('signin-screen').onload = () => nextSigninShot(600);
+$('signin-screen').onerror = () => nextSigninShot(1500);
+async function startSignin() {
+  showTab('signin-tab'); window.scrollTo?.({top:0});
+  signinStatus('Opening Google sign-in on the Pi…');
+  try {
+    await api('/api/signin/start', {}, 20000);
+    signinActive = true; nextSigninShot(1200);
+    clearInterval(signinPollTimer); signinPollTimer = setInterval(() => void pollSignin(), 2000);
+  } catch (error) { signinStatus(error.message || 'Sign-in could not start.'); }
+}
+async function pollSignin() {
+  try {
+    const status = await api('/api/signin/status');
+    if (status.message) signinStatus(status.message);
+    if (status.active) return;
+    signinActive = false; clearInterval(signinPollTimer); clearTimeout(signinShotTimer);
+    if (status.state === 'signed-in') { toast('Signed in to YouTube.'); subsState.loadedAt = 0; await refresh(true); goTo('settings-tab'); }
+  } catch {}
+}
+async function stopSignin() {
+  signinActive = false; clearInterval(signinPollTimer); clearTimeout(signinShotTimer);
+  try { await api('/api/signin/stop', {}); } catch {}
+}
+async function signinInput(body) {
+  try { await api('/api/signin/input', body); nextSigninShot(250); return true; }
+  catch (error) { signinStatus(error.message); return false; }
+}
+$('yt-signin').onclick = () => void startSignin();
+$('signin-close').onclick = () => { void stopSignin(); goTo('settings-tab'); };
+$('signin-screen').onclick = event => {
+  const rect = $('signin-screen').getBoundingClientRect?.();
+  if (!signinActive || !rect?.width) return;
+  void signinInput({type:'click', x:(event.clientX - rect.left) / rect.width * SIGNIN_SIZE.width,
+    y:(event.clientY - rect.top) / rect.height * SIGNIN_SIZE.height});
+};
+async function sendSigninText(pressEnter = false) {
+  const value = $('signin-text').value;
+  if (value && !await signinInput({type:'text', text:value})) return;
+  $('signin-text').value = '';
+  if (pressEnter) await signinInput({type:'key', key:'Return'});
+}
+$('signin-send').onclick = () => void sendSigninText();
+$('signin-text').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault?.(); void sendSigninText(true); } };
+$('signin-hide').onclick = () => {
+  const hidden = $('signin-text').type !== 'password';
+  $('signin-text').type = hidden ? 'password' : 'text';
+  $('signin-hide').textContent = hidden ? 'Show' : 'Hide';
+  $('signin-hide').setAttribute?.('aria-pressed', hidden ? 'true' : 'false');
+};
+document.querySelectorAll?.('[data-signin-key]').forEach(button => button.onclick = () => void signinInput({type:'key', key:button.dataset.signinKey}));
+document.querySelectorAll?.('[data-signin-scroll]').forEach(button => button.onclick = () => void signinInput({type:'scroll', y:Number(button.dataset.signinScroll)}));
+
+// ---- PIN lock ----
+// The Pi answers 401 to any request without a trusted device key. The PIN
+// screen then covers whichever service is open (the service picker itself
+// stays usable), and once the PIN is right the service carries on in place.
+let pinNeeded = false, pinDigits = '', pinBusy = false;
+function saveDeviceKey(key) {
+  globalThis.videoPilotDeviceKey = key || '';
+  try { if (key) globalThis.sessionStorage?.setItem(DEVICE_KEY, key); else globalThis.sessionStorage?.removeItem(DEVICE_KEY); } catch {}
+}
+function renderPinDots() {
+  const dots = $('pin-dots');
+  dots.textContent = '';
+  for (let i = 0; i < pinDigits.length; i++) dots.appendChild?.(document.createElement('span'));
+}
+function showPinScreen() {
+  if (!pinNeeded || !$('pin-lock').hidden) return;
+  pinDigits = ''; renderPinDots();
+  $('pin-message').textContent = '';
+  $('pin-enter').hidden = false; $('pin-reset').hidden = true;
+  $('pin-lock').hidden = false;
+}
+// A service is in front: YouTube (the picker is closed) or Netflix/Hulu.
+function serviceOpen() { return $('portal').hidden || !$('live-section').hidden; }
+function requirePin() {
+  pinNeeded = true;
+  if (serviceOpen()) showPinScreen();
+}
+globalThis.videoPilotPinRequired = requirePin;
+// Claude (AI Room) and Pi Health are their own pages behind the same PIN:
+// ask for it here first, then go.
+let pendingPortalPage = '';
+document.querySelectorAll?.('[data-portal-page]').forEach(link => link.onclick = async event => {
+  event.preventDefault?.();
+  const target = link.getAttribute('href');
+  try {
+    const status = await api('/api/pin/status');
+    if (status.enabled && !status.unlocked) { pendingPortalPage = target; pinNeeded = true; showPinScreen(); return; }
+  } catch {}
+  globalThis.videoPilotApps?.handoff?.();
+  globalThis.location.href = target;
+});
+async function pinUnlocked(key) {
+  saveDeviceKey(key);
+  pinNeeded = false; pinDigits = '';
+  $('pin-lock').hidden = true;
+  if (pendingPortalPage) { const target = pendingPortalPage; pendingPortalPage = ''; globalThis.videoPilotApps?.handoff?.(); globalThis.location.href = target; return; }
+  toast('Unlocked for this visit.');
+  if (!$('live-section').hidden && liveService) void openLive(liveService);
+  try { await refresh(true); } catch {}
+}
+async function submitPin() {
+  if (pinBusy) return;
+  if (pinDigits.length < 4) { $('pin-message').textContent = 'Enter the PIN.'; return; }
+  pinBusy = true;
+  try {
+    const result = await api('/api/pin/unlock', {pin:pinDigits});
+    await pinUnlocked(result.key);
+  } catch (error) {
+    pinDigits = ''; renderPinDots();
+    $('pin-message').textContent = error.message || 'That did not work.';
+  } finally { pinBusy = false; }
+}
+function pressPinDigit(digit) {
+  if (pinDigits.length >= 8) return;
+  pinDigits += digit; renderPinDots();
+  $('pin-message').textContent = '';
+}
+document.querySelectorAll?.('[data-pin-digit]').forEach(button => button.onclick = () => pressPinDigit(button.dataset.pinDigit));
+$('pin-clear').onclick = () => { pinDigits = pinDigits.slice(0, -1); renderPinDots(); };
+$('pin-unlock').onclick = () => void submitPin();
+globalThis.addEventListener?.('keydown', event => {
+  if ($('pin-lock').hidden || !$('pin-reset').hidden) return;
+  if (/^\d$/.test(event.key)) pressPinDigit(event.key);
+  else if (event.key === 'Backspace') { pinDigits = pinDigits.slice(0, -1); renderPinDots(); }
+  else if (event.key === 'Enter') void submitPin();
+});
+$('pin-cancel').onclick = () => {
+  $('pin-lock').hidden = true; pendingPortalPage = '';
+  if (!$('live-section').hidden) void closeLive();
+  showPortal();
+};
+$('pin-forgot').onclick = async () => {
+  $('pin-enter').hidden = true; $('pin-reset').hidden = false;
+  $('pin-reset-message').textContent = '';
+  try { $('pin-question').textContent = (await api('/api/pin/status')).question || 'No reset question is set.'; }
+  catch { $('pin-question').textContent = 'The Pi did not answer. Try again.'; }
+};
+$('pin-reset-back').onclick = () => { $('pin-reset').hidden = true; $('pin-enter').hidden = false; };
+$('pin-reset-submit').onclick = async () => {
+  try {
+    const result = await api('/api/pin/reset', {answer:$('pin-answer').value, newPin:$('pin-new').value});
+    $('pin-answer').value = ''; $('pin-new').value = '';
+    await pinUnlocked(result.key);
+    toast('PIN changed. Every other device has to enter the new one.');
+  } catch (error) { $('pin-reset-message').textContent = error.message || 'That did not work.'; }
+};
+
+// Settings: trusted devices and the PIN itself. Every action needs the PIN.
+function whenText(ms) {
+  const minutes = Math.round((Date.now() - ms) / 60000);
+  if (minutes < 2) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 48 * 60) return `${Math.round(minutes / 60)} h ago`;
+  return new Date(ms).toLocaleDateString();
+}
+function renderDeviceList(devices) {
+  const list = $('devices-list');
+  list.textContent = '';
+  for (const device of devices) {
+    const row = document.createElement('div'); row.className = 'device-row';
+    const info = document.createElement('div');
+    const name = document.createElement('strong'); name.textContent = device.current ? `${device.name} (this one)` : device.name;
+    const seen = document.createElement('small'); seen.textContent = `Added ${whenText(device.addedAt)} · last used ${whenText(device.lastSeen)}`;
+    info.append(name, seen);
+    const remove = document.createElement('button');
+    remove.className = 'button quiet small danger'; remove.type = 'button'; remove.textContent = 'Remove';
+    remove.onclick = () => void removeDevice(device);
+    row.append(info, remove);
+    list.appendChild(row);
+  }
+  if (!devices.length) list.textContent = 'No devices yet.';
+}
+async function showDevices() {
+  try {
+    const result = await api('/api/pin/devices', {pin:$('devices-pin').value});
+    renderDeviceList(result.devices || []);
+    $('devices-status').textContent = '';
+  } catch (error) { $('devices-status').textContent = error.message; }
+}
+async function removeDevice(device) {
+  try {
+    await api('/api/pin/remove', {pin:$('devices-pin').value, id:device.id});
+    if (device.current) { saveDeviceKey(''); $('devices-pin').value = ''; $('devices-list').textContent = ''; requirePin(); return; }
+    await showDevices();
+    $('devices-status').textContent = `Removed. That ${device.name} has to enter the PIN again.`;
+  } catch (error) { $('devices-status').textContent = error.message; }
+}
+$('devices-show').onclick = () => void showDevices();
+$('pin-change').onclick = async () => {
+  try {
+    const result = await api('/api/pin/change', {pin:$('devices-pin').value, newPin:$('pin-change-new').value});
+    saveDeviceKey(result.key);
+    $('devices-pin').value = ''; $('pin-change-new').value = ''; $('devices-list').textContent = '';
+    $('devices-status').textContent = 'PIN changed. Every other device has to enter the new one.';
+  } catch (error) { $('devices-status').textContent = error.message; }
+};
+
+// ---- Portal ----
+// Video Pilot opens on a choice of service. YouTube is the original app (the
+// rail and its tabs); Netflix and Hulu open the live view. A reload (after a
+// deploy) or a #tab link goes straight back into YouTube.
+function showPortal() {
+  $('portal').hidden = false;
+  void refreshPortalStatus();
+  try { globalThis.sessionStorage?.removeItem('vp-in-youtube'); } catch {}
+}
+function enterYouTube() {
+  $('portal').hidden = true;
+  if (pinNeeded) showPinScreen();
+  try { globalThis.sessionStorage?.setItem('vp-in-youtube', '1'); } catch {}
+}
+$('portal-youtube').onclick = () => enterYouTube();
+$('to-portal').onclick = () => showPortal();
+{
+  let inYouTube = false;
+  try { inYouTube = globalThis.sessionStorage?.getItem('vp-in-youtube') === '1'; } catch {}
+  if (!inYouTube && !hashTab()) showPortal();
+}
+
+// ---- Netflix and Hulu, live from the Pi ----
+// The Pi plays them in Chromium on a virtual screen and streams that screen
+// here; taps map to its pixels, like the sign-in page.
+const LIVE_SIZE = {width:1280, height:720};
+const LIVE_NAMES = {netflix:'Netflix', hulu:'Hulu', textnow:'TextNow'};
+// How the 16:9 picture sits in the car's taller space: whole (fit), cropped at
+// the sides to fill it (fill), or squeezed to fill it (stretch).
+const LIVE_FITS = ['fit', 'fill', 'stretch'], LIVE_FIT_NAMES = {fit:'Fit', fill:'Fill', stretch:'Stretch'};
+let livePlayer = null, liveService = '', liveFit = LIVE_FITS.includes(prefs.get('vp-live-fit')) ? prefs.get('vp-live-fit') : 'fit', liveMuted = false, liveLagTimer = null;
+function applyLiveFit() {
+  for (const mode of LIVE_FITS) $('live-screen').classList?.toggle?.(mode, mode === liveFit);
+  $('live-fit').textContent = LIVE_FIT_NAMES[liveFit];
+}
+// Where a tap on the canvas lands on the Pi's screen, or null outside the picture.
+function liveTapPoint(rect, clientX, clientY, fit = liveFit) {
+  let width = rect.width, height = rect.height, left = rect.left, top = rect.top;
+  if (fit !== 'stretch') {
+    const pick = fit === 'fill' ? Math.max : Math.min;
+    const scale = pick(rect.width / LIVE_SIZE.width, rect.height / LIVE_SIZE.height);
+    width = LIVE_SIZE.width * scale; height = LIVE_SIZE.height * scale;
+    left += (rect.width - width) / 2; top += (rect.height - height) / 2;
+  }
+  const x = (clientX - left) / width * LIVE_SIZE.width, y = (clientY - top) / height * LIVE_SIZE.height;
+  return x < 0 || y < 0 || x >= LIVE_SIZE.width || y >= LIVE_SIZE.height ? null : {x, y};
+}
+function liveStatus(text) { $('live-status').textContent = text; }
+function stopLivePlayer() {
+  clearInterval(liveLagTimer); liveLagTimer = null;
+  const old = livePlayer; livePlayer = null;
+  try { old?.destroy(); } catch {}
+}
+function playLive() {
+  stopLivePlayer();
+  $('live-drop').hidden = true;
+  liveStatus('Connecting…');
+  prepareAudioContext();
+  const instance = new window.JSMpeg.Player(`/api/live/stream.ts?t=${Date.now()}`, {
+    source:JSMpegLiveSource, canvas:$('live-screen'), autoplay:true, loop:false, disableWebAssembly:true,
+    player:() => instance,
+    onSourceEstablished:() => { if (livePlayer === instance) liveStatus(''); },
+    onSourceError:message => {
+      if (livePlayer !== instance) return;
+      liveStatus(''); $('live-drop-title').textContent = message; $('live-drop').hidden = false;
+      reportDiagnostic('liveError', {error:message});
+    },
+  });
+  livePlayer = instance;
+  for (const decoder of [instance.video, instance.audio].filter(Boolean)) installRecordedBufferWindow(decoder);
+  installRecordedAudioOutput(instance.audioOut,
+    () => globalThis.JSMpeg?.Now?.() ?? (globalThis.performance?.now?.() ?? Date.now()) / 1000);
+  installRecordedAudioLead(instance, 0.5);
+  instance.volume = liveMuted ? 0 : 1;
+  try { instance.audioOut?.unlock(() => {}); } catch {}
+  // Bursty links can leave the picture seconds behind; jump back to live.
+  liveLagTimer = setInterval(() => {
+    const lag = instance.source?.lag?.() || 0;
+    if (lag > 4 && livePlayer === instance) {
+      try { instance.seek(instance.currentTime + lag - 0.75); reportDiagnostic('liveCatchUp', {lagSeconds:lag}); } catch {}
+    }
+  }, 5000);
+}
+async function openLive(service) {
+  liveService = service;
+  $('live-title').textContent = LIVE_NAMES[service] || '';
+  $('live-section').hidden = false;
+  // The page underneath must not scroll; its scrollbar would eat into the picture.
+  document.documentElement?.classList?.add?.('live-open');
+  if (pinNeeded) showPinScreen();
+  applyLiveFit();
+  $('live-drop').hidden = true;
+  prepareAudioContext();
+  liveStatus(`Opening ${LIVE_NAMES[service]} on the Pi…`);
+  try {
+    await api('/api/live/start', {service}, 25000);
+    if (liveService !== service || $('live-section').hidden) return;
+    // Give Chromium a moment to draw before the first frame is captured.
+    await new Promise(resolve => setTimeout(resolve, 2500));
+    if (liveService === service && !$('live-section').hidden) playLive();
+  } catch (error) {
+    liveStatus(''); $('live-drop-title').textContent = error.message || 'Could not open it on the Pi.'; $('live-drop').hidden = false;
+  }
+}
+async function closeLive() {
+  liveService = '';
+  stopLivePlayer();
+  $('live-section').hidden = true;
+  document.documentElement?.classList?.remove?.('live-open');
+  $('live-type').hidden = true; $('live-keyboard').setAttribute?.('aria-pressed', 'false');
+  try { await api('/api/live/stop', {}); } catch {}
+  applyWebUpdate();
+}
+async function liveInput(body) {
+  try { await api('/api/live/input', body); return true; }
+  catch (error) { toast(error.message); return false; }
+}
+document.querySelectorAll?.('[data-live-service]').forEach(button => button.onclick = () => void openLive(button.dataset.liveService));
+$('live-close').onclick = () => void closeLive();
+$('live-retry').onclick = () => liveService && playLive();
+// Map a tap to the Pi's screen, allowing for letterboxing in Fit mode.
+$('live-screen').onclick = event => {
+  const rect = $('live-screen').getBoundingClientRect?.();
+  if (!rect?.width || !rect?.height) return;
+  try { livePlayer?.audioOut?.unlock(() => {}); livePlayer?.audioOut?.context?.resume?.()?.catch?.(() => {}); } catch {}
+  const point = liveTapPoint(rect, event.clientX, event.clientY);
+  if (!point) return;
+  void liveInput({type:'click', x:point.x, y:point.y});
+};
+$('live-keyboard').onclick = () => {
+  const show = $('live-type').hidden;
+  $('live-type').hidden = !show;
+  $('live-keyboard').setAttribute?.('aria-pressed', show ? 'true' : 'false');
+  if (show) $('live-text').focus?.();
+};
+async function sendLiveText(pressEnter = false) {
+  const value = $('live-text').value;
+  if (value && !await liveInput({type:'text', text:value})) return;
+  $('live-text').value = '';
+  if (pressEnter) await liveInput({type:'key', key:'Return'});
+}
+$('live-send').onclick = () => void sendLiveText(true);
+$('live-text').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault?.(); void sendLiveText(true); } };
+$('live-hide').onclick = () => {
+  const hidden = $('live-text').type !== 'password';
+  $('live-text').type = hidden ? 'password' : 'text';
+  $('live-hide').textContent = hidden ? 'Show' : 'Hide';
+  $('live-hide').setAttribute?.('aria-pressed', hidden ? 'true' : 'false');
+};
+$('live-mute').onclick = () => {
+  liveMuted = !liveMuted;
+  if (livePlayer) livePlayer.volume = liveMuted ? 0 : 1;
+  $('live-mute').textContent = liveMuted ? 'Unmute' : 'Mute';
+};
+$('live-fit').onclick = () => {
+  liveFit = LIVE_FITS[(LIVE_FITS.indexOf(liveFit) + 1) % LIVE_FITS.length];
+  prefs.set('vp-live-fit', liveFit);
+  applyLiveFit();
+};
+document.querySelectorAll?.('[data-live-key]').forEach(button => button.onclick = () => void liveInput({type:'key', key:button.dataset.liveKey}));
+document.querySelectorAll?.('[data-live-scroll]').forEach(button => button.onclick = () => void liveInput({type:'scroll', y:Number(button.dataset.liveScroll)}));
+
+// ---- Switching apps ----
+// The Apps switcher (apps-menu.js) switches inside this page when it can;
+// Claude and Pi Health are their own pages, which link back with ?app=.
+globalThis.videoPilotOpen = id => {
+  if (!['youtube', 'netflix', 'hulu', 'textnow', 'portal'].includes(id)) return false;
+  if (!$('player-section').hidden) $('close').onclick?.();
+  if (id === 'netflix' || id === 'hulu' || id === 'textnow') { if ($('live-section').hidden || liveService !== id) void openLive(id); return true; }
+  if (!$('live-section').hidden) void closeLive();
+  if (id === 'youtube') enterYouTube(); else showPortal();
+  return true;
+};
+{
+  const app = String(globalThis.location?.search || '').match(/[?&]app=(youtube|netflix|hulu|textnow|portal)\b/)?.[1];
+  if (app) {
+    try { globalThis.history?.replaceState?.(null, '', globalThis.location.pathname + globalThis.location.hash); } catch {}
+    globalThis.videoPilotOpen(app);
+  }
+}
+// Live status on the portal: the Pi at a glance (behind the PIN like the rest).
+async function refreshPortalStatus() {
+  if ($('portal').hidden || pinNeeded) return;
+  portalStatusAt = Date.now();
+  try {
+    const health = await api('/api/health', null, 20000), vp = health.videoPilot || {}, v = health.vitals;
+    const chip = (text, level = '') => element('span', 'status-chip' + (level ? ' ' + level : ''), text);
+    const data = v?.disks?.find(disk => disk.path !== '/');
+    const stage = {downloading: 'Downloading', processing: 'Converting'}[vp.preparationStage];
+    $('portal-status').replaceChildren(...[
+      v && chip(`${Math.round(v.temperature)} °C`, v.temperature >= 80 ? 'bad' : v.temperature >= 70 ? 'warn' : 'good'),
+      chip(vp.busy ? `${stage || 'Working'}${Number.isFinite(vp.preparationProgress) ? ` ${Math.round(vp.preparationProgress * 100)}%` : ''}${vp.queuedCount ? ` · ${vp.queuedCount} waiting` : ''}` : (vp.failed ? `${vp.failed} downloads need a retry` : 'Downloads idle'), vp.failed ? 'warn' : ''),
+      health.activity && chip(health.activity.aiRoomBusy ? 'Claude is working' : 'Claude idle'),
+      data && chip(`${(data.free / 1e9).toFixed(0)} GB free`, data.free / data.total < 0.1 ? 'bad' : data.free / data.total < 0.2 ? 'warn' : ''),
+      v?.power?.undervoltageNow && chip('Low voltage!', 'bad'),
+    ].filter(Boolean));
+  } catch { $('portal-status').replaceChildren(); }
+}
+
+// ---- Self-update ----
+// Fixes deployed to the Pi never reached a page already open in the car, so
+// the page reloads itself when the Pi's web files change, but only while no
+// video is open (positions are saved, so nothing is lost).
+let loadedWebVersion = '', webUpdatePending = false;
+function noteWebVersion(version) {
+  if (!version) return;
+  if (!loadedWebVersion) { loadedWebVersion = String(version); return; }
+  if (String(version) !== loadedWebVersion) webUpdatePending = true;
+  applyWebUpdate();
+}
+function applyWebUpdate() {
+  if (!webUpdatePending || !$('player-section').hidden || !$('live-section').hidden || currentTab === 'signin-tab') return;
+  webUpdatePending = false;
+  reportDiagnostic('webUpdateReload', {from:loadedWebVersion});
+  globalThis.videoPilotApps?.handoff?.(); // a self-update reload is not a new visit
+  void flushDiagnostics(true);
+  globalThis.location?.reload?.();
 }
 
 // ---- Polling ----
@@ -764,9 +1346,10 @@ async function refresh(force = false) {
       lastLibraryFetch = {revision:status.libraryRevision, at:Date.now()};
     }
     lastStatus = status;
+    noteWebVersion(status.webVersion);
     if ($('host-ui').hidden) {
       $('host-ui').hidden = false; $('connecting-panel').hidden = true;
-      showTab(NAV_TABS.includes(prefs.get('vp-tab')) ? prefs.get('vp-tab') : 'home-tab');
+      showTab(hashTab() || (NAV_TABS.includes(prefs.get('vp-tab')) ? prefs.get('vp-tab') : 'home-tab'));
       void loadServerSettings();
     }
     setConnection(status.tunnel === 'connected' || !status.tunnel ? 'online' : 'waiting',
@@ -787,7 +1370,7 @@ async function refresh(force = false) {
     updatePreparation(status, videos);
   } catch (error) {
     setConnection('offline', 'Offline');
-    refreshError = error.message || 'Open Video Pilot on the iPhone and start hosting.';
+    refreshError = error.message || 'Make sure Video Pilot is running on the Pi.';
     notice(refreshError);
   } finally {
     refreshing = false;
@@ -821,7 +1404,7 @@ function updatePreparation(status, videos) {
     $('preparation-progress').removeAttribute('value'); $('preparation-percent').textContent = '';
   }
   let detail = 'It appears in your library when it is ready.';
-  if (status.preparationStage === 'waitingForApp') detail = 'Open Video Pilot on the iPhone to finish processing.';
+  if (status.preparationStage === 'waitingForApp') detail = 'Video Pilot on the Pi is waiting to finish processing.';
   if (status.preparationStage === 'processing') {
     const speed = status.processingSpeed, remaining = status.preparationSecondsRemaining;
     detail = typeof speed === 'number' && Number.isFinite(speed) && speed > 0
@@ -845,7 +1428,7 @@ async function queueVideo(url, extra = {}) {
     if (extra.channelId) body.channelId = extra.channelId;
     if (extra.channel) body.channel = extra.channel;
     await api('/api/youtube', body); notice('');
-    toast('Added. Your iPhone is downloading it; it appears in the library when ready.');
+    toast('Added. Your Pi is downloading it; it appears in the library when ready.');
     await refresh(true); return true;
   } catch (error) { notice(error.message); return false; }
 }
@@ -859,7 +1442,7 @@ async function removeVideo(id) {
 async function retryVideo(id) {
   try {
     await api('/api/library/retry', {id}); notice('');
-    toast('Retrying on your iPhone.');
+    toast('Retrying on the Pi.');
     await refresh(true); return true;
   } catch (error) { notice(error.message); return false; }
 }
@@ -867,16 +1450,24 @@ async function retryVideo(id) {
 // ---- Quality (phone /api/settings; hidden when the phone lacks it) ----
 let qualitySetting = null;
 const qualityHeight = quality => Number(String(quality || '').replace(/\D/g, '')) || 0;
+// Upgrades only count when YouTube has the quality (sourceMax caps it);
+// downgrades swap to the smaller copy the Pi already keeps.
+const QUALITY_STEPS = [360, 540, 720, 1080];
+function videoHeight(video) { return Number(video.height) || qualityHeight(video.quality); }
 function isUpgradable(video) {
-  if (!qualitySetting || video.youtubeID == null) return false;
+  if (!qualitySetting || video.youtubeID == null || video.upgrading) return false;
+  const target = qualityHeight(qualitySetting), source = Number(video.sourceMax);
+  const reachable = source > 0 ? Math.min(target, QUALITY_STEPS.filter(value => value <= source).at(-1) || QUALITY_STEPS[0]) : target;
+  return target > 0 && videoHeight(video) < reachable;
+}
+function isDowngradable(video) {
   const target = qualityHeight(qualitySetting);
-  const height = Number(video.height) || qualityHeight(video.quality);
-  return target > 0 && height < target;
+  return target > 0 && video.state === 'ready' && videoHeight(video) > target;
 }
 async function loadServerSettings() {
   try {
     const settings = await api('/api/settings');
-    qualitySetting = typeof settings?.quality === 'string' ? settings.quality : null;
+    qualitySetting = qualityHeight(settings?.quality) ? `${qualityHeight(settings.quality)}p` : null;
   } catch { qualitySetting = null; }
   $('quality-setting').hidden = !qualitySetting;
   syncChoice('data-quality', qualitySetting);
@@ -928,6 +1519,65 @@ function playFromLibrary(entry, phonePosition) {
   if (!savedResume(entry) && Number.isFinite(position) && position >= 10 && resumeEnabled()) play(entry, position);
   else play(entry);
 }
+
+function defaultPlaybackQuality(video) {
+  const maximum = qualityHeight(video?.quality) || Number(video?.height) || 0;
+  if (!maximum) return 0;
+  const requested = playbackQuality === 'auto' ? (dataSaver() ? 360 : maximum) : Number(playbackQuality);
+  // New videos always open using an existing copy. Higher quality can be
+  // requested explicitly in the player without replacing a working stream.
+  const available = [...(video.qualities || []), maximum].map(Number).filter(value => value <= requested);
+  return available.length ? Math.max(...available) : maximum;
+}
+function syncPlaybackQuality() {
+  const choice = $('playback-quality'); if (!choice) return;
+  choice.value = playbackQuality;
+  const maximum = qualityHeight(current?.quality) || Number(current?.height) || 0;
+  choice.querySelectorAll?.('option').forEach(option => {
+    const quality = Number(option.value);
+    if (quality) option.textContent = `${quality}p${quality >= 720 ? ' HD' : quality === 360 ? ' · Save data' : ''}${maximum && quality > maximum ? ' (download)' : ''}`;
+  });
+}
+async function switchPlaybackQuality(value) {
+  if (!current || !['auto','360','540','720','1080'].includes(value)) return;
+  const video = current, previous = playbackQuality, request = ++qualityRequestSeq;
+  const quality = value === 'auto' ? (dataSaver() ? 360 : qualityHeight(video.quality)) : Number(value);
+  if (!quality) return;
+  $('quality-status').textContent = `Preparing ${quality}p… Your current video keeps playing.`;
+  try {
+    let status = await api('/api/library/quality', {id:video.id, quality});
+    const deadline = Date.now() + 30 * 60_000;
+    while (!status.ready) {
+      if (request !== qualityRequestSeq || current !== video || $('player-section').hidden) return;
+      if (status.error) throw new Error(status.error);
+      if (Date.now() > deadline) throw new Error('Quality preparation is still running. Try selecting it again shortly.');
+      $('quality-status').textContent = status.requiresDownload
+        ? `Downloading ${quality}p to the Pi… Current quality keeps playing.`
+        : `Preparing ${quality}p on the Pi… Current quality keeps playing.`;
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      status = await api(`/api/library/quality?id=${encodeURIComponent(video.id)}&quality=${quality}`);
+    }
+    if (request !== qualityRequestSeq || current !== video || $('player-section').hidden) return;
+    video.quality = status.maximum;
+    video.qualities = [...new Set([...(video.qualities || []), status.maximum, quality])];
+    playbackQuality = value;
+    try { globalThis.localStorage?.setItem('vp-playback-quality', value); } catch {}
+    syncPlaybackQuality();
+    if (activeQuality !== quality) {
+      activeQuality = quality;
+      requestSeek(currentOffset, {preservePaused:true, preserveFullscreen:true});
+    }
+    // The Quality menu already shows the current quality; keep the status line
+    // for news (preparing, errors) so it does not take up a row of the screen.
+    $('quality-status').textContent = '';
+    if (quality <= 540) toast(`${quality}p · Lower hotspot data use`);
+  } catch (error) {
+    if (request === qualityRequestSeq && current === video) {
+      playbackQuality = previous; syncPlaybackQuality(); $('quality-status').textContent = error.message;
+    }
+  }
+}
+$('playback-quality').onchange = event => { void switchPlaybackQuality(event.target.value); };
 // Search, feed and channel cards can show the same video; every button for
 // an ID follows the library state for that ID.
 const addingFromSearch = new Set();
@@ -943,7 +1593,7 @@ function styleResultButton(button, id) {
     button.textContent = resume ? `Resume · ${formatTime(resume)}` : (isWatched(entry) ? 'Watch again' : 'Play');
     button.onclick = () => playFromLibrary(entry, context.position); return;
   }
-  if (entry?.state === 'preparing') { button.textContent = 'Downloading to iPhone…'; button.className = 'card-action quiet'; button.disabled = true; return; }
+  if (entry?.state === 'preparing') { button.textContent = 'Downloading to Pi…'; button.className = 'card-action quiet'; button.disabled = true; return; }
   if (queuedFromSearch.has(id)) { button.textContent = 'Added ✓'; button.className = 'card-action quiet'; button.disabled = true; return; }
   if (entry && (entry.state === 'failed' || entry.state === 'paused')) {
     button.textContent = 'Retry download';
@@ -984,8 +1634,9 @@ function youtubeCard(video, {showChannel = true, badge = true} = {}) {
   const fraction = Number.isFinite(progress) && progress > 0 ? progress : (entry ? watchFraction(entry) : 0);
   const button = element('button', 'card-action'); button.type = 'button';
   node.append(videoThumb({title:video.title}, () => { if (!button.disabled) button.click(); },
-    {image:local ? '' : feedThumbnail(video), duration:typeof video.duration === 'string' ? video.duration : formatDuration(video.duration),
-      fraction, badge:badge && !local && libraryEntry(video.id)?.state === 'ready' ? 'In library' : ''}));
+    {image:local ? (entry?.youtubeID && !dataSaver() ? youtubeThumb(entry.youtubeID) : '') : feedThumbnail(video), duration:typeof video.duration === 'string' ? video.duration : formatDuration(video.duration),
+      fraction, badge:video.live === 'is_live' ? 'Live now' : video.live === 'is_upcoming' ? 'Upcoming'
+        : badge && !local && libraryEntry(video.id)?.state === 'ready' ? 'In library' : video.stream ? 'Stream' : ''}));
   const body = element('div', 'card-body');
   body.append(element('h3', '', video.title || 'Video'));
   const meta = element('div', 'card-meta');
@@ -1001,6 +1652,11 @@ function youtubeCard(video, {showChannel = true, badge = true} = {}) {
       button.textContent = resume ? `Resume · ${formatTime(resume)}` : 'Play';
       button.onclick = () => playFromLibrary(entry, video.position);
     } else { button.textContent = entry ? 'Not ready yet' : 'Not in library'; button.className = 'card-action quiet'; button.disabled = true; }
+    return node;
+  }
+  if (video.live) {
+    button.textContent = video.live === 'is_live' ? 'Live now · add when it ends' : 'Not started yet';
+    button.className = 'card-action quiet'; button.disabled = true;
     return node;
   }
   const known = cardContext.get(video.id) || {};
@@ -1070,7 +1726,18 @@ function renderFeed(rows, errors = []) {
     if (row.subtitle) header.append(element('span', 'subtitle', row.subtitle));
     section.append(header);
     const scroller = element('div', 'row-scroller');
-    scroller.append(...row.videos.map(video => youtubeCard(video, {badge:row.kind !== 'continue'})));
+    scroller.append(...row.videos.map(video => {
+      const card = youtubeCard(video, {badge:row.kind !== 'continue'});
+      const entry = row.kind === 'continue' ? libraryItem(video.libraryId || video.id) : null;
+      if (entry) card.append(continueDismiss(entry, card));
+      return card;
+    }));
+    if (row.kind === 'continue') {
+      const tools = element('div', 'section-tools');
+      tools.append(clearContinueButton(() => row.videos.map(video => libraryItem(video.libraryId || video.id)).filter(Boolean),
+        () => { section.hidden = true; rerenderLibrary(); }));
+      header.append(tools);
+    }
     section.append(scroller);
     return section;
   });
@@ -1121,6 +1788,38 @@ function showSuggestions(items) {
   }));
   $('suggestions').hidden = !items.length;
 }
+// Searching a creator's name shows their channel first, like YouTube: the top
+// channel result when it plainly matches the words typed, plus similar ones.
+const squash = text => String(text || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+function channelMatches(name, query) {
+  const a = squash(name), b = squash(query);
+  return a.length >= 3 && b.length >= 3 && (a.includes(b) || b.includes(a));
+}
+function renderSearchChannels(channels, query) {
+  const box = $('search-channels');
+  const list = Array.isArray(channels) ? channels.filter(channel => channel?.id && channel?.name) : [];
+  if (!list.length || !channelMatches(list[0].name, query)) { box.hidden = true; box.replaceChildren(); return; }
+  const [top, ...similar] = list;
+  const card = element('button', 'search-channel-top'); card.type = 'button'; card.title = `Open ${top.name}`;
+  const text = element('span', 'search-channel-text');
+  text.append(element('strong', '', top.name));
+  if (top.subscribers) text.append(element('small', '', top.subscribers));
+  card.append(avatarNode(top.name, top.avatar), text, element('span', 'pill', 'View channel'));
+  card.onclick = () => openChannel({id:top.id, name:top.name});
+  const nodes = [card];
+  if (similar.length) {
+    const row = element('div', 'search-channel-similar');
+    row.append(element('span', 'chip-label', 'Similar channels'), ...similar.slice(0, 3).map(channel => {
+      const button = element('button', 'subs-channel'); button.type = 'button'; button.title = `Open ${channel.name}`;
+      button.append(avatarNode(channel.name, channel.avatar), element('strong', '', channel.name));
+      if (channel.subscribers) button.append(element('small', '', channel.subscribers.replace(' subscribers', '')));
+      button.onclick = () => openChannel({id:channel.id, name:channel.name});
+      return button;
+    }));
+    nodes.push(row);
+  }
+  box.replaceChildren(...nodes); box.hidden = false;
+}
 async function runSearch(rawQuery, append = false) {
   const query = String(rawQuery || '').trim();
   if (!query) return;
@@ -1140,6 +1839,7 @@ async function runSearch(rawQuery, append = false) {
     rememberSearch(query);
     $('query').blur?.();
     $('results').replaceChildren(...Array.from({length:8}, () => element('div', 'card skeleton')));
+    $('search-channels').hidden = true; $('search-channels').replaceChildren();
     $('search-summary').textContent = `Searching for “${query}”…`;
     window.scrollTo?.({top:0});
   }
@@ -1155,7 +1855,7 @@ async function runSearch(rawQuery, append = false) {
     const known = new Set(searchState.results.map(video => video.id));
     const fresh = results.filter(video => video?.id && !known.has(video.id));
     searchState.results.push(...fresh);
-    if (!append) $('results').replaceChildren();
+    if (!append) { $('results').replaceChildren(); renderSearchChannels(page?.channels, searchState.query); }
     $('results').append(...fresh.map(video => youtubeCard(video)));
     const filterLabel = document.querySelector?.(`[data-filter="${searchState.filter}"]`)?.textContent;
     $('search-summary').textContent = searchState.results.length
@@ -1254,7 +1954,10 @@ function setupSettings() {
   };
   toggle('pref-resume', 'vp-pref-resume', 'on');
   toggle('pref-fullscreen', 'vp-pref-fullscreen', 'on');
-  toggle('pref-datasaver', 'vp-data-saver', 'on', () => { rerenderLibrary(); feedState.loadedAt = 0; });
+  toggle('pref-datasaver', 'vp-data-saver', 'on', enabled => {
+    rerenderLibrary(); feedState.loadedAt = 0;
+    if (current && !$('player-section').hidden && enabled) void switchPlaybackQuality('360');
+  });
   const boost = $('pref-boost');
   if (boost) { boost.checked = audioBoost; boost.onchange = () => { audioBoost = boost.checked; try { globalThis.localStorage?.setItem(audioBoostKey, audioBoost ? 'on' : 'off'); } catch {} applyAudioState(); }; }
   $('lib-retry-failed').onclick = async () => {
@@ -1264,7 +1967,7 @@ function setupSettings() {
   $('lib-remove-watched').onclick = async () => {
     const watched = (lastLibrary?.videos || []).filter(video => video.state === 'ready' && isWatched(video));
     if (!watched.length) { $('lib-action-status').textContent = 'No watched videos to remove.'; return; }
-    if (globalThis.confirm && !globalThis.confirm(`Remove ${watched.length} watched video${watched.length === 1 ? '' : 's'} from the iPhone?`)) return;
+    if (globalThis.confirm && !globalThis.confirm(`Remove ${watched.length} watched video${watched.length === 1 ? '' : 's'} from the Pi?`)) return;
     let removed = 0;
     for (const video of watched) { try { await api('/api/library/remove', {id:video.id}); removed++; } catch {} }
     $('lib-action-status').textContent = `Removed ${removed} watched video${removed === 1 ? '' : 's'}.`;
@@ -1276,7 +1979,7 @@ function setupSettings() {
       await api('/api/history/clear', {});
       $('lib-action-status').textContent = 'Watch history cleared.';
       feedState.rows = null; feedState.loadedAt = 0;
-    } catch (error) { $('lib-action-status').textContent = error.status === 404 ? 'This iPhone build has no watch history yet.' : error.message; }
+    } catch (error) { $('lib-action-status').textContent = error.status === 404 ? 'This Pi host has no watch history yet.' : error.message; }
   };
 }
 const mbps = value => { const n = Number(value); return Number.isFinite(n) ? `${n.toFixed(n >= 10 ? 0 : 1)} Mb/s` : '—'; };
@@ -1306,9 +2009,19 @@ function renderSettings() {
   $('conn-down').textContent = mbps(status.downloadMbps); $('conn-up').textContent = mbps(status.uploadMbps);
   $('conn-streams').textContent = String(Number(status.activeStreams) || 0);
   $('settings-auth').textContent = status.authentication === 'faceID-on-start' ? 'Face ID per app session' : 'App authorization';
-  $('settings-youtube').textContent = status.youtubeSignedIn ? 'Google connected' : 'Not signed in';
+  $('settings-youtube').textContent = status.youtubeSignedIn ? 'Signed in' : 'Not signed in';
+  $('yt-account-status').textContent = status.youtubeSignedIn ? 'Signed in on the Pi' : 'Not signed in';
+  $('yt-signout').hidden = !status.youtubeSignedIn;
+  $('yt-signin').textContent = status.youtubeSignedIn ? 'Switch account' : 'Sign in to YouTube';
   $('settings-search').textContent = status.youtubeSearch ? 'Enabled' : 'Unavailable';
-  const version = status.version ? `${status.version}${status.build ? ` (build ${status.build})` : ''}` : '—';
+  $('settings-screen').textContent = `${globalThis.innerWidth || '—'} × ${globalThis.innerHeight || '—'}`;
+  const audioRate = Number(globalThis.window?.JSMpeg?.AudioOutput?.WebAudio?.CachedContext?.sampleRate);
+  $('settings-audio').textContent = audioRate ? `${(audioRate / 1000).toFixed(1)} kHz` : 'Starts with the first video';
+  // Named builds read "0.1.40 · Pi build"; numbered ones keep "(build 12)".
+  const named = /^[a-z]+$/i.test(String(status.build || ''));
+  const version = !status.version ? '—' : named
+    ? `${String(status.version).replace(new RegExp(`-${status.build}$`, 'i'), '')} · ${status.build} build`
+    : `${status.version}${status.build ? ` (build ${status.build})` : ''}`;
   $('settings-version').textContent = version;
   $('settings-version-line').textContent = status.version ? `Video Pilot ${version}` : 'Video Pilot';
   $('stat-poll').textContent = `every ${pollInterval() / 1000} s`;
@@ -1376,7 +2089,42 @@ function syncFullscreenControls(active) {
   else shell.classList?.remove?.('vp-fullscreen');
   $('fullscreen').hidden = active;
   $('exit-fullscreen').hidden = !active;
+  showPlayerChrome();
 }
+// Full-screen picture shape, remembered per browser: Fit, Fill or Stretch.
+const FIT_MODES = ['fit', 'fill', 'stretch'];
+let fitMode = FIT_MODES.includes(prefs.get('vp-fit-mode')) ? prefs.get('vp-fit-mode') : 'fit';
+function applyFitMode() {
+  const shell = $('player-shell');
+  for (const mode of FIT_MODES) shell.classList?.[mode === fitMode ? 'add' : 'remove']?.(`vp-fit-${mode}`);
+  $('fit-mode').textContent = fitMode[0].toUpperCase() + fitMode.slice(1);
+}
+$('fit-mode').onclick = () => {
+  fitMode = FIT_MODES[(FIT_MODES.indexOf(fitMode) + 1) % FIT_MODES.length];
+  prefs.set('vp-fit-mode', fitMode); applyFitMode(); showPlayerChrome();
+};
+applyFitMode();
+// Full screen: controls fade out while playing and come back on a tap.
+const CHROME_IDLE_MS = 3500;
+let chromeTimer = null;
+const fullscreenActive = () => Boolean($('player-shell').classList?.contains?.('vp-fullscreen'));
+function showPlayerChrome() {
+  $('player-shell').classList?.remove?.('vp-chrome-hidden');
+  globalThis.clearTimeout?.(chromeTimer); chromeTimer = null;
+  if (fullscreenActive() && player && !player.paused) chromeTimer = globalThis.setTimeout?.(hidePlayerChrome, CHROME_IDLE_MS);
+}
+function hidePlayerChrome() {
+  globalThis.clearTimeout?.(chromeTimer); chromeTimer = null;
+  if (fullscreenActive() && player && !player.paused) $('player-shell').classList?.add?.('vp-chrome-hidden');
+}
+// Hidden controls ignore taps, so the first tap lands on the picture and only
+// reveals them; a tap on the picture while they show hides them again.
+$('player-shell').addEventListener?.('pointerdown', event => {
+  if (!fullscreenActive()) return;
+  const onPicture = event.target === $('screen') || event.target === $('player-shell');
+  const hidden = $('player-shell').classList?.contains?.('vp-chrome-hidden');
+  if (onPicture && !hidden && player && !player.paused) hidePlayerChrome(); else showPlayerChrome();
+});
 function leaveFullscreen() {
   fullscreenFallback = false;
   syncFullscreenControls(false);
@@ -1393,18 +2141,22 @@ function syncCanvasAspect() {
   const height = Number(player?.video?.height || canvas?.height);
   if (width > 0 && height > 0) canvas.style?.setProperty?.('aspect-ratio', `${width} / ${height}`);
 }
-function closePlayer(resumePosition = null) {
+function closePlayer(resumePosition = null, preserveFullscreen = false) {
   if (resumePosition !== null && current) saveResume(current, resumePosition);
   else saveResume();
-  leaveFullscreen();
+  if (!preserveFullscreen) leaveFullscreen();
   const oldPlayback = playback;
   clearRecoveryTimer(oldPlayback);
   playback = null;
   globalThis.clearTimeout?.(seekTimer); seekTimer = null;
   const oldPlayer = player;
-  try { audioLimiter?.disconnect?.(); } catch {}
+  for (const node of audioLimiter || []) { try { node.disconnect(); } catch {} }
   audioLimiter = null;
-  player = null; currentOffset = 0; $('player-section').hidden = true;
+  // A restart (seek, reconnect, quality switch) keeps the player and its last
+  // frame on screen; hiding it flashed the page underneath mid-video.
+  player = null; currentOffset = 0;
+  if (!preserveFullscreen) $('player-section').hidden = true;
+  if (!preserveFullscreen) globalThis.setTimeout?.(applyWebUpdate, 500);
   const source = oldPlayer?.source;
   let stopped = source?.stoppedPromise;
   let playerDestroyed = false;
@@ -1438,49 +2190,48 @@ function unlockAudio() {
     if (context?.state === 'suspended' || context?.state === 'interrupted') context.resume()?.catch(() => {});
   } catch { /* A later Play or Unmute gesture can retry audio activation. */ }
 }
+// Returns true when the boost chain carries the output.
 function configureAudioLimiter() {
   const output = player?.audioOut;
   const context = output?.context;
   const gain = output?.gain;
-  if (!context || !gain) return;
+  if (!context || !gain) return false;
+  const unwire = () => { for (const node of audioLimiter || []) { try { node.disconnect(); } catch {} } audioLimiter = null; };
   try {
     if (!audioBoost) {
-      // Unity gain is the clean baseline. Remove the compressor entirely when
-      // Audio + is off; some Tesla WebAudio builds introduce their own clicks
+      // Unity gain is the clean baseline. Remove the chain entirely when the
+      // boost is off; some Tesla WebAudio builds introduce their own clicks
       // when an unnecessary dynamics node sits in the output path.
-      audioLimiter?.disconnect?.();
-      audioLimiter = null;
+      unwire();
       gain.disconnect();
       gain.connect(context.destination);
-      return;
+      return false;
     }
-    if (typeof context.createDynamicsCompressor !== 'function') return;
-    if (audioLimiter?.context === context) return;
-    audioLimiter?.disconnect?.();
-    // JSMpeg normally connects its gain node directly to the destination.
-    // Replace that direct edge with a conservative compressor so the optional
-    // browser boost cannot clip loud source peaks into crackling distortion.
+    if (typeof context.createDynamicsCompressor !== 'function') return false;
+    if (audioLimiter?.[0]?.context === context) return true;
+    unwire();
     gain.disconnect();
+    const compressor = context.createDynamicsCompressor();
+    compressor.threshold.value = -20; compressor.knee.value = 10; compressor.ratio.value = 6;
+    compressor.attack.value = 0.003; compressor.release.value = 0.25;
     const limiter = context.createDynamicsCompressor();
-    limiter.threshold.value = -3;
-    limiter.knee.value = 6;
-    limiter.ratio.value = 8;
-    limiter.attack.value = 0.003;
-    limiter.release.value = 0.12;
-    gain.connect(limiter);
-    limiter.connect(context.destination);
-    audioLimiter = limiter;
+    limiter.threshold.value = -1.5; limiter.knee.value = 0; limiter.ratio.value = 20;
+    limiter.attack.value = 0.001; limiter.release.value = 0.05;
+    gain.connect(compressor); compressor.connect(limiter); limiter.connect(context.destination);
+    audioLimiter = [compressor, limiter];
+    return true;
   } catch {
     // Older Tesla WebAudio implementations may not support a compressor;
     // leave JSMpeg's direct, unmodified output intact in that case.
+    unwire();
     try { gain.disconnect(); gain.connect(context.destination); } catch {}
-    audioLimiter = null;
+    return false;
   }
 }
 function applyAudioState() {
   if (!player) return;
-  configureAudioLimiter();
-  const volume = audioMuted ? 0 : (audioBoost ? audioBoostVolume : 1);
+  const chained = configureAudioLimiter();
+  const volume = audioMuted ? 0 : (audioBoost ? (chained ? audioBoostVolume : audioBoostFallbackVolume) : 1);
   try {
     // JSMpeg exposes both the public volume property and its GainNode. Set
     // both so a gain change is audible immediately, including already queued
@@ -1497,7 +2248,7 @@ function applyAudioState() {
   if (boost) {
     boost.textContent = audioBoost ? 'Audio +' : 'Audio';
     boost.setAttribute?.('aria-pressed', audioBoost ? 'true' : 'false');
-    boost.title = audioBoost ? 'Audio boost on (115%)' : 'Audio boost off (100%)';
+    boost.title = audioBoost ? 'Audio boost on' : 'Audio boost off';
   }
   reportDiagnostic('audioState', {muted:audioMuted, boost:audioBoost, gain:volume});
 }
@@ -1516,8 +2267,27 @@ function boundDecoderBuffers() {
     audioBufferBytes:Number(player?.audio?.bits?.bytes?.length) || 0
   });
 }
+// Video Pilot's audio is 44.1 kHz MP2, delivered in ~26 ms chunks. In a
+// context at the car's native rate (usually 48 kHz) each chunk is resampled on
+// its own and its start lands between samples, so every boundary clicks: a
+// steady crackle while playing. JSMpeg reuses a cached context, so give it one
+// at the source rate; the browser then converts the whole stream smoothly.
+const SOURCE_SAMPLE_RATE = 44100;
+function prepareAudioContext() {
+  const WebAudio = globalThis.window?.JSMpeg?.AudioOutput?.WebAudio;
+  const Context = globalThis.AudioContext || globalThis.webkitAudioContext;
+  if (!WebAudio || WebAudio.CachedContext || !Context) return;
+  try {
+    WebAudio.CachedContext = new Context({sampleRate:SOURCE_SAMPLE_RATE});
+    reportDiagnostic('audioContext', {sampleRate:WebAudio.CachedContext.sampleRate});
+  } catch { /* An older browser without the option keeps JSMpeg's default context. */ }
+}
 function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
+  hideDropSplash();
   current = video;
+  syncPlaybackQuality();
+  const preferred = playbackQuality === 'auto' ? (dataSaver() ? 360 : qualityHeight(video.quality)) : Number(playbackQuality);
+  if (preferred && preferred < activeQuality) void switchPlaybackQuality(playbackQuality);
   const duration = finiteDuration(video.duration);
   const storedResume = seek === null && resumeEnabled() ? savedResume(video) : 0;
   currentOffset = Math.max(0, Number(seek ?? storedResume) || 0);
@@ -1544,7 +2314,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
     $('playback-status').textContent = message;
     seekChain = seekChain.then(async () => {
       if (generation !== seekGeneration || current !== videoAtError) return;
-      await closePlayer(target);
+      await closePlayer(target, true);
       if (generation !== seekGeneration || current !== videoAtError) return;
       startPlayer(videoAtError, target, session.recoveryAttempt + 1);
     }).catch(error => {
@@ -1556,7 +2326,7 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
     });
     return true;
   };
-  // The relay answers HTTP 429 ("iPhone is busy") while it is still releasing
+  // The relay answers HTTP 429 ("Pi is busy") while it is still releasing
   // the previous stream. That is transient after a seek, so retry the same
   // target with exponential backoff instead of treating it as fatal.
   const retryBusy = text => {
@@ -1569,16 +2339,16 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
     const generation = ++seekGeneration;
     session.failed = true; session.paused = true;
     reportDiagnostic('playerBusyRetry', {seekTargetSeconds:target, attempt, delayMs:delay});
-    $('playback-status').textContent = 'iPhone is busy. Retrying…';
+    $('playback-status').textContent = 'Pi is busy. Retrying…';
     seekChain = seekChain.then(async () => {
       if (generation !== seekGeneration || current !== videoAtError) return;
-      await closePlayer(target);
+      await closePlayer(target, true);
       await new Promise(resolve => globalThis.setTimeout(resolve, delay));
       if (generation !== seekGeneration || current !== videoAtError) return;
       startPlayer(videoAtError, target, session.recoveryAttempt, attempt);
     }).catch(error => {
       if (generation === seekGeneration) {
-        $('playback-status').textContent = error?.message || 'iPhone is busy.';
+        $('playback-status').textContent = error?.message || 'Pi is busy.';
         $('pause').textContent = 'Retry';
       }
     });
@@ -1618,7 +2388,11 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
   $('screen').style?.setProperty?.('aspect-ratio', 'auto');
   updateTimeline(currentOffset, duration);
   try {
-    const query = currentOffset > 0 ? `?seek=${encodeURIComponent(currentOffset)}` : '';
+    const queryParts = [];
+    if (currentOffset > 0) queryParts.push(`seek=${encodeURIComponent(currentOffset)}`);
+    if (activeQuality) queryParts.push(`quality=${activeQuality}`);
+    const query = queryParts.length ? '?' + queryParts.join('&') : '';
+    prepareAudioContext();
     player = new window.JSMpeg.Player(`/api/stream/${encodeURIComponent(video.id)}.ts${query}`, {
       headers:{'x-mk8-player': playbackClient},
       source:JSMpegHttpSource,canvas:$('screen'),autoplay:true,loop:false,disableWebAssembly:true,
@@ -1688,17 +2462,19 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
           session.stallTimer?.unref?.();
         }
         reportDiagnostic('playerDecode', {positionSeconds:session.position || 0});
-        if (active()) $('playback-status').textContent = 'Playing from your iPhone';
+        if (active()) $('playback-status').textContent = 'Playing from Raspberry Pi';
       },
       onSourceError:message => {
         if (playback !== session) return;
         clearRecoveryTimer(session);
         saveResume();
         const text = String(message || 'Unable to read video stream.');
-        const retryable = !/Pair this browser|HTTP 4\d\d|not ready|no longer exists/i.test(text);
+        const retryable = !/Enter the PIN|HTTP 4\d\d|not ready|no longer exists/i.test(text);
         reportDiagnostic('playerError', {error:text, positionSeconds:session.position || 0,
           recoveryAttempt:session.recoveryAttempt});
         if (retryBusy(text)) return;
+        // A stream cut mid-video (fewer bytes than the file) waits for Retry.
+        if (/interrupted/i.test(text)) { showDropSplash(session, video); return; }
         if (retryable && restartSession('Connection interrupted. Reconnecting…')) return;
         session.failed = true; session.paused = true;
         try { player?.pause(); player?.source?.pauseReading?.(); } catch {}
@@ -1706,6 +2482,14 @@ function startPlayer(video, seek = null, recoveryAttempt = 0, busyRetries = 0) {
       },
       onEnded:() => {
         if (playback !== session || session.failed) return;
+        // An "end" well before the video's length is a dropped stream, not the
+        // finish: hold the place and wait for Retry instead of jumping to the
+        // end and marking the video watched.
+        if (session.duration && (session.position || 0) < session.duration - 10) {
+          reportDiagnostic('playerEndedEarly', {positionSeconds:session.position || 0, durationSeconds:session.duration});
+          showDropSplash(session, video);
+          return;
+        }
         clearRecoveryTimer(session);
         session.ended = true;
         if (session.duration) session.position = session.duration;
@@ -1751,7 +2535,26 @@ function reportHistory(video = current, position = currentOffset, finished = fal
   api('/api/history', body).catch(() => {});
 }
 let playerReturn = null;
+// The connection to the Pi dropped mid-video: pause on the last frame, keep the
+// place, and show a panel with Retry that continues from exactly there.
+function showDropSplash(session, video) {
+  clearRecoveryTimer(session);
+  session.failed = true; session.paused = true;
+  const position = Math.max(0, Math.floor(session.position || currentOffset || 0));
+  currentOffset = position; saveResume(video, position);
+  try { player?.pause(); player?.source?.pauseReading?.(); } catch {}
+  $('drop-time').textContent = `Your place is saved at ${formatTime(position)}.`;
+  $('player-drop').hidden = false;
+  $('pause').textContent = 'Retry'; $('playback-status').textContent = 'Connection to the Pi dropped';
+  showPlayerChrome();
+}
+function hideDropSplash() { $('player-drop').hidden = true; }
+$('drop-retry').onclick = () => { hideDropSplash(); if (current) requestSeek(currentOffset); };
 function play(video, seek = null) {
+  ++qualityRequestSeq;
+  activeQuality = defaultPlaybackQuality(video);
+  $('quality-status').textContent = '';
+  // current is assigned by startPlayer; set the control after that as well.
   if ($('player-section').hidden) playerReturn = {tab:currentTab, y:globalThis.scrollY || 0};
   invalidateSeeks();
   lastHistoryAt = Date.now();
@@ -1790,20 +2593,21 @@ $('pause').onclick = () => {
     if (!playback?.failed && !playback?.ended) $('playback-status').textContent = 'Paused';
     reportHistory();
   } else {
-    // The iPhone releases a relay stream nobody has read for 45 s, so after a
+    // The Pi releases a relay stream nobody has read for 45 s, so after a
     // long pause reopen at the same position instead of resuming a dead stream.
     if (current && playback?.pausedAt && Date.now() - playback.pausedAt > 30000) {
       $('pause').textContent = 'Pause'; requestSeek(currentOffset); return;
     }
     if (playback) playback.paused = false;
     playback?.resumeWatchdog?.();
-    unlockAudio(); player.source?.resumeReading(); player.play(); $('pause').textContent = 'Pause';
+    unlockAudio(); player.source?.resumeReading(); player.play(); $('pause').textContent = 'Pause'; showPlayerChrome();
     if (!playback?.failed && !playback?.ended) $('playback-status').textContent = 'Buffering…';
   }
 };
 $('back10').onclick = () => { if (current) requestSeek(Math.max(0, currentOffset - 10)); };
 $('forward10').onclick = () => { if (current) requestSeek(Math.min(current.duration || Infinity, currentOffset + 10)); };
 $('close').onclick = () => {
+  ++qualityRequestSeq;
   invalidateSeeks();
   if (playback && !playback.ended) reportHistory();
   void closePlayer().then(() => {
@@ -1850,11 +2654,13 @@ document.addEventListener?.('fullscreenchange', () => {
   if (full) { fullscreenFallback = false; syncFullscreenControls(true); }
   else if (!fullscreenFallback) syncFullscreenControls(false);
 });
-function requestSeek(offset) {
+// A seek reopens the stream; it is not the user leaving, so full screen stays.
+function requestSeek(offset, {preservePaused = false, preserveFullscreen = true} = {}) {
   if (!current) return;
   globalThis.clearTimeout?.(seekTimer);
   const target = Math.max(0, Number(offset) || 0);
   const video = current;
+  const paused = preservePaused && playback?.paused;
   const generation = ++seekGeneration;
   $('playback-status').textContent = 'Seeking…';
   reportDiagnostic('playerSeek', {seekTargetSeconds:target, positionSeconds:currentOffset});
@@ -1869,11 +2675,12 @@ function requestSeek(offset) {
       // A newer seek supersedes this one while the previous stream is being
       // cancelled. Do not create a player for an obsolete target.
       if (generation !== seekGeneration || current !== video) return;
-      await closePlayer(target);
+      await closePlayer(target, preserveFullscreen);
       // Short grace so the phone can release the old stream before the new one opens.
       await new Promise(resolve => setTimeout(resolve, 150));
       if (generation !== seekGeneration || current !== video) return;
       startPlayer(video, target);
+      if (paused) { playback.paused = true; player?.pause(); player?.source?.pauseReading(); $('pause').textContent = 'Play'; $('playback-status').textContent = 'Paused'; }
     }).catch(error => {
       if (generation === seekGeneration) $('playback-status').textContent = error?.message || 'Unable to seek.';
     });
@@ -1894,7 +2701,7 @@ function browserDiagnosticsText() {
 async function combinedDiagnosticsText() {
   await flushDiagnostics();
   const {response, body:text} = await timedFetch('/api/diagnostics/export', {credentials:'same-origin', cache:'no-store'}, 5000, r => r.text());
-  if (!response.ok) throw new Error('The iPhone has no combined log yet.');
+  if (!response.ok) throw new Error('The Pi has no combined log yet.');
   // Include every locally retained browser event, including batches awaiting
   // delivery. De-duplicate ACKed entries already present in the phone journal.
   const merged = [], ids = new Set();
@@ -1923,7 +2730,7 @@ if ($('export-diagnostics')) $('export-diagnostics').onclick = async () => {
     const text = await combinedDiagnosticsText();
     downloadDiagnosticsText(text, `VideoPilot-diagnostics-${new Date().toISOString().replace(/:/g,'-')}.jsonl`);
     showDiagnosticsText(text);
-    status.textContent = 'Combined web + iPhone diagnostics downloaded.';
+    status.textContent = 'Combined web + Pi diagnostics downloaded.';
   } catch {
     // If the tunnel is down, still make the locally retained browser trace
     // available instead of losing the evidence that explains the outage.
@@ -1933,7 +2740,7 @@ if ($('export-diagnostics')) $('export-diagnostics').onclick = async () => {
         `VideoPilot-browser-diagnostics-${new Date().toISOString().replace(/:/g,'-')}.jsonl`);
       showDiagnosticsText(text);
       status.textContent = 'Tunnel unavailable; browser-only diagnostics downloaded. Reconnect and export again for the combined log.';
-    } else status.textContent = 'Reconnect the iPhone host, then try the export again.';
+    } else status.textContent = 'Reconnect the Pi host, then try the export again.';
   }
 };
 if ($('copy-diagnostics')) $('copy-diagnostics').onclick = async () => {
@@ -1942,7 +2749,7 @@ if ($('copy-diagnostics')) $('copy-diagnostics').onclick = async () => {
   let text = '';
   try { text = await combinedDiagnosticsText(); }
   catch { text = browserDiagnosticsText(); }
-  if (!text) { status.textContent = 'Reconnect the iPhone host, then try the export again.'; return; }
+  if (!text) { status.textContent = 'Reconnect the Pi host, then try the export again.'; return; }
   showDiagnosticsText(text);
   try {
     if (globalThis.navigator?.clipboard?.writeText) await globalThis.navigator.clipboard.writeText(text);
@@ -1975,4 +2782,5 @@ void refresh();
 setInterval(() => {
   if (Date.now() - lastPollAt >= pollInterval() - 50) void refresh();
   if (currentTab === 'settings-tab') renderLiveDiagnostics();
+  if (!document.hidden && Date.now() - portalStatusAt >= 10000) void refreshPortalStatus();
 }, 1000);
