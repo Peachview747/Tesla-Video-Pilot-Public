@@ -95,4 +95,40 @@ async function refresh() {
   try { render(await call('/api/health')); if (rebooting) { rebooting = false; loadActions(); } }
   catch (error) { if (!rebooting) { $('error').hidden = false; $('error').textContent = error.message; } }
 }
-loadActions(); refresh(); setInterval(() => { if (!document.hidden) refresh(); }, 5000);
+// Trusted browsers: only browsers added here can open the portal at its own
+// web address; everyone else gets no answer at all. A new browser can be
+// added for a few minutes after a trusted one opens the door.
+async function gateCall(path, body, question) {
+  if (question && !confirm(question)) return;
+  try { renderGate(await call(path, body)); }
+  catch (error) { $('gate-note').textContent = error.message; }
+  if (path.endsWith('/enroll')) loadGate();
+}
+function renderGate(g) {
+  const button = (label, onclick, cls = '') => { const b = el('button', cls, label); b.type = 'button'; b.onclick = onclick; return b; };
+  const open = g.windowUntil > Date.now();
+  const here = g.here || gateHere;
+  if (g.here) gateHere = g.here;
+  $('gate-note').textContent = !g.enforced
+    ? 'Off. Anyone with the address reaches the PIN screen. Trust this browser to turn it on.'
+    : open ? `On. A new browser can be added for the next ${Math.max(1, Math.round((g.windowUntil - Date.now()) / 60000))} min.`
+    : 'On. Browsers not on this list get no answer at all.';
+  $('gate').replaceChildren(...g.devices.map(d => row(d.current ? 'good' : '', `${d.name}${d.current ? ' (this browser)' : ''}`,
+    `Added ${new Date(d.added).toLocaleDateString()} · last used ${ago(d.lastSeen)} ago`,
+    button('Remove', () => gateCall('/api/gate/remove', {id: d.id}, `Remove ${d.name}? It will get no answer until it is added again.`), 'danger'))));
+  const actions = [];
+  if (here === 'new' && (!g.enforced || open)) {
+    const name = el('input'); name.id = 'gate-name'; name.maxLength = 40; name.setAttribute('aria-label', 'Name for this browser');
+    name.value = /Tesla/.test(navigator.userAgent) ? 'Tesla' : /iPhone/.test(navigator.userAgent) ? 'iPhone' : /Android/.test(navigator.userAgent) ? 'Android phone' : 'Browser';
+    actions.push(name, button('Trust this browser', () => gateCall('/api/gate/enroll', {name: name.value.trim() || 'Browser'})));
+  }
+  if (g.enforced) actions.push(open ? button('Stop adding', () => gateCall('/api/gate/close', {}))
+    : button('Let a new browser in (10 min)', () => gateCall('/api/gate/open', {minutes: 10})));
+  $('gate-actions').replaceChildren(...actions);
+  if (here === 'relay') $('gate-note').textContent += ' To add a browser, open the portal at its own web address on that browser.';
+}
+let gateHere = '';
+async function loadGate() { try { renderGate(await call('/api/gate')); } catch { $('gate-note').textContent = 'Trusted browsers are not set up on this Pi.'; } }
+loadActions(); refresh(); loadGate();
+setInterval(() => { if (!document.hidden) refresh(); }, 5000);
+setInterval(() => { if (!document.hidden) loadGate(); }, 30000);

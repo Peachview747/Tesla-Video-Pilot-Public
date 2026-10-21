@@ -20,3 +20,15 @@ The certificate is a wildcard (`*.yourname.duckdns.org`) and the portal lives
 on a random name under it, so the portal's name does not appear in public
 certificate logs. Anything that reaches Caddy with a different name gets the
 connection dropped.
+
+## Trusted browsers (second lock)
+
+Pi Health → Trusted browsers. The first browser that taps "Trust this browser"
+(on the public address, after the PIN) turns the gate on; from then on a
+browser without its pass cookie gets no answer at all (Video Pilot marks the
+reply `x-gate: deny` and Caddy aborts the connection). To add another browser,
+tap "Let a new browser in (10 min)" on a trusted one (or via the Cloudflare
+address, or `curl -X POST -d '{"minutes":10}' 127.0.0.1:5001/api/gate/open` on
+the Pi), then open the public address on the new browser, enter the PIN and
+trust it. State: `/var/lib/video-pilot/device-gate.json` (hashes only).
+Lost every device? Open a window from the Pi as above.

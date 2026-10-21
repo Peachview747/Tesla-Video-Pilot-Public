@@ -2,7 +2,8 @@ import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
-import { visitorKey } from "./pin-lock.mjs";
+import { visitorKey, deviceName } from "./pin-lock.mjs";
+import { passCookie } from "./device-gate.mjs";
 import {QUALITIES, parseQuality} from "./quality.mjs";
 
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8" };
@@ -40,7 +41,7 @@ const PAGE_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-s
 export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5001, host = "127.0.0.1", version = "Pi",
   signinURL = "http://127.0.0.1:5002", liveURL = "http://127.0.0.1:5003", pinLock = null,
   controlURL = "http://127.0.0.1:5020", controlKey = null, airoomWeb = null, tunnelConnected = () => null,
-  publicPort = null }) {
+  publicPort = null, gate = null }) {
   // publicPort: a second listener for the HTTPS front (Caddy) on the internet
   // side. Everything arriving on it counts as outside, whatever headers it carries.
   let publicActual = null;
@@ -56,6 +57,12 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
   const handle = async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+      const onPublicPort = publicActual !== null && req.socket.localPort === publicActual;
+      // Trusted browsers: on the public port, a browser without a known pass
+      // gets nothing at all (the HTTPS front drops the connection on x-gate).
+      const pass = onPublicPort && gate ? gate.check(req.headers.cookie) : null;
+      if (pass && !pass.allowed) return send(res, 404, "", "text/plain", { "x-gate": "deny" });
+      if (pass?.refresh) res.setHeader("set-cookie", passCookie(pass.refresh));
       if (!["GET", "POST"].includes(req.method)) return send(res, 405, { error: "Method not allowed." });
       if (req.method === "GET" && (AIROOM_FILES[url.pathname] || HEALTH_FILES[url.pathname] || url.pathname === "/airoom" || url.pathname === "/health")) {
         if (url.pathname === "/airoom" || url.pathname === "/health") return send(res, 301, "", "text/plain", { location: url.pathname + "/" });
@@ -81,7 +88,6 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
       // lock's own calls. Requests made on the Pi itself are never locked.
       // Outside = through Cloudflare's relay (which marks its requests) or on the
       // public port; only the Pi itself is trusted. The visitor is who the lockouts count.
-      const onPublicPort = publicActual !== null && req.socket.localPort === publicActual;
       const outside = Boolean(req.headers["x-video-pilot-relay"]) || onPublicPort;
       const visitor = !outside ? "local" : visitorKey(onPublicPort
         ? String(req.headers["x-forwarded-for"] || "").split(",")[0] : req.headers["cf-connecting-ip"]);
@@ -102,6 +108,23 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
       }
       if (pinLock && outside && !pinLock.allows(deviceKey))
         return send(res, 401, { error: "Enter the PIN.", pinRequired: true });
+      // Trusted browsers, managed from Pi Health (behind the PIN like the rest).
+      const gateRoute = url.pathname.match(/^\/api\/gate(?:\/(open|close|enroll|remove|rename))?$/);
+      if (gateRoute && gate) {
+        const name = gateRoute[1];
+        if (!name) return send(res, 200, { ...gate.status(pass?.device), here: onPublicPort ? (pass?.device ? "trusted" : "new") : outside ? "relay" : "pi" });
+        if (req.method !== "POST") return send(res, 405, { error: "Method not allowed." });
+        const body = await bodyJSON(req, 1024);
+        try {
+          if (name === "open") return send(res, 200, await gate.openWindow(body.minutes));
+          if (name === "close") return send(res, 200, await gate.closeWindow());
+          if (name === "remove") return send(res, 200, await gate.remove(String(body.id || "")));
+          if (name === "rename") return send(res, 200, await gate.rename(String(body.id || ""), body.name));
+          if (!onPublicPort) return send(res, 400, { error: "Open the portal at its own web address (not the Cloudflare one) on the browser you want to add." });
+          const { pass: secret, device } = await gate.enroll(body.name || deviceName(req.headers["user-agent"]), req.headers.cookie);
+          return send(res, 200, { enrolled: device }, undefined, { "set-cookie": passCookie(secret) });
+        } catch (error) { return send(res, error.status || 400, { error: String(error.message || error) }); }
+      }
       const room = url.pathname.match(/^\/api\/airoom\/([a-z]+)$/);
       if (room) {
         if (!ROOM_ACTIONS.has(room[1])) return send(res, 404, { error: "Unknown room action." });

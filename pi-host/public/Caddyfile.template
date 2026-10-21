@@ -17,6 +17,11 @@ https://:8443 {
 		# No buffering: video and Claude's replies stream as they are made.
 		reverse_proxy 127.0.0.1:5101 {
 			flush_interval -1
+			# A browser that is not trusted gets no answer at all.
+			@untrusted header X-Gate deny
+			handle_response @untrusted {
+				abort
+			}
 		}
 	}
 	handle {
