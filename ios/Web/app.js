@@ -696,7 +696,7 @@ async function loadChannel(seq, {append = false, refresh = false} = {}) {
     $('channel-videos').replaceChildren(...Array.from({length:8}, () => element('div', 'card skeleton')));
   }
   try {
-    const page = await api('/api/channel?' + params.toString(), null, 30000);
+    const page = await api('/api/channel?' + params.toString(), null, append ? 60000 : 30000);
     if (seq !== channelState.seq) return;
     if (page.channel) { channelState.channel = page.channel; renderChannelHeader(); renderChannelLibrary(true); }
     const known = new Set(channelState.videos.map(video => video.id));
