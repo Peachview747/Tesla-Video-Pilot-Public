@@ -605,13 +605,14 @@ for (const view of LIBRARY_VIEWS) $(`view-${view}`).onclick = () => {
 $('library-filter').oninput = event => { libraryFilter = String(event.target.value || '').trim(); rerenderLibrary(); };
 
 // ---- Channel page ----
-const channelState = {spec:null, channel:null, videos:[], continuation:null, loading:false, seq:0, returnTo:null, librarySignature:''};
+const channelState = {spec:null, channel:null, tab:'videos', videos:[], continuation:null, loading:false, seq:0, returnTo:null, librarySignature:''};
 function channelParams(spec, refresh = false) {
   const params = new URLSearchParams();
   if (spec.id) params.set('id', spec.id);
   else if (spec.video) params.set('video', spec.video);
   else if (spec.name) params.set('name', spec.name);
   else return null;
+  if (channelState.tab === 'shorts') params.set('tab', 'shorts');
   if (refresh) params.set('refresh', '1');
   return params;
 }
@@ -668,7 +669,8 @@ function openChannel(spec) {
   if (!spec) return;
   if (currentTab !== 'channel-tab') channelState.returnTo = {tab:currentTab, y:globalThis.scrollY || 0};
   const seq = ++channelState.seq;
-  Object.assign(channelState, {spec, channel:null, videos:[], continuation:null, loading:false, librarySignature:''});
+  Object.assign(channelState, {spec, channel:null, tab:'videos', videos:[], continuation:null, loading:false, librarySignature:''});
+  renderChannelTabs();
   hideSuggestions();
   const back = channelState.returnTo?.tab;
   $('channel-back-label').textContent = back === 'library-tab' ? 'Library' : back === 'subs-tab' ? 'Subscriptions'
@@ -690,7 +692,7 @@ async function loadChannel(seq, {append = false, refresh = false} = {}) {
   channelState.loading = true;
   $('channel-more').disabled = true; $('channel-more').textContent = 'Loading…';
   if (!append) {
-    $('channel-status').textContent = 'Loading uploads…';
+    $('channel-status').textContent = 'Loading…';
     $('channel-videos').replaceChildren(...Array.from({length:8}, () => element('div', 'card skeleton')));
   }
   try {
@@ -704,7 +706,9 @@ async function loadChannel(seq, {append = false, refresh = false} = {}) {
     if (!append) $('channel-videos').replaceChildren();
     const name = channelState.channel?.name || spec.name;
     $('channel-videos').append(...fresh.map(video => youtubeCard({channel:name, ...video}, {showChannel:false})));
-    $('channel-status').textContent = channelState.videos.length ? `${channelState.videos.length} newest` : 'No uploads found.';
+    const kind = channelState.tab === 'shorts' ? 'shorts' : 'videos';
+    $('channel-status').textContent = !channelState.videos.length ? `No ${kind} found.`
+      : channelState.continuation ? `Newest ${channelState.videos.length} ${kind}` : `All ${channelState.videos.length} ${kind}`;
   } catch (error) {
     if (seq !== channelState.seq) return;
     if (!append) $('channel-videos').replaceChildren(messageCard('Could not load this channel', error.message,
@@ -719,6 +723,18 @@ async function loadChannel(seq, {append = false, refresh = false} = {}) {
   }
 }
 $('channel-more').onclick = () => { if (!channelState.loading && channelState.continuation) void loadChannel(channelState.seq, {append:true}); };
+function renderChannelTabs() {
+  for (const button of $('channel-tabs').querySelectorAll('[data-channel-tab]'))
+    button.setAttribute('aria-selected', String(button.dataset.channelTab === channelState.tab));
+  $('channel-tabs').hidden = !!channelState.spec?.libraryOnly;
+}
+for (const button of $('channel-tabs').querySelectorAll('[data-channel-tab]')) button.onclick = () => {
+  if (!channelState.spec || channelState.tab === button.dataset.channelTab) return;
+  channelState.tab = button.dataset.channelTab; renderChannelTabs();
+  const seq = ++channelState.seq; channelState.videos = []; channelState.continuation = null;
+  $('channel-more').hidden = true;
+  void loadChannel(seq);
+};
 $('channel-refresh').onclick = () => {
   if (!channelState.spec) return;
   const seq = ++channelState.seq; channelState.videos = []; channelState.continuation = null;

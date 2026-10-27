@@ -338,3 +338,28 @@ test("download and conversion progress reach the status and Downloads views", as
   assert.equal(library.lastPreparation.quality, 720);
   assert.equal(library.statusView().busy, false);
 });
+
+test("channel pages page through every upload and the Shorts tab", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "vp-channel-"));
+  const id = "UCtMVHI3AJD4Qk4hcbZnI9ZQ", total = 45, calls = [];
+  const runner = async (command, args) => {
+    const url = args.at(-1), [from, to] = args[args.indexOf("--playlist-items") + 1].split("-").map(Number);
+    calls.push([url, from, to]);
+    if (url.endsWith("/shorts")) throw new Error("yt-dlp exited 1: ERROR: [youtube:tab] This channel does not have a shorts tab");
+    const entries = Array.from({ length: total }, (_, i) => ({ id: `vid${String(i).padStart(8, "0")}`, title: `Upload ${i}` })).slice(from - 1, to);
+    return { stdout: JSON.stringify({ channel: "Chan", uploader_id: "@chan", entries }) };
+  };
+  const library = await new Library({ dataDir, runner }).init();
+  const first = await library.channel(id);
+  assert.equal(first.channel.name, "Chan");
+  assert.equal(first.videos.length, 30);
+  assert.equal(first.continuation, `${id}.videos.31`);
+  const second = await library.channel(null, { continuation: first.continuation });
+  assert.equal(second.videos.length, 15);
+  assert.equal(second.videos[0].title, "Upload 30");
+  assert.equal(second.continuation, null, "the oldest page has no further continuation");
+  assert.deepEqual(calls.slice(0, 2), [[`https://www.youtube.com/channel/${id}/videos`, 1, 31], [`https://www.youtube.com/channel/${id}/videos`, 31, 61]]);
+  const shorts = await library.channel(id, { tab: "shorts" });
+  assert.deepEqual([shorts.tab, shorts.videos, shorts.continuation, shorts.channel.name], ["shorts", [], null, "Chan"]);
+  await assert.rejects(library.channel(null, { continuation: "UCx.videos.1; rm -rf /" }));
+});

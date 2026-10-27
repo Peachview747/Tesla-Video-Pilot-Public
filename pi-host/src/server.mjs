@@ -330,7 +330,8 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
         return send(res, 200, { rows, errors });
       }
       if (url.pathname === "/api/channel" && req.method === "GET")
-        return send(res, 200, await library.channel(url.searchParams.get("id")));
+        return send(res, 200, await library.channel(url.searchParams.get("id"),
+          { tab: url.searchParams.get("tab") || "videos", continuation: url.searchParams.get("continuation") }));
       if (url.pathname === "/api/history" && req.method === "GET") return send(res, 200, library.historyView(Number(url.searchParams.get("limit")) || 50));
       if (url.pathname === "/api/history" && req.method === "POST") { await library.recordHistory(await bodyJSON(req)); return send(res, 200, { recorded: true }); }
       if (url.pathname === "/api/history/clear" && req.method === "POST") { library.history = []; await library.saveHistory(); return send(res, 200, { cleared: true }); }

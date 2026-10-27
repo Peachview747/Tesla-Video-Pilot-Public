@@ -448,14 +448,36 @@ export class Library {
     return items;
   }
 
-  async channel(id) {
+  // One page of a channel's Videos or Shorts tab. The continuation is just
+  // "<channel>.<tab>.<next item>" so the phone can keep asking for older ones.
+  async channel(id, { tab = "videos", continuation = null } = {}) {
+    let start = 1;
+    if (continuation) {
+      const match = /^(UC[A-Za-z0-9_-]{20,30})\.(videos|shorts)\.(\d{1,5})$/.exec(String(continuation));
+      if (!match) throw new Error("That channel could not be found.");
+      [, id, tab] = match; start = Number(match[3]);
+    }
     if (!/^UC[A-Za-z0-9_-]{20,30}$/.test(String(id || ""))) throw new Error("That channel could not be found.");
-    const result = await this.runner(this.ytDlp, [...this.ytArgs(), "--flat-playlist", "--playlist-end", "30", "--dump-single-json",
-      `https://www.youtube.com/channel/${id}/videos`]);
-    const object = JSON.parse(result.stdout);
-    const info = await this.rememberChannel(id, object);
+    if (!["videos", "shorts"].includes(tab)) tab = "videos";
+    const size = 30;
+    let object;
+    try {
+      // One extra item tells us whether an older page exists.
+      const result = await this.runner(this.ytDlp, [...this.ytArgs(), "--flat-playlist", "--playlist-items", `${start}-${start + size}`,
+        "--dump-single-json", `https://www.youtube.com/channel/${id}/${tab}`]);
+      object = JSON.parse(result.stdout);
+    } catch (error) {
+      // Channels without Shorts have no such tab at all.
+      if (tab === "shorts" && /does not have a shorts tab/i.test(String(error?.stderr || error?.message || ""))) object = { entries: [] };
+      else throw error;
+    }
+    const entries = Array.isArray(object.entries) ? object.entries : [];
+    const next = entries.length > size ? `${id}.${tab}.${start + size}` : null;
+    const videos = mapEntries(entries.slice(0, size));
+    if (continuation) return { channel: null, tab, videos, continuation: next };
+    const info = object.channel || object.uploader ? await this.rememberChannel(id, object) : (this.channels[id] || {});
     return { channel: { id, name: info.name || "YouTube channel", handle: object.uploader_id || object.channel_url || null,
-      avatar: info.avatar, subscribers: info.subscribers }, videos: mapEntries(object.entries), continuation: null };
+      avatar: info.avatar, subscribers: info.subscribers }, tab, videos, continuation: next };
   }
 
   async rememberChannel(id, object) {
