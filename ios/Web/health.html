@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pi Health</title>
+<link rel="stylesheet" href="/health/health.css"><link rel="stylesheet" href="/apps-menu.css"><script src="/apps-menu.js" defer></script><script src="/health/health.js" defer></script></head>
+<body>
+<header class="bar"><span data-apps-menu></span><h1>Pi Health</h1><span id="updated" class="muted"></span></header>
+<p id="error" class="error" hidden></p>
+<main>
+  <section><h2>Vitals</h2><div id="vitals" class="tiles"></div></section>
+  <section><h2>Services</h2><div id="services" class="list"></div></section>
+  <section><h2>Network</h2><div id="network" class="list"></div></section>
+  <section><h2>Activity</h2><div id="activity" class="list"></div></section>
+  <section><h2>Trusted browsers</h2><p id="gate-note" class="muted"></p><div id="gate" class="list"></div><div id="gate-actions" class="actions"></div></section>
+  <section><h2>Quick commands</h2><div id="actions" class="actions"></div><pre id="output" hidden></pre></section>
+</main>
+</body></html>

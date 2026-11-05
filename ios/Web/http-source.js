@@ -1,4 +1,12 @@
 // Same recorded-stream transport as MK8's JSMpegHttpSource, with pause backpressure.
+// PIN lock: the Pi gives a browser that enters the PIN a key for that visit,
+// kept in the tab (sessionStorage). Every request to the Pi carries it.
+export const DEVICE_KEY = 'vp-device-key';
+export function deviceHeaders(headers = {}) {
+  let key = globalThis.videoPilotDeviceKey || '';
+  try { key = globalThis.sessionStorage?.getItem(DEVICE_KEY) || key; } catch {}
+  return key ? {...headers, 'x-vp-device': key} : {...headers};
+}
 const reportDiagnostic = (event, fields = {}) => {
   try { globalThis.videoPilotDiagnostics?.(event, fields); } catch {}
 };
@@ -117,6 +125,10 @@ export function installRecordedAudioLead(player, lead = 0.75) {
     if (this.video && this.video.currentTime < this.audio.currentTime) notEnoughData = !this.video.decode();
     this.source.resume(this.demuxer.currentTime - this.audio.currentTime);
     if (notEnoughData && this.source.completed) {
+      // The file is done, but up to the lead's worth of audio (and its video
+      // frames) is still queued for the speaker. Pausing now would cut the
+      // last second off every video, so let that tail play out first.
+      if ((Number(this.audioOut?.enqueuedTime) || 0) > 0.05) return;
       if (this.loop) this.seek(0);
       else { this.pause(); this.options.onEnded?.(this); }
     } else if (notEnoughData) this.options.onStalled?.(this);
@@ -251,19 +263,21 @@ export class JSMpegHttpSource {
     this.readStartedAt = startedAt;
     try {
       const response = await fetch(this.url, {credentials:'same-origin',cache:'no-store',signal:this.controller.signal,
-        headers:this.options.headers || undefined});
+        headers:deviceHeaders(this.options.headers || {})});
       if (this.destroyed) return;
       reportDiagnostic('sourceResponse', {responseStatus:response.status,
         expectedBytes:Number(response.headers.get('content-length')) || 0,
         elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - startedAt)});
-      if (!response.ok) throw new Error(response.status === 401 ? 'Pair this browser again.' : `Video stream failed (HTTP ${response.status}).`);
+      if (response.status === 401) globalThis.videoPilotPinRequired?.();
+      if (!response.ok) throw new Error(response.status === 401 ? 'Enter the PIN to keep watching.' : `Video stream failed (HTTP ${response.status}).`);
       if (!response.body) throw new Error('This browser cannot read the video stream.');
       const seekHeader = response.headers.get('x-video-seek-time');
       const seekTime = Number(seekHeader);
       if (seekHeader !== null && Number.isFinite(seekTime) && seekTime >= 0) this.options.onSourceStartTime?.(seekTime);
       const duration = Number(response.headers.get('x-video-duration'));
       if (Number.isFinite(duration) && duration > 0) this.options.onSourceDuration?.(duration);
-      const expected = Number(response.headers.get('content-length'));
+      // The car relay drops content-length, so the Pi repeats the size in its own header.
+      const expected = Number(response.headers.get('content-length')) || Number(response.headers.get('x-video-bytes'));
       this.expectedBytes = Number.isSafeInteger(expected) && expected > 0 ? expected : 0;
       reader = response.body.getReader();
       this.reader = reader;
@@ -291,7 +305,7 @@ export class JSMpegHttpSource {
       if (!this.controller.signal.aborted) {
         if (!this.established) throw new Error('The server returned an empty video stream.');
         if (Number.isSafeInteger(expected) && expected > 0 && received !== expected)
-          throw new Error('Video stream interrupted. Reconnect the iPhone and restart playback.');
+          throw new Error('Video stream interrupted. Reconnect the Pi and restart playback.');
         this.completed = true; this.progress = 1;
         reportDiagnostic('sourceCompleted', {receivedBytes:received, expectedBytes:expected,
           elapsedMs:Math.round((globalThis.performance?.now?.() ?? Date.now()) - startedAt)});
@@ -308,6 +322,53 @@ export class JSMpegHttpSource {
       if (this.reader === reader) this.reader = null;
       await reader?.cancel().catch(() => {});
       this.finishStop();
+    }
+  }
+}
+
+// Netflix/Hulu live picture from the Pi. It is played like a recorded file
+// (audio is the clock, video follows it) because the relay delivers in bursts;
+// JSMpeg's own streaming mode would race through each burst. There is no end
+// and no read-ahead gate: the Pi only produces real time, so take all of it.
+export class JSMpegLiveSource {
+  streaming = false;
+  established = false;
+  completed = false;
+  progress = 0;
+  destination = null;
+  controller = new AbortController();
+  receivedBytes = 0;
+  constructor(url, options) { this.url = url; this.options = options || {}; }
+  connect(destination) { this.destination = destination; }
+  start() { void this.read(); }
+  resume() {}
+  // Seconds of picture already here but not yet shown: how far behind live.
+  lag() {
+    const demuxed = Number(this.destination?.currentTime), audio = Number(this.options.player?.()?.audio?.currentTime);
+    return Number.isFinite(demuxed) && Number.isFinite(audio) ? Math.max(0, demuxed - audio) : 0;
+  }
+  destroy() { this.controller.abort(); this.destination = null; }
+  async read() {
+    try {
+      const response = await fetch(this.url, {credentials:'same-origin', cache:'no-store', signal:this.controller.signal, headers:deviceHeaders()});
+      if (response.status === 401) globalThis.videoPilotPinRequired?.();
+      if (!response.ok) {
+        let message = `The live picture failed (HTTP ${response.status}).`;
+        try { message = (await response.json()).error || message; } catch {}
+        throw new Error(message);
+      }
+      const reader = response.body.getReader();
+      for (;;) {
+        const {value, done} = await reader.read();
+        if (done) break;
+        if (!value?.byteLength) continue;
+        if (!this.established) { this.established = true; this.progress = 1; this.options.onSourceEstablished?.(this); }
+        this.receivedBytes += value.byteLength;
+        this.destination?.write(value.slice().buffer);
+      }
+      if (!this.controller.signal.aborted) throw new Error('The live picture stopped.');
+    } catch (error) {
+      if (!this.controller.signal.aborted) this.options.onSourceError?.(error.message || 'The live picture stopped.');
     }
   }
 }

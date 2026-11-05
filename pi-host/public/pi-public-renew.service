@@ -1,0 +1,7 @@
+[Unit]
+Description=Renew the public HTTPS certificate when it is due
+ConditionPathExists=/opt/pi-public/acme/acme.sh
+
+[Service]
+Type=oneshot
+ExecStart=/opt/pi-public/acme/acme.sh --cron --home /opt/pi-public/acme

@@ -1,4 +1,4 @@
-// Authenticated outbound iPhone connection. Video stays on the phone and is
+// Authenticated outbound Pi connection. Video stays on the Pi and is
 // forwarded in bounded binary chunks only when the browser asks for more.
 export const PROTOCOL = "mk8-relay-v1";
 // Match the native 128 KiB WebSocket frame budget (16 bytes are reserved for
@@ -29,7 +29,13 @@ function binaryID(bytes) {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-async function boundedBody(request) {
+// Chunked: spreading a large body into one call overflows the stack.
+function base64(bytes) {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+}
+async function boundedBody(request, limit = 16384) {
   if (!request.body) return new Uint8Array();
   const reader = request.body.getReader();
   const chunks = [];
@@ -39,7 +45,7 @@ async function boundedBody(request) {
       const { value, done } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > 16384) { await reader.cancel(); throw new Error("Request body is too large"); }
+      if (size > limit) { await reader.cancel(); throw new Error("Request body is too large"); }
       chunks.push(value);
     }
   } finally { reader.releaseLock(); }
@@ -72,7 +78,7 @@ export class PhoneTunnel {
     if (url.pathname === "/__iphone/connect") {
       if (!authorized(request, this.env)) return json({ error: "Incorrect tunnel key" }, 401);
       if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return json({ error: "WebSocket required" }, 426);
-      this.disconnect(this.phone, "A new iPhone connection replaced this connection");
+      this.disconnect(this.phone, "A new Pi connection replaced this connection");
       const [client, phone] = Object.values(new WebSocketPair());
       this.ctx.acceptWebSocket(phone, ["phone"]);
       this.phone = phone;
@@ -82,7 +88,7 @@ export class PhoneTunnel {
       this.send({ type: "hello", protocol: PROTOCOL, window: this.window });
       return new Response(null, { status: 101, webSocket: client });
     }
-    if (!this.connected()) return json({ error: "iPhone is disconnected" }, 503, { "x-mk8-phone": "offline" });
+    if (!this.connected()) return json({ error: "Video Pilot host is disconnected" }, 503, { "x-mk8-phone": "offline" });
     if (!["GET", "POST"].includes(request.method)) return json({ error: "Method not allowed" }, 405);
     if (request.headers.has("origin") && request.headers.get("origin") !== url.origin)
       return json({ error: "Use this page to submit requests" }, 403);
@@ -93,14 +99,16 @@ export class PhoneTunnel {
     // global limit check so a delayed browser abort cannot strand the relay at
     // its eight-request ceiling.
     if (client) this.cancelClient(client);
-    if (this.pending.size >= MAX_REQUESTS) return json({ error: "iPhone is busy. Close another player and retry." }, 429);
+    if (this.pending.size >= MAX_REQUESTS) return json({ error: "Pi is busy. Close another player and retry." }, 429);
 
     let body;
-    try { body = await boundedBody(request); }
+    // AI Room voice turns carry a recording (WAV, up to about a minute).
+    const audio = /^\/api\/airoom\/(voice|hear)$/.test(url.pathname);
+    try { body = await boundedBody(request, audio ? 3_500_000 : 16384); }
     catch { return json({ error: "Request body is too large" }, 413); }
     // Recheck after awaiting the body; disconnects and simultaneous requests can race.
-    if (!this.connected()) return json({ error: "iPhone is disconnected" }, 503, { "x-mk8-phone": "offline" });
-    if (this.pending.size >= MAX_REQUESTS) return json({ error: "iPhone is busy" }, 429);
+    if (!this.connected()) return json({ error: "Video Pilot host is disconnected" }, 503, { "x-mk8-phone": "offline" });
+    if (this.pending.size >= MAX_REQUESTS) return json({ error: "Pi is busy" }, 429);
     if (request.signal.aborted) return json({ error: "Request cancelled" }, 499);
     const id = crypto.randomUUID();
     const headers = {};
@@ -136,8 +144,8 @@ export class PhoneTunnel {
           // A video chunk normally arrives within a few seconds. Reap stale
           // seek/player requests quickly so rapid seeking cannot exhaust the
           // bounded relay request pool.
-          entry.timer = setTimeout(() => this.fail(id, "iPhone stream timed out"), 12000);
-          try { this.send({ type: "pull", id }); } catch { this.fail(id, "iPhone disconnected"); }
+          entry.timer = setTimeout(() => this.fail(id, "Pi stream timed out"), 12000);
+          try { this.send({ type: "pull", id }); } catch { this.fail(id, "Pi disconnected"); }
         }),
         cancel: () => this.cleanup(id, true),
       }, { highWaterMark: 0 });
@@ -147,12 +155,17 @@ export class PhoneTunnel {
       request.signal.addEventListener("abort", entry.abort, { once: true });
       // Media streams answer fast; browse calls (/api/foryou, /api/channel)
       // make several YouTube requests on the phone and can need longer cold.
-      const firstByteMs = url.pathname.startsWith("/api/") && !url.pathname.startsWith("/api/stream/") ? API_FIRST_BYTE_MS : 15000;
-      entry.timer = setTimeout(() => this.fail(id, "iPhone did not respond"), firstByteMs);
+      // Claude (AI Room) can work for minutes; Pi Health commands (speed test,
+      // updates) take up to a few minutes too.
+      const firstByteMs = /^\/api\/airoom\/(send|voice)$/.test(url.pathname) ? 615_000
+        : url.pathname === "/api/health/action" ? 210_000
+        : url.pathname.startsWith("/api/airoom/") ? 65_000
+        : url.pathname.startsWith("/api/") && !url.pathname.startsWith("/api/stream/") ? API_FIRST_BYTE_MS : 15000;
+      entry.timer = setTimeout(() => this.fail(id, "Pi did not respond"), firstByteMs);
       try {
         this.send({ type: "request", id, method: request.method, target: url.pathname + url.search,
-          headers, body: btoa(String.fromCharCode(...body)) });
-      } catch { this.fail(id, "iPhone disconnected"); }
+          headers, body: base64(body) });
+      } catch { this.fail(id, "Pi disconnected"); }
     });
   }
 
@@ -164,8 +177,8 @@ export class PhoneTunnel {
     if (room <= 0) return;
     entry.outstanding += room;
     entry.waiting = true;
-    if (!entry.timer) entry.timer = setTimeout(() => this.fail(id, "iPhone stream timed out"), STALL_MS);
-    try { this.send({ type: "pull", id, credits: room }); } catch { this.fail(id, "iPhone disconnected"); }
+    if (!entry.timer) entry.timer = setTimeout(() => this.fail(id, "Pi stream timed out"), STALL_MS);
+    try { this.send({ type: "pull", id, credits: room }); } catch { this.fail(id, "Pi disconnected"); }
   }
 
   cleanup(id, notify = false) {
@@ -243,10 +256,10 @@ export class PhoneTunnel {
           // for the browser's first read.
           else this.topUp(value.id);
         } else if (value.type === "end") {
-          if (entry.remaining !== 0) { this.fail(value.id, "Incomplete iPhone response"); return; }
+          if (entry.remaining !== 0) { this.fail(value.id, "Incomplete Pi response"); return; }
           entry.controller.close();
           this.cleanup(value.id);
-        } else if (value.type === "error") this.fail(value.id, "iPhone could not serve this request");
+        } else if (value.type === "error") this.fail(value.id, "Pi could not serve this request");
         else throw new Error("Unknown message");
       } else {
         const bytes = new Uint8Array(message);
@@ -262,7 +275,7 @@ export class PhoneTunnel {
         if (entry.window > 1) {
           entry.outstanding -= 1;
           entry.waiting = entry.outstanding > 0;
-          if (entry.waiting) entry.timer = setTimeout(() => this.fail(id, "iPhone stream timed out"), STALL_MS);
+          if (entry.waiting) entry.timer = setTimeout(() => this.fail(id, "Pi stream timed out"), STALL_MS);
         } else entry.waiting = false;
         entry.remaining -= payload.length;
         entry.controller.enqueue(payload);
@@ -273,6 +286,6 @@ export class PhoneTunnel {
     } catch { this.disconnect(socket, "Invalid relay protocol"); }
   }
 
-  webSocketClose(socket) { this.disconnect(socket, "iPhone disconnected"); }
-  webSocketError(socket) { this.disconnect(socket, "iPhone connection failed"); }
+  webSocketClose(socket) { this.disconnect(socket, "Pi disconnected"); }
+  webSocketError(socket) { this.disconnect(socket, "Pi connection failed"); }
 }

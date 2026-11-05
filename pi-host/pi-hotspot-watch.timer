@@ -1,0 +1,11 @@
+[Unit]
+Description=Keep searching for the car hotspot
+
+[Timer]
+OnBootSec=10
+OnUnitInactiveSec=20
+AccuracySec=1
+Unit=pi-hotspot-watch.service
+
+[Install]
+WantedBy=timers.target

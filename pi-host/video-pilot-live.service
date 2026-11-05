@@ -1,0 +1,10 @@
+[Unit]
+Description=Video Pilot Netflix and Hulu helper (Chromium on a virtual screen, streamed live)
+
+[Service]
+ExecStart=/usr/bin/node %h/.local/lib/video-pilot/live-helper.mjs
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
