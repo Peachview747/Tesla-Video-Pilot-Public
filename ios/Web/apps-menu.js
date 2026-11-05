@@ -116,16 +116,20 @@
     }
   }
   let checking = false;
+  // A new visit catches up on alerts from the last few minutes, each with its time.
+  const CATCH_UP_MS = 5 * 60 * 1000;
+  const clock = at => new Date(at).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
   async function checkAlerts() {
     if (checking || document.hidden) return;
     checking = true;
     try {
       let seen = null; try { seen = sessionStorage.getItem(ALERT_KEY); } catch {}
-      const {alerts, latest} = await call(`/api/alerts?since=${seen === null ? 0 : Number(seen)}`);
+      const first = seen === null;
+      const {alerts, latest} = await call(`/api/alerts?since=${first ? 0 : Number(seen)}`);
       try { sessionStorage.setItem(ALERT_KEY, String(latest)); } catch {}
-      // A new visit starts from now; it does not replay older alerts.
-      if (seen === null || !alerts.length) return;
-      const text = alerts.map(alert => alert.text).join(' ');
+      const fresh = first ? alerts.filter(alert => Date.now() - alert.at <= CATCH_UP_MS) : alerts;
+      if (!fresh.length) return;
+      const text = fresh.map(alert => first ? `At ${clock(alert.at)}, ${alert.text}` : alert.text).join(' ');
       show(text);
       await say(text).catch(() => {});
     } catch {} finally { checking = false; }
