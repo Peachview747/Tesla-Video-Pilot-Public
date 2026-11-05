@@ -73,13 +73,47 @@
     banner.textContent = text; banner.hidden = false;
     clearTimeout(bannerTimer); bannerTimer = setTimeout(() => { banner.hidden = true; }, 12000);
   }
+  // Browsers only let a page make sound after a tap on it. Each page load
+  // starts without one, so an alert that arrives first waits for the next tap.
+  let waiting = null, armed = false;
+  // Say a clip over the page: page video and audio drop to a low volume, and
+  // the announcer plays at full volume; the page comes back when it ends.
+  function playClip(src) {
+    const media = [...document.querySelectorAll('video,audio')].filter(element => element !== player);
+    const levels = media.map(element => element.volume);
+    const restore = () => media.forEach((element, index) => { element.volume = levels[index]; });
+    media.forEach(element => { element.volume = Math.min(element.volume, 0.15); });
+    player = player || new Audio();
+    player.volume = 1;
+    player.src = src;
+    player.onended = player.onerror = restore;
+    return player.play().catch(error => { restore(); throw error; });
+  }
+  function armTap() {
+    if (armed) return;
+    armed = true;
+    const go = () => {
+      armed = false;
+      document.removeEventListener('pointerdown', go, true);
+      document.removeEventListener('keydown', go, true);
+      if (!waiting) return;
+      const src = waiting; waiting = null;
+      playClip(src).catch(() => {});
+    };
+    document.addEventListener('pointerdown', go, true);
+    document.addEventListener('keydown', go, true);
+  }
   async function say(text) {
     if (globalThis.videoPilotAlertsQuiet?.()) return;
     let voice = ''; try { voice = localStorage.getItem('airoom-voice') || ''; } catch {}
     const {audio, mime} = await call('/api/say', {text, voice});
-    player = player || new Audio();
-    player.src = `data:${mime};base64,${audio}`;
-    await player.play();
+    const src = `data:${mime};base64,${audio}`;
+    try { await playClip(src); }
+    catch (error) {
+      if (error.name !== 'NotAllowedError') return;
+      waiting = src; armTap();
+      show('Tap the screen to hear: ' + text);
+    }
   }
   let checking = false;
   async function checkAlerts() {
