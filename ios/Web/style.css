@@ -469,7 +469,9 @@ a.portal-tile { text-decoration: none; }
 /* Winnie-the-Pooh as E. H. Shepard drew him (1926, public domain; Wikimedia Commons "Winnie-the-Pooh 092.png"). */
 /* kamilla-tile.jpg is the family's own Pooh picture, kept on the Pi only (Disney artwork, so not in this repo
    or its backups' plain files); multiply turns its white paper baby pink. */
-.portal-tile.kamilla { align-items: flex-end; padding-bottom: 10px; background: #f9d2e0 url("/kamilla-tile.jpg") center 58% / cover no-repeat;
+/* It fills the last row across all three columns, as tall as the other tiles (5:1 ≈ three 16:10 tiles and their gaps). */
+.portal-tile.kamilla { grid-column: 1 / -1; aspect-ratio: 5 / 1; align-items: flex-end; padding-bottom: 10px;
+  background: #f9d2e0 url("/kamilla-tile.jpg") center 58% / 240px auto repeat-x;
   background-blend-mode: multiply; color: #8e3a5c; font-size: clamp(18px, 3vw, 28px); }
 .portal-tile.kamilla span { padding: 4px 14px; border-radius: 14px; background: #fde6eee8; }
 /* Kamilla Cam reuses the live screen, without the remote-control buttons. */
@@ -491,7 +493,7 @@ a.portal-tile { text-decoration: none; }
 .yt-mark { position: relative; width: 1.35em; height: .95em; border-radius: .26em; background: #ff0000; flex: none; }
 .yt-mark::after { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-35%, -50%); border-style: solid; border-width: .22em 0 .22em .38em; border-color: transparent transparent transparent #fff; }
 .portal-note { max-width: 620px; color: var(--muted, inherit); opacity: .8; text-align: center; font-size: var(--fs-small); }
-@media (max-width: 600px) { .portal-tiles { grid-template-columns: 1fr; max-width: 360px; } }
+@media (max-width: 600px) { .portal-tiles { grid-template-columns: 1fr; max-width: 360px; } .portal-tile.kamilla { aspect-ratio: 16 / 10; } }
 .live-overlay { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: #000; color: #e3e9ed; }
 .live-overlay[hidden] { display: none; }
 .live-bar, .live-type { display: flex; align-items: center; gap: 6px; padding: 6px 8px; overflow-x: auto; flex: none; background: #0d1114; }
