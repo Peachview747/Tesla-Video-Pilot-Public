@@ -20,4 +20,4 @@ uploads/
 .tools/
 
 # Kamilla Cam tile picture (Disney artwork): lives on the Pi only, never in this public repo.
-ios/Web/kamilla-tile.jpg
+ios/Web/kamilla-tile*.jpg
