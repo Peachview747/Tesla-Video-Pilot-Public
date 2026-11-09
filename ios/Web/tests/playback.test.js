@@ -2,22 +2,28 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause} from '../http-source.js';
+import {JSMpegHttpSource, installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause, DEVICE_KEY, deviceHeaders} from '../http-source.js';
 import {DiagnosticsJournal, LiveStats} from '../diagnostics.js';
 
 // Run the shipped UI against small DOM/player doubles. Decoder callbacks are
 // driven separately from network establishment, just as in recorded JSMpeg.
 const app = readFileSync(new URL('../app.js', import.meta.url), 'utf8')
   .replace(/^import .*?;\n/gm, '');
-function setup({recoveryDelay} = {}) {
+function setup({recoveryDelay, fetchImpl} = {}) {
   const elements = new Map(), players = [], intervals = [];
   const element = id => {
-    if (!elements.has(id)) elements.set(id, {textContent:'', hidden:false, dataset:{}, scrollIntoView() {},
-      removeAttribute(name) { delete this[name]; }});
+    if (!elements.has(id)) {
+      const classes = new Set(), listeners = {};
+      elements.set(id, {textContent:'', hidden:false, dataset:{}, scrollIntoView() {}, listeners,
+        classList:{add:name => classes.add(name), remove:name => classes.delete(name), contains:name => classes.has(name)},
+        addEventListener(type, listener) { listeners[type] = listener; },
+        removeAttribute(name) { delete this[name]; }});
+    }
     return elements.get(id);
   };
   class Player {
     constructor(url, options) {
+      this.url = url;
       this.options = options; this.paused = false; this.isPlaying = false; this.volume = 1;
       this.readingPaused = false; this.audioResumes = 0; this.audioUnlocks = 0;
       this.source = {
@@ -37,12 +43,12 @@ function setup({recoveryDelay} = {}) {
   }
   const context = vm.createContext({
     JSMpegHttpSource,
-    installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause,
+    installRecordedBufferWindow, installRecordedAudioOutput, installRecordedAudioLead, installRecordedPlayerPause, DEVICE_KEY, deviceHeaders,
     DiagnosticsJournal, LiveStats,
     document:{getElementById:element},
     window:{JSMpeg:{Player}, addEventListener() {}},
     // The library refresh is outside these focused playback tests.
-    fetch:() => new Promise(() => {}), setInterval:callback => { intervals.push(callback); }, setTimeout, clearTimeout, URL, Number,
+    fetch:fetchImpl || (() => new Promise(() => {})), setInterval:callback => { intervals.push(callback); }, setTimeout, clearTimeout, URL, Number,
     __VP_SEEK_RECOVERY_MS: recoveryDelay,
   });
   vm.runInContext(app, context);
@@ -66,12 +72,38 @@ test('network arrival stays buffering until decode, and decoder stalls recover v
   player.options.onSourceEstablished?.();
   assert.equal(status.textContent, 'Buffering…');
   player.options.onVideoDecode();
-  assert.equal(status.textContent, 'Playing from your iPhone');
+  assert.equal(status.textContent, 'Playing from Raspberry Pi');
   player.options.onStalled();
   assert.equal(status.textContent, 'Buffering…');
   player.options.onVideoDecode();
-  assert.equal(status.textContent, 'Playing from your iPhone');
+  assert.equal(status.textContent, 'Playing from Raspberry Pi');
   assert.equal(player.audioResumes, 1);
+});
+
+test('quality switching preserves position, pause, mute, and fullscreen and uses a smaller stream', async () => {
+  const f=setup({fetchImpl:(url)=>String(url).startsWith('/api/library/quality')
+    ? Promise.resolve({ok:true,status:200,text:async()=>JSON.stringify({quality:360,ready:true,maximum:1080})})
+    : new Promise(()=>{})});
+  f.play({id:'video',title:'Test',duration:600,quality:1080,qualities:[360,720,1080]});
+  f.evaluate('currentOffset=123; playback.position=123');
+  f.element('pause').onclick();f.element('mute').onclick();
+  await f.element('fullscreen').onclick();
+  await f.evaluate("switchPlaybackQuality('360')");
+  await new Promise(resolve=>setTimeout(resolve,650));
+  const replacement=f.players.at(-1);
+  assert.match(replacement.url,/seek=123&quality=360/);
+  assert.equal(replacement.paused,true);
+  assert.equal(replacement.volume,0);
+  assert.equal(f.element('exit-fullscreen').hidden,false);
+  assert.equal(f.element('pause').textContent,'Play');
+  assert.equal(f.element('playback-quality').value,'360');
+});
+
+test('data saver chooses a prepared 360p copy instead of the saved HD maximum', () => {
+  const f=setup();
+  f.evaluate("playbackQuality='360'");
+  f.play({id:'video',title:'Test',quality:1080,qualities:[360,540,720,1080]});
+  assert.match(f.players[0].url,/quality=360/);
 });
 test('preparation shows measured processing rate and ETA without reusing stale stage values', () => {
   const f = setup();
@@ -85,7 +117,7 @@ test('preparation shows measured processing rate and ETA without reusing stale s
   assert.equal(f.element('preparation-progress').value, undefined);
   f.preparation({busy:true, preparationStage:'waitingForApp', processingSpeed:2.5,
     preparationSecondsRemaining:90});
-  assert.equal(f.element('preparation-detail').textContent, 'Open Video Pilot on the iPhone to finish processing.');
+  assert.equal(f.element('preparation-detail').textContent, 'Video Pilot on the Pi is waiting to finish processing.');
 });
 test('Pause works before the first frame and callbacks cannot undo it', () => {
   const f = setup(); f.play();
@@ -101,7 +133,7 @@ test('Pause works before the first frame and callbacks cannot undo it', () => {
   assert.equal(player.readingPaused, false);
   assert.equal(status.textContent, 'Buffering…');
   player.options.onVideoDecode();
-  assert.equal(status.textContent, 'Playing from your iPhone');
+  assert.equal(status.textContent, 'Playing from Raspberry Pi');
   assert.equal(player.audioResumes, 2);
   f.element('mute').onclick(); f.element('mute').onclick();
   assert.equal(player.audioResumes, 3, 'Unmute retries audio context activation');
@@ -111,13 +143,31 @@ test('quiet Tesla audio can be boosted without losing mute state', () => {
   const player = f.players[0];
   assert.equal(player.volume, 1, 'new playback starts at unity gain to avoid clipping');
   f.element('audio-boost').onclick();
-  assert.equal(player.volume, 1.15, 'Audio + enables a gentle boost');
+  assert.equal(player.volume, 1.15, 'without WebAudio compressors the boost falls back to gentle plain gain');
   f.element('mute').onclick();
   assert.equal(player.volume, 0, 'mute still wins over the gain setting');
   f.element('audio-boost').onclick();
   assert.equal(player.volume, 0, 'changing gain while muted stays silent');
   f.element('mute').onclick();
   assert.equal(player.volume, 1, 'unmute restores the selected unity gain');
+});
+test('audio boost routes through a compressor and limiter when WebAudio has them', () => {
+  const f = setup(); f.play();
+  const player = f.players[0];
+  const edges = [];
+  const node = name => ({name, threshold:{}, knee:{}, ratio:{}, attack:{}, release:{},
+    connect(target) { edges.push(`${name}>${target.name}`); }, disconnect() { edges.push(`${name} x`); }});
+  const context = player.audioOut.context;
+  context.destination = {name:'out'};
+  context.createDynamicsCompressor = () => { const n = node(context.made ? 'limiter' : 'compressor'); context.made = true; n.context = context; return n; };
+  player.audioOut.gain = {...node('gain'), gain:{value:1}};
+  f.element('audio-boost').onclick();
+  assert.equal(player.volume, 2, 'the chain adds +6 dB before compression');
+  assert.deepEqual(edges.filter(edge => edge.includes('>')), ['gain>compressor', 'compressor>limiter', 'limiter>out']);
+  edges.length = 0;
+  f.element('audio-boost').onclick();
+  assert.equal(player.volume, 1);
+  assert.ok(edges.includes('gain>out'), 'turning the boost off restores the direct path');
 });
 test('startup recovery holds a manual pause and rearms when playback resumes', async () => {
   const f = setup({recoveryDelay:10}); f.play();
@@ -140,6 +190,73 @@ test('fullscreen exposes Exit and restores the Full screen button on exit', asyn
   assert.equal(f.element('exit-fullscreen').hidden, true);
   f.close();
 });
+test('full-screen controls hide on a tap while playing and come back on the next', async () => {
+  const f = setup(); f.play();
+  const shell = f.element('player-shell'), screen = f.element('screen');
+  const tap = target => shell.listeners.pointerdown({target});
+  await f.element('fullscreen').onclick();
+  assert.equal(shell.classList.contains('vp-chrome-hidden'), false, 'controls show when full screen opens');
+  tap(screen);
+  assert.equal(shell.classList.contains('vp-chrome-hidden'), true, 'a tap on the picture hides them');
+  tap(screen);
+  assert.equal(shell.classList.contains('vp-chrome-hidden'), false, 'the next tap brings them back');
+  f.element('pause').onclick();
+  tap(screen);
+  assert.equal(shell.classList.contains('vp-chrome-hidden'), false, 'paused video keeps its controls');
+  f.element('exit-fullscreen').onclick();
+  f.close();
+});
+test('full-screen picture cycles Fit, Fill and Stretch', async () => {
+  const f = setup(); f.play();
+  const shell = f.element('player-shell'), button = f.element('fit-mode');
+  assert.equal(button.textContent, 'Fit');
+  button.onclick();
+  assert.deepEqual([button.textContent, shell.classList.contains('vp-fit-fill'), shell.classList.contains('vp-fit-fit')], ['Fill', true, false]);
+  button.onclick();
+  assert.deepEqual([button.textContent, shell.classList.contains('vp-fit-stretch')], ['Stretch', true]);
+  button.onclick();
+  assert.equal(button.textContent, 'Fit');
+  f.close();
+});
+test('seeking and reconnecting keep full screen; only Exit leaves it', async () => {
+  const f = setup(); f.play({id:'video', title:'Test', duration:100});
+  await f.element('fullscreen').onclick();
+  f.element('forward10').onclick();
+  await new Promise(resolve => setTimeout(resolve, 400));
+  assert.equal(f.element('exit-fullscreen').hidden, false, 'still full screen after +10 s');
+  assert.ok(f.element('player-shell').classList.contains('vp-fullscreen'));
+  f.element('exit-fullscreen').onclick();
+  assert.equal(f.element('player-shell').classList.contains('vp-fullscreen'), false);
+  f.close();
+});
+test('audio plays through a context at the 44.1 kHz source rate', () => {
+  const f = setup();
+  f.evaluate(`globalThis.made = []; globalThis.AudioContext = class { constructor(options) { made.push(options); this.sampleRate = options.sampleRate; } };
+    window.JSMpeg.AudioOutput = {WebAudio:{CachedContext:null}}`);
+  f.evaluate('prepareAudioContext()');
+  assert.equal(f.evaluate('JSON.stringify(made)'), '[{"sampleRate":44100}]');
+  assert.equal(f.evaluate('window.JSMpeg.AudioOutput.WebAudio.CachedContext.sampleRate'), 44100);
+  f.evaluate('prepareAudioContext()');
+  assert.equal(f.evaluate('made.length'), 1, 'an existing context is reused');
+});
+test('a stream that stops mid-video holds the place and waits for Retry', async () => {
+  const f = setup(); f.play({id:'00000000-0000-4000-8000-000000000007', title:'Long', duration:2400});
+  f.evaluate('playback.duration = 2400; playback.position = 1200.6');
+  f.players[0].options.onEnded();
+  assert.equal(f.element('player-drop').hidden, false, 'the dropped-connection panel shows');
+  assert.equal(f.element('drop-time').textContent, 'Your place is saved at 20:00.');
+  assert.equal(f.element('pause').textContent, 'Retry', 'not shown as finished');
+  assert.equal(f.players.length, 1, 'nothing reconnects until Retry');
+  f.element('drop-retry').onclick();
+  assert.equal(f.element('player-drop').hidden, true);
+  for (let i = 0; i < 40 && f.players.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(f.players.length, 2, 'Retry opens a new stream');
+  assert.equal(f.evaluate('currentOffset'), 1200, 'from the saved place');
+  f.evaluate('playback.duration = 2400; playback.position = 2395');
+  f.players[1].options.onEnded();
+  assert.equal(f.element('playback-status').textContent, 'Finished', 'a real end still finishes');
+  f.close();
+});
 test('seeking keeps the user mute preference across decoder replacement', async () => {
   const f = setup(); f.play({id:'video', title:'Test', duration:100});
   f.element('mute').onclick();
@@ -156,7 +273,8 @@ test('stream failures survive late decoder and end callbacks', () => {
   const player = f.players[0], status = f.element('playback-status');
   player.options.onSourceError('Video stream interrupted.');
   player.options.onVideoDecode(); player.options.onStalled(); player.options.onEnded();
-  assert.equal(status.textContent, 'Connection interrupted. Reconnecting…');
+  assert.equal(status.textContent, 'Connection to the Pi dropped', 'an interrupted stream waits for Retry');
+  assert.equal(f.element('player-drop').hidden, false);
 });
 test('finished playback and replacement players ignore late callbacks', async () => {
   const f = setup(); f.play();
@@ -169,7 +287,7 @@ test('finished playback and replacement players ignore late callbacks', async ()
   first.options.onVideoDecode(); first.options.onSourceError('Old stream failed'); first.options.onEnded();
   assert.equal(status.textContent, 'Buffering…');
   f.players[1].options.onVideoDecode();
-  assert.equal(status.textContent, 'Playing from your iPhone');
+  assert.equal(status.textContent, 'Playing from Raspberry Pi');
   f.close(); first.options.onStalled();
   assert.equal(f.element('player-section').hidden, true);
 });
@@ -232,7 +350,7 @@ test('HTTP 429 from a busy relay is retried with backoff instead of failing play
   const f = setup(); f.play({id:'video', title:'Test video', duration:100});
   const status = f.element('playback-status');
   f.players[0].options.onSourceError('Video stream failed (HTTP 429).');
-  assert.equal(status.textContent, 'iPhone is busy. Retrying…');
+  assert.equal(status.textContent, 'Pi is busy. Retrying…');
   await new Promise(resolve => setTimeout(resolve, 500));
   assert.equal(f.players.length, 2, 'the same target is reopened after the first backoff');
   assert.equal(f.players[0].destroyed, true);

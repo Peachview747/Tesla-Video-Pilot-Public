@@ -1,4 +1,4 @@
-// Bounded local evidence survives both a lost ACK and a disconnected iPhone.
+// Bounded local evidence survives both a lost ACK and a disconnected Pi.
 export class DiagnosticsJournal {
   constructor(storage, key, limit = 256) {
     this.storage = storage; this.key = key; this.limit = limit;

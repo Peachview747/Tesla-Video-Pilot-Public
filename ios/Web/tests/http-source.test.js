@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-import {JSMpegHttpSource} from '../http-source.js';
+import {JSMpegHttpSource, deviceHeaders} from '../http-source.js';
 
 function setup(response, destination = {}) {
   const original = globalThis.fetch;
@@ -189,7 +189,7 @@ test('read-ahead uses the shipped MPEG-TS demuxer PTS and recorded playback cont
   } finally { fixture.source.destroy(); fixture.restore(); }
 });
 test('rejects an empty response and an expired session', async () => {
-  for (const [response,message] of [[new Response(new Uint8Array()),'empty'],[new Response('',{status:401}),'Pair']]) {
+  for (const [response,message] of [[new Response(new Uint8Array()),'empty'],[new Response('',{status:401}),'Enter the PIN']]) {
     const fixture = setup(response);
     try {
       await fixture.source.read();
@@ -245,4 +245,13 @@ test('stats report delivered bytes, expected length and average throughput', asy
     assert.equal(stats.kbps, 80);
     assert.equal(stats.completed, true);
   } finally { fixture.restore(); }
+});
+test('every request to the Pi carries the device key once the PIN was entered', () => {
+  const saved = globalThis.videoPilotDeviceKey;
+  try {
+    globalThis.videoPilotDeviceKey = '';
+    assert.deepEqual(deviceHeaders({'x-mk8-player':'p'}), {'x-mk8-player':'p'});
+    globalThis.videoPilotDeviceKey = 'k1';
+    assert.deepEqual(deviceHeaders(), {'x-vp-device':'k1'});
+  } finally { globalThis.videoPilotDeviceKey = saved; }
 });

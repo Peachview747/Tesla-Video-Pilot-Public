@@ -1,0 +1,6 @@
+[Unit]
+Description=Copy the YouTube sign-in from Firefox to Video Pilot
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/youtube-cookie-sync

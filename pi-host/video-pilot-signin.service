@@ -1,0 +1,10 @@
+[Unit]
+Description=Video Pilot YouTube sign-in helper (Firefox on a virtual screen)
+
+[Service]
+ExecStart=/usr/bin/node %h/.local/lib/video-pilot/signin-helper.mjs
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

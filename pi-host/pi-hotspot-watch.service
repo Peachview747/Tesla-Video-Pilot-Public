@@ -1,0 +1,12 @@
+[Unit]
+Description=Look for the car hotspot while Wi-Fi is disconnected
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pi-hotspot-watch
+TimeoutStartSec=30
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict

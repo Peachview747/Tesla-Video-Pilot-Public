@@ -170,3 +170,20 @@ test('recorded playback keeps 0.75 s of audio decoded ahead instead of 0.25 s', 
   assert.ok(audio.decodedTime - audio.currentTime >= 0.75);
   assert.equal(resumed, 10);
 });
+
+test('the end of a recorded video waits for queued audio before finishing', () => {
+  const {AudioContext} = mockAudioContext();
+  const {JSMpeg} = library(AudioContext);
+  let ended = 0;
+  const audio = {canPlay:true, currentTime:100, decodedTime:100.7, decode() { return false; }};
+  const player = Object.assign(Object.create(JSMpeg.Player.prototype), {
+    audio, video:null, demuxer:{currentTime:100.7}, source:{completed:true, resume() {}}, audioOut:{enqueuedTime:0.7},
+    options:{onEnded:() => { ended += 1; }}, loop:false, pause() {},
+  });
+  installRecordedAudioLead(player);
+  player.updateForStaticFile();
+  assert.equal(ended, 0, 'the last 0.7 s is still playing');
+  player.audioOut.enqueuedTime = 0;
+  player.updateForStaticFile();
+  assert.equal(ended, 1, 'finishes once the queue has drained');
+});
