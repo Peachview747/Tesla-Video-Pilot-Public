@@ -466,8 +466,9 @@ a.portal-tile { text-decoration: none; }
 .claude-mark { display: grid; place-items: center; width: 1.4em; height: 1.4em; border-radius: 50%; background: #ba6949; color: #fff6ef; font-size: .8em; }
 .portal-tile.textnow { background: #5b2bd1; color: #fff; font-size: clamp(20px, 3.6vw, 34px); }
 .portal-tile.health { background: #1a1f22; color: #4cc38a; font-size: clamp(20px, 3.6vw, 34px); }
-.portal-tile.kamilla { background: #ffd84d url("/bears.svg") center / 124px 124px repeat; color: #5a300c; font-size: clamp(20px, 3.6vw, 34px); }
-.portal-tile.kamilla span { padding: 4px 14px; border-radius: 14px; background: #ffe68ae6; }
+/* Winnie-the-Pooh as E. H. Shepard drew him (1926, public domain; Wikimedia Commons "Winnie-the-Pooh 092.png"). */
+.portal-tile.kamilla { align-items: flex-end; padding-bottom: 10px; background: #f9d2e0 url("/pooh.png") 10px 4px / 112px 112px repeat; color: #8e3a5c; font-size: clamp(18px, 3vw, 28px); }
+.portal-tile.kamilla span { padding: 4px 14px; border-radius: 14px; background: #fde6eee8; }
 /* Kamilla Cam reuses the live screen, without the remote-control buttons. */
 .live-overlay.cam #live-keyboard, .live-overlay.cam [data-live-key], .live-overlay.cam [data-live-scroll], .live-overlay.cam .live-type { display: none; }
 .cam-signin { position: absolute; inset: 0; z-index: 6; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 16px; background: #0d1114; text-align: center; }
