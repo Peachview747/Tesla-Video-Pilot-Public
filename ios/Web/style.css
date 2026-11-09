@@ -466,7 +466,8 @@ a.portal-tile { text-decoration: none; }
 .claude-mark { display: grid; place-items: center; width: 1.4em; height: 1.4em; border-radius: 50%; background: #ba6949; color: #fff6ef; font-size: .8em; }
 .portal-tile.textnow { background: #5b2bd1; color: #fff; font-size: clamp(20px, 3.6vw, 34px); }
 .portal-tile.health { background: #1a1f22; color: #4cc38a; font-size: clamp(20px, 3.6vw, 34px); }
-.portal-tile.kamilla { background: #fde2e4; color: #b03a5b; font-size: clamp(20px, 3.6vw, 34px); }
+.portal-tile.kamilla { background: #ffd84d url("/bears.svg") center / 124px 124px repeat; color: #5a300c; font-size: clamp(20px, 3.6vw, 34px); }
+.portal-tile.kamilla span { padding: 4px 14px; border-radius: 14px; background: #ffe68ae6; }
 /* Kamilla Cam reuses the live screen, without the remote-control buttons. */
 .live-overlay.cam #live-keyboard, .live-overlay.cam [data-live-key], .live-overlay.cam [data-live-scroll], .live-overlay.cam .live-type { display: none; }
 .cam-signin { position: absolute; inset: 0; z-index: 6; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 16px; background: #0d1114; text-align: center; }
