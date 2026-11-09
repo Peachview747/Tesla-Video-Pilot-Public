@@ -14,12 +14,12 @@
   } catch {}
   const handoff = () => { try { sessionStorage.setItem('vp-handoff', String(Date.now())); } catch {} };
   const APPS = [['youtube', 'YouTube'], ['netflix', 'Netflix'], ['hulu', 'Hulu'], ['claude', 'Claude'], ['health', 'Pi Health'], ['kamilla', 'Kamilla Cam'], ['portal', 'All apps']];
-  const here = location.pathname.startsWith('/airoom') ? 'claude' : location.pathname.startsWith('/health') ? 'health' : '';
+  const here = location.pathname.startsWith('/claude') ? 'claude' : location.pathname.startsWith('/health') ? 'health' : '';
   function go(id) {
     // On the Video Pilot page itself, switch without reloading.
     if (globalThis.videoPilotOpen?.(id)) return;
     handoff();
-    location.href = id === 'claude' ? '/airoom/' : id === 'health' ? '/health/' : id === 'portal' ? '/' : `/?app=${id}`;
+    location.href = id === 'claude' ? '/claude/' : id === 'health' ? '/health/' : id === 'portal' ? '/' : `/?app=${id}`;
   }
   let sheet = null;
   function close() { if (sheet) sheet.hidden = true; }

@@ -60,13 +60,13 @@ function render(data) {
     ...(n?.links || []).map(l => row(l.state === 'connected' ? 'good' : 'bad', l.type === 'ethernet' ? 'Ethernet' : 'Wi-Fi', `${l.state}${l.connection ? ` · ${l.connection}` : ''}`)),
     ...(n ? [row(n.internet ? 'good' : 'bad', 'Internet', n.internet ? `Reachable · ${n.pingMs ?? '—'} ms` : 'Not reachable')] : []),
     ...(vp.tunnel === null || vp.tunnel === undefined ? [] : [row(vp.tunnel ? 'good' : 'bad', 'Cloudflare link (old)', vp.tunnel ? 'Connected to Cloudflare' : 'Disconnected')]),
-    ...(n && n.aiRoomRelay !== null ? [row(n.aiRoomRelay ? 'good' : 'bad', 'AI Room site link', n.aiRoomRelay ? 'Connected to Cloudflare' : 'Disconnected')] : []));
+    ...(n && n.aiRoomRelay !== null ? [row(n.aiRoomRelay ? 'good' : 'bad', 'Old Claude site link', n.aiRoomRelay ? 'Connected to Cloudflare' : 'Disconnected')] : []));
   const stage = {downloading: 'Downloading', processing: 'Converting'}[vp.preparationStage];
   const prep = row(vp.busy ? 'warn' : 'good', 'Video Pilot', vp.busy
     ? `${stage || 'Working'}${Number.isFinite(vp.preparationProgress) ? ` · ${Math.round(vp.preparationProgress * 100)}%` : ''}${vp.queuedCount ? ` · ${vp.queuedCount} waiting` : ''}`
     : `Idle · ${vp.videos ?? '—'} videos${vp.failed ? ` · ${vp.failed} need a retry` : ''}`);
   if (vp.busy && Number.isFinite(vp.preparationProgress)) { const bar = el('progress'); bar.max = 1; bar.value = vp.preparationProgress; prep.querySelector('.grow').append(bar); }
-  $('activity').replaceChildren(prep, ...(data.activity ? [row(data.activity.aiRoomBusy ? 'warn' : 'good', 'Claude (AI Room)', data.activity.aiRoomBusy ? 'Working on a reply' : 'Idle')] : []));
+  $('activity').replaceChildren(prep, ...(data.activity ? [row(data.activity.aiRoomBusy ? 'warn' : 'good', 'Claude', data.activity.aiRoomBusy ? 'Working on a reply' : 'Idle')] : []));
 }
 async function runAction(id, question, button) {
   if (question && !confirm(question)) return;

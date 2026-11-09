@@ -30,10 +30,11 @@ async function webVersion(webRoot) {
   return String(Math.floor(Math.max(...times)));
 }
 
-// AI Room (chat and voice with Claude) and Pi Health live inside the portal:
-// their pages are served here and their requests go, behind the portal PIN,
-// to AI Room's local control API, which holds the admin rights.
-const AIROOM_FILES = { "/airoom/": "index.html", "/airoom/index.html": "index.html", "/airoom/app.js": "app.js", "/airoom/style.css": "style.css" };
+// Claude (AI Room's voice chat) and Pi Health live inside the portal: their
+// pages are served here and their requests go, behind the portal PIN, to AI
+// Room's local control API, which holds the admin rights. The Claude page
+// lives at /claude/; old /airoom/ links redirect there.
+const AIROOM_FILES = { "/claude/": "index.html", "/claude/index.html": "index.html", "/claude/app.js": "app.js", "/claude/style.css": "style.css" };
 const HEALTH_FILES = { "/health/": "health.html", "/health/health.js": "health.js", "/health/health.css": "health.css" };
 const ROOM_ACTIONS = new Set(["state", "export", "send", "new", "refresh", "login", "stop", "voice", "speak", "hear"]);
 const PAGE_HEADERS = { "x-content-type-options": "nosniff", "referrer-policy": "no-referrer" };
@@ -87,15 +88,17 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
       if (pass && !pass.allowed) return send(res, 404, "", "text/plain", { "x-gate": "deny" });
       if (pass?.refresh) res.setHeader("set-cookie", passCookie(pass.refresh));
       if (!["GET", "POST"].includes(req.method)) return send(res, 405, { error: "Method not allowed." });
-      if (req.method === "GET" && (AIROOM_FILES[url.pathname] || HEALTH_FILES[url.pathname] || url.pathname === "/airoom" || url.pathname === "/health")) {
-        if (url.pathname === "/airoom" || url.pathname === "/health") return send(res, 301, "", "text/plain", { location: url.pathname + "/" });
+      if (req.method === "GET" && (url.pathname === "/airoom" || url.pathname.startsWith("/airoom/")))
+        return send(res, 301, "", "text/plain", { location: "/claude/" });
+      if (req.method === "GET" && (AIROOM_FILES[url.pathname] || HEALTH_FILES[url.pathname] || url.pathname === "/claude" || url.pathname === "/health")) {
+        if (url.pathname === "/claude" || url.pathname === "/health") return send(res, 301, "", "text/plain", { location: url.pathname + "/" });
         const name = AIROOM_FILES[url.pathname] || HEALTH_FILES[url.pathname];
         const dir = AIROOM_FILES[url.pathname] ? airoomWeb : webRoot;
-        if (!dir) return send(res, 404, { error: "AI Room is not installed for the portal." });
+        if (!dir) return send(res, 404, { error: "Claude is not installed for the portal." });
         let data = await readFile(path.join(dir, name));
         // The same AI Room page, told to use the portal's API and PIN.
         if (name === "index.html" && AIROOM_FILES[url.pathname])
-          data = Buffer.from(String(data).replace("<head>", '<head><meta name="api-base" content="/api/airoom/"><meta name="in-portal" content="1"><base href="/airoom/"><link rel="stylesheet" href="/apps-menu.css"><script src="/apps-menu.js" defer></script>'));
+          data = Buffer.from(String(data).replace("<head>", '<head><meta name="api-base" content="/api/airoom/"><meta name="in-portal" content="1"><base href="/claude/"><link rel="stylesheet" href="/apps-menu.css"><script src="/apps-menu.js" defer></script>'));
         return send(res, 200, data, TYPES[path.extname(name)] || "application/octet-stream", { ...PAGE_HEADERS, "content-security-policy": PAGE_CSP });
       }
       if (ASSETS.has(url.pathname) && req.method === "GET") {
