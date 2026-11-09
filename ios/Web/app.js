@@ -1205,12 +1205,19 @@ function playLive() {
   instance.volume = liveMuted ? 0 : 1;
   try { instance.audioOut?.unlock(() => {}); } catch {}
   // Bursty links can leave the picture seconds behind; jump back to live.
+  // The camera starts with a burst of seconds-old video from Nanit's server,
+  // and a baby monitor should be as close to live as it can be: catch up sooner.
+  const cam = isCam(liveService), most = cam ? 1 : 4, keep = cam ? 0.4 : 0.75;
+  let ticks = 0;
   liveLagTimer = setInterval(() => {
     const lag = instance.source?.lag?.() || 0;
-    if (lag > 4 && livePlayer === instance) {
-      try { instance.seek(instance.currentTime + lag - 0.75); reportDiagnostic('liveCatchUp', {lagSeconds:lag}); } catch {}
+    // How far behind the camera is, for tuning from real drives.
+    if (cam && ++ticks % 5 === 0) reportDiagnostic('camLag', {lagSeconds:lag.toFixed(2), audioTime:Number(instance.audio?.currentTime || 0).toFixed(1),
+      videoTime:Number(instance.video?.currentTime || 0).toFixed(1), audioOn:Boolean(instance.audioOut?.enabled !== false && instance.audio)});
+    if (lag > most && livePlayer === instance) {
+      try { instance.seek(instance.currentTime + lag - keep); reportDiagnostic('liveCatchUp', {lagSeconds:lag}); } catch {}
     }
-  }, 5000);
+  }, cam ? 1000 : 5000);
 }
 async function openLive(service) {
   liveService = service;
@@ -1280,7 +1287,9 @@ async function closeLive() {
   $('live-section').hidden = true;
   document.documentElement?.classList?.remove?.('live-open');
   $('live-type').hidden = true; $('live-keyboard').setAttribute?.('aria-pressed', 'false');
-  try { await api(wasCam ? '/api/nanit/stop' : '/api/live/stop', {}); } catch {}
+  // The camera stream ends with its own connection (the Pi stops it when the
+  // player hangs up); an explicit stop would cut off another viewer's stream.
+  if (!wasCam) try { await api('/api/live/stop', {}); } catch {}
   applyWebUpdate();
 }
 async function liveInput(body) {

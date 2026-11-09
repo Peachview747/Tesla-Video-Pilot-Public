@@ -241,7 +241,8 @@ export class NanitCam {
   // server has nothing to play and ffmpeg exits. Retry until data flows.
   encode(output, url, attempt) {
     if (this.output !== output) return;
-    const encoder = this.launch("ffmpeg", ["-hide_banner", "-loglevel", "error", "-rw_timeout", "15000000", "-i", url,
+    const encoder = this.launch("ffmpeg", ["-hide_banner", "-loglevel", "error", "-rw_timeout", "15000000",
+      "-fflags", "nobuffer", "-flags", "low_delay", "-probesize", "500000", "-analyzeduration", "1000000", "-i", url,
       "-map", "0:v:0", "-map", "0:a:0?", "-vf", "scale=1280:-2", "-r", "25",
       "-c:v", "mpeg1video", "-b:v", `${this.bitrate}k`, "-maxrate", `${Math.round(this.bitrate * 1.25)}k`, "-bufsize", `${this.bitrate}k`,
       "-bf", "0", "-g", "50", "-c:a", "mp2", "-b:a", "128k", "-ar", "44100", "-ac", "2",
