@@ -470,7 +470,7 @@ a.portal-tile { text-decoration: none; }
 /* kamilla-tile.jpg is the family's own Pooh picture, kept on the Pi only (Disney artwork, so not in this repo
    or its backups' plain files); multiply turns its white paper baby pink. */
 /* It fills the last row across all three columns, as tall as the other tiles (5:1 ≈ three 16:10 tiles and their gaps). */
-.portal-tile.kamilla { grid-column: 1 / -1; aspect-ratio: 5 / 1; align-items: flex-end; padding-bottom: 10px;
+.portal-tile.kamilla { grid-column: 1 / -1; aspect-ratio: 5 / 1;
   background: #f9d2e0 url("/kamilla-tile.jpg") center 58% / 240px auto repeat-x;
   background-blend-mode: multiply; color: #8e3a5c; font-size: clamp(18px, 3vw, 28px); }
 .portal-tile.kamilla span { padding: 4px 14px; border-radius: 14px; background: #fde6eee8; }
