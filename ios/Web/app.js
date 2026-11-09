@@ -1150,7 +1150,7 @@ $('to-portal').onclick = () => showPortal();
 // The Pi plays them in Chromium on a virtual screen and streams that screen
 // here; taps map to its pixels, like the sign-in page.
 const LIVE_SIZE = {width:1280, height:720};
-const LIVE_NAMES = {netflix:'Netflix', hulu:'Hulu', textnow:'TextNow', kamilla:'Kamilla Cam'};
+const LIVE_NAMES = {netflix:'Netflix', hulu:'Hulu', kamilla:'Kamilla Cam'};
 // Kamilla Cam is the Nanit camera: watch only, no taps or typing on the Pi.
 const isCam = service => service === 'kamilla';
 // How the 16:9 picture sits in the car's taller space: whole (fit), cropped at
@@ -1345,15 +1345,15 @@ document.querySelectorAll?.('[data-live-scroll]').forEach(button => button.oncli
 // The Apps switcher (apps-menu.js) switches inside this page when it can;
 // Claude and Pi Health are their own pages, which link back with ?app=.
 globalThis.videoPilotOpen = id => {
-  if (!['youtube', 'netflix', 'hulu', 'textnow', 'kamilla', 'portal'].includes(id)) return false;
+  if (!['youtube', 'netflix', 'hulu', 'kamilla', 'portal'].includes(id)) return false;
   if (!$('player-section').hidden) $('close').onclick?.();
-  if (id === 'netflix' || id === 'hulu' || id === 'textnow' || id === 'kamilla') { if ($('live-section').hidden || liveService !== id) void openLive(id); return true; }
+  if (id === 'netflix' || id === 'hulu' || id === 'kamilla') { if ($('live-section').hidden || liveService !== id) void openLive(id); return true; }
   if (!$('live-section').hidden) void closeLive();
   if (id === 'youtube') enterYouTube(); else showPortal();
   return true;
 };
 {
-  const app = String(globalThis.location?.search || '').match(/[?&]app=(youtube|netflix|hulu|textnow|portal)\b/)?.[1];
+  const app = String(globalThis.location?.search || '').match(/[?&]app=(youtube|netflix|hulu|kamilla|portal)\b/)?.[1];
   if (app) {
     try { globalThis.history?.replaceState?.(null, '', globalThis.location.pathname + globalThis.location.hash); } catch {}
     globalThis.videoPilotOpen(app);
