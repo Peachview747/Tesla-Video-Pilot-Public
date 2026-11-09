@@ -7,8 +7,8 @@ import { passCookie } from "./device-gate.mjs";
 import {QUALITIES, parseQuality} from "./quality.mjs";
 import { LIVE_LENGTH } from "./live-helper.mjs";
 
-const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".png": "image/png", ".jpg": "image/jpeg" };
-const ASSETS = new Set(["/", "/index.html", "/app.js", "/http-source.js", "/diagnostics.js", "/style.css", "/jsmpeg.min.js", "/apps-menu.js", "/apps-menu.css", "/pooh.png", "/kamilla-tile.jpg"]);
+const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".png": "image/png", ".jpg": "image/jpeg", ".svg": "image/svg+xml" };
+const ASSETS = new Set(["/", "/index.html", "/app.js", "/http-source.js", "/diagnostics.js", "/style.css", "/jsmpeg.min.js", "/apps-menu.js", "/apps-menu.css", "/pooh.png", "/kamilla-tile.jpg", "/claude-logo.svg"]);
 
 function send(res, status, body, type = "application/json; charset=utf-8", headers = {}) {
   const bytes = Buffer.isBuffer(body) ? body : Buffer.from(typeof body === "string" ? body : JSON.stringify(body));
