@@ -724,11 +724,11 @@ async function loadChannel(seq, {append = false, refresh = false} = {}) {
 }
 $('channel-more').onclick = () => { if (!channelState.loading && channelState.continuation) void loadChannel(channelState.seq, {append:true}); };
 function renderChannelTabs() {
-  for (const button of $('channel-tabs').querySelectorAll('[data-channel-tab]'))
+  for (const button of ($('channel-tabs').querySelectorAll?.('[data-channel-tab]') || []))
     button.setAttribute('aria-selected', String(button.dataset.channelTab === channelState.tab));
   $('channel-tabs').hidden = !!channelState.spec?.libraryOnly;
 }
-for (const button of $('channel-tabs').querySelectorAll('[data-channel-tab]')) button.onclick = () => {
+for (const button of ($('channel-tabs').querySelectorAll?.('[data-channel-tab]') || [])) button.onclick = () => {
   if (!channelState.spec || channelState.tab === button.dataset.channelTab) return;
   channelState.tab = button.dataset.channelTab; renderChannelTabs();
   const seq = ++channelState.seq; channelState.videos = []; channelState.continuation = null;
@@ -1150,7 +1150,9 @@ $('to-portal').onclick = () => showPortal();
 // The Pi plays them in Chromium on a virtual screen and streams that screen
 // here; taps map to its pixels, like the sign-in page.
 const LIVE_SIZE = {width:1280, height:720};
-const LIVE_NAMES = {netflix:'Netflix', hulu:'Hulu', textnow:'TextNow'};
+const LIVE_NAMES = {netflix:'Netflix', hulu:'Hulu', textnow:'TextNow', kamilla:'Kamilla Cam'};
+// Kamilla Cam is the Nanit camera: watch only, no taps or typing on the Pi.
+const isCam = service => service === 'kamilla';
 // How the 16:9 picture sits in the car's taller space: whole (fit), cropped at
 // the sides to fill it (fill), or squeezed to fill it (stretch).
 const LIVE_FITS = ['fit', 'fill', 'stretch'], LIVE_FIT_NAMES = {fit:'Fit', fill:'Fill', stretch:'Stretch'};
@@ -1182,10 +1184,13 @@ function playLive() {
   $('live-drop').hidden = true;
   liveStatus('Connecting…');
   prepareAudioContext();
-  const instance = new window.JSMpeg.Player(`/api/live/stream.ts?t=${Date.now()}`, {
+  let waking = isCam(liveService);
+  const instance = new window.JSMpeg.Player(`${isCam(liveService) ? '/api/nanit' : '/api/live'}/stream.ts?t=${Date.now()}`, {
     source:JSMpegLiveSource, canvas:$('live-screen'), autoplay:true, loop:false, disableWebAssembly:true,
     player:() => instance,
-    onSourceEstablished:() => { if (livePlayer === instance) liveStatus(''); },
+    // The camera's first picture comes a few seconds after the Pi answers.
+    onSourceEstablished:() => { if (livePlayer === instance && !isCam(liveService)) liveStatus(''); },
+    onVideoDecode:() => { if (livePlayer === instance && waking) { waking = false; liveStatus(''); } },
     onSourceError:message => {
       if (livePlayer !== instance) return;
       liveStatus(''); $('live-drop-title').textContent = message; $('live-drop').hidden = false;
@@ -1211,12 +1216,15 @@ async function openLive(service) {
   liveService = service;
   $('live-title').textContent = LIVE_NAMES[service] || '';
   $('live-section').hidden = false;
+  $('live-section').classList?.toggle?.('cam', isCam(service));
+  $('cam-signin').hidden = true;
   // The page underneath must not scroll; its scrollbar would eat into the picture.
   document.documentElement?.classList?.add?.('live-open');
   if (pinNeeded) showPinScreen();
   applyLiveFit();
   $('live-drop').hidden = true;
   prepareAudioContext();
+  if (isCam(service)) return void openCam();
   liveStatus(`Opening ${LIVE_NAMES[service]} on the Pi…`);
   try {
     await api('/api/live/start', {service}, 25000);
@@ -1228,13 +1236,51 @@ async function openLive(service) {
     liveStatus(''); $('live-drop-title').textContent = error.message || 'Could not open it on the Pi.'; $('live-drop').hidden = false;
   }
 }
+// Signed in to Nanit: play. Otherwise ask for the email and password (once).
+async function openCam() {
+  stopLivePlayer();
+  liveStatus('Checking the camera…');
+  let state;
+  try { state = await api('/api/nanit/status'); }
+  catch (error) { liveStatus(''); $('live-drop-title').textContent = error.message; $('live-drop').hidden = false; return; }
+  if (!isCam(liveService) || $('live-section').hidden) return;
+  if (!state.signedIn) { liveStatus(''); showCamSignin(state.codeNeeded); return; }
+  liveStatus('Waking the camera…');
+  playLive();
+  if (livePlayer) liveStatus('Waking the camera…');
+}
+function showCamSignin(codeNeeded = false, message = '') {
+  $('cam-signin').hidden = false;
+  $('cam-account').hidden = codeNeeded;
+  $('cam-code').hidden = !codeNeeded;
+  $('cam-submit').textContent = codeNeeded ? 'Confirm code' : 'Sign in';
+  $('cam-message').textContent = message || (codeNeeded ? 'Nanit texted you a code.' : '');
+  (codeNeeded ? $('cam-code') : $('cam-email')).focus?.();
+}
+$('cam-signin').onsubmit = async event => {
+  event?.preventDefault?.();
+  const codeStep = !$('cam-code').hidden;
+  $('cam-submit').disabled = true; $('cam-message').textContent = codeStep ? 'Checking the code…' : 'Signing in…';
+  try {
+    const state = codeStep ? await api('/api/nanit/verify', {code:$('cam-code').value}, 20000)
+      : await api('/api/nanit/login', {email:$('cam-email').value, password:$('cam-password').value}, 20000);
+    $('cam-password').value = ''; $('cam-code').value = '';
+    if (state.codeNeeded) showCamSignin(true);
+    else if (state.signedIn) { $('cam-signin').hidden = true; void openCam(); }
+  } catch (error) {
+    const restart = /Start again/.test(error.message || '');
+    showCamSignin(codeStep && !restart, error.message || 'Could not sign in.');
+  } finally { $('cam-submit').disabled = false; }
+};
 async function closeLive() {
+  const wasCam = isCam(liveService);
   liveService = '';
+  $('cam-signin').hidden = true; $('cam-password').value = ''; $('cam-code').value = '';
   stopLivePlayer();
   $('live-section').hidden = true;
   document.documentElement?.classList?.remove?.('live-open');
   $('live-type').hidden = true; $('live-keyboard').setAttribute?.('aria-pressed', 'false');
-  try { await api('/api/live/stop', {}); } catch {}
+  try { await api(wasCam ? '/api/nanit/stop' : '/api/live/stop', {}); } catch {}
   applyWebUpdate();
 }
 async function liveInput(body) {
@@ -1243,14 +1289,14 @@ async function liveInput(body) {
 }
 document.querySelectorAll?.('[data-live-service]').forEach(button => button.onclick = () => void openLive(button.dataset.liveService));
 $('live-close').onclick = () => void closeLive();
-$('live-retry').onclick = () => liveService && playLive();
+$('live-retry').onclick = () => liveService && (isCam(liveService) ? void openCam() : playLive());
 // Map a tap to the Pi's screen, allowing for letterboxing in Fit mode.
 $('live-screen').onclick = event => {
   const rect = $('live-screen').getBoundingClientRect?.();
   if (!rect?.width || !rect?.height) return;
   try { livePlayer?.audioOut?.unlock(() => {}); livePlayer?.audioOut?.context?.resume?.()?.catch?.(() => {}); } catch {}
   const point = liveTapPoint(rect, event.clientX, event.clientY);
-  if (!point) return;
+  if (!point || isCam(liveService)) return;
   void liveInput({type:'click', x:point.x, y:point.y});
 };
 $('live-keyboard').onclick = () => {
@@ -1290,9 +1336,9 @@ document.querySelectorAll?.('[data-live-scroll]').forEach(button => button.oncli
 // The Apps switcher (apps-menu.js) switches inside this page when it can;
 // Claude and Pi Health are their own pages, which link back with ?app=.
 globalThis.videoPilotOpen = id => {
-  if (!['youtube', 'netflix', 'hulu', 'textnow', 'portal'].includes(id)) return false;
+  if (!['youtube', 'netflix', 'hulu', 'textnow', 'kamilla', 'portal'].includes(id)) return false;
   if (!$('player-section').hidden) $('close').onclick?.();
-  if (id === 'netflix' || id === 'hulu' || id === 'textnow') { if ($('live-section').hidden || liveService !== id) void openLive(id); return true; }
+  if (id === 'netflix' || id === 'hulu' || id === 'textnow' || id === 'kamilla') { if ($('live-section').hidden || liveService !== id) void openLive(id); return true; }
   if (!$('live-section').hidden) void closeLive();
   if (id === 'youtube') enterYouTube(); else showPortal();
   return true;

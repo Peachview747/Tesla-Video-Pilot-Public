@@ -5,6 +5,7 @@ import path from "node:path";
 import { visitorKey, deviceName } from "./pin-lock.mjs";
 import { passCookie } from "./device-gate.mjs";
 import {QUALITIES, parseQuality} from "./quality.mjs";
+import { LIVE_LENGTH } from "./live-helper.mjs";
 
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8" };
 const ASSETS = new Set(["/", "/index.html", "/app.js", "/http-source.js", "/diagnostics.js", "/style.css", "/jsmpeg.min.js", "/apps-menu.js", "/apps-menu.css"]);
@@ -55,7 +56,7 @@ a{display:inline-block;margin-top:16px;padding:12px 20px;border-radius:12px;back
 export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5001, host = "127.0.0.1", version = "Pi",
   signinURL = "http://127.0.0.1:5002", liveURL = "http://127.0.0.1:5003", pinLock = null,
   controlURL = "http://127.0.0.1:5020", controlKey = null, airoomWeb = null, tunnelConnected = () => null,
-  publicPort = null, gate = null }) {
+  publicPort = null, gate = null, nanit = null }) {
   // publicPort: a second listener for the HTTPS front (Caddy) on the internet
   // side. Everything arriving on it counts as outside, whatever headers it carries.
   let publicActual = null;
@@ -292,6 +293,29 @@ export function createVideoPilotServer({ library, webRoot, decoderPath, port = 5
         } catch {}
         res.destroy();
         return;
+      }
+      // Kamilla Cam (the Nanit camera); see nanit.mjs.
+      const cam = url.pathname.match(/^\/api\/nanit\/(status|login|verify|signout|stop|stream\.ts)$/);
+      if (cam && nanit) {
+        const name = cam[1], post = !["status", "stream.ts"].includes(name);
+        if (post !== (req.method === "POST")) return send(res, 405, { error: "Method not allowed." });
+        if (name === "stream.ts") {
+          let stream;
+          try { stream = await nanit.stream(); }
+          catch (error) { return send(res, error.status || 502, { error: String(error.message || error), ...nanit.status() }); }
+          res.writeHead(200, { "content-type": "video/mp2t", "content-length": LIVE_LENGTH, "cache-control": "no-store", "x-video-live": "1" });
+          stream.pipe(res);
+          res.once("close", () => { if (nanit.output === stream) nanit.stop(); });
+          return;
+        }
+        try {
+          const body = post ? await bodyJSON(req, 2048) : {};
+          if (name === "status") return send(res, 200, nanit.status());
+          if (name === "login") return send(res, 200, await nanit.login(body.email, body.password));
+          if (name === "verify") return send(res, 200, await nanit.verify(body.code));
+          if (name === "signout") return send(res, 200, await nanit.signOut());
+          return send(res, 200, nanit.stop());
+        } catch (error) { return send(res, error.status === 401 ? 400 : error.status || 400, { error: String(error.message || error), ...nanit.status() }); }
       }
       if (url.pathname === "/api/youtube/signout" && req.method === "POST") { await library.clearCookies(); return send(res, 200, { signedOut: true }); }
       if (url.pathname === "/api/subscriptions/channels" && req.method === "GET")

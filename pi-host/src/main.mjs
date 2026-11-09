@@ -6,6 +6,7 @@ import { createVideoPilotServer } from "./server.mjs";
 import { PiTunnel } from "./tunnel.mjs";
 import { PinLock } from "./pin-lock.mjs";
 import { DeviceGate } from "./device-gate.mjs";
+import { NanitCam } from "./nanit.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../..");
@@ -22,11 +23,12 @@ const library = await new Library({
 }).init();
 const pinLock = await new PinLock({ dataDir }).load();
 const gate = await new DeviceGate({ dataDir }).load();
+const nanit = await new NanitCam({ dataDir }).load();
 // Shared with AI Room's local control API (portal AI Room and Pi Health).
 const controlKey = await readFile(process.env.PI_CONTROL_KEY || "/opt/pi-control/key", "utf8").then(text => text.trim() || null, () => null);
 let tunnel = null;
 const http = createVideoPilotServer({ library, webRoot: path.resolve(root, "ios/Web"),
-  decoderPath: path.resolve(root, "app/client/public/jsmpeg.min.js"), port, version: "0.1.40-pi", pinLock, gate,
+  decoderPath: path.resolve(root, "app/client/public/jsmpeg.min.js"), port, version: "0.1.40-pi", pinLock, gate, nanit,
   controlKey, airoomWeb: process.env.AIROOM_WEB || "/opt/ai-room/web", tunnelConnected: () => tunnel?.connected() ?? null,
   // The HTTPS front (Caddy) forwards here; always treated as outside.
   publicPort: process.env.VIDEO_PILOT_PUBLIC_PORT === "off" ? null : Number(process.env.VIDEO_PILOT_PUBLIC_PORT || 5101) });
@@ -34,7 +36,7 @@ await http.start();
 library.drain();
 library.warmQualities();
 if (secret) tunnel = new PiTunnel({ publicURL, secret, localURL: `http://127.0.0.1:${port}` });
-const shutdown = async () => { tunnel?.stop(); await http.stop(); process.exit(0); };
+const shutdown = async () => { tunnel?.stop(); nanit.stop(); await http.stop(); process.exit(0); };
 process.on("SIGTERM", shutdown); process.on("SIGINT", shutdown);
 console.log(`Video Pilot Pi host listening on 127.0.0.1:${port}${tunnel ? "" : " (no Cloudflare tunnel)"}`);
 if (tunnel) await tunnel.run();

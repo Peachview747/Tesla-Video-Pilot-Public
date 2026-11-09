@@ -466,6 +466,18 @@ a.portal-tile { text-decoration: none; }
 .claude-mark { display: grid; place-items: center; width: 1.4em; height: 1.4em; border-radius: 50%; background: #ba6949; color: #fff6ef; font-size: .8em; }
 .portal-tile.textnow { background: #5b2bd1; color: #fff; font-size: clamp(20px, 3.6vw, 34px); }
 .portal-tile.health { background: #1a1f22; color: #4cc38a; font-size: clamp(20px, 3.6vw, 34px); }
+.portal-tile.kamilla { background: #fde2e4; color: #b03a5b; font-size: clamp(20px, 3.6vw, 34px); }
+/* Kamilla Cam reuses the live screen, without the remote-control buttons. */
+.live-overlay.cam #live-keyboard, .live-overlay.cam [data-live-key], .live-overlay.cam [data-live-scroll], .live-overlay.cam .live-type { display: none; }
+.cam-signin { position: absolute; inset: 0; z-index: 6; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 16px; background: #0d1114; text-align: center; }
+.cam-signin[hidden] { display: none; }
+.cam-signin h3 { font-size: 20px; }
+.cam-signin p { max-width: 420px; font-size: 14px; }
+.cam-signin input, .cam-signin #cam-account { width: min(100%, 360px); }
+.cam-signin #cam-account { display: flex; flex-direction: column; gap: 10px; }
+.cam-signin #cam-account[hidden], .cam-signin input[hidden] { display: none; }
+.cam-signin button { min-height: 44px; padding: 6px 22px; border: 0; border-radius: 12px; background: #3b4f5e; color: #fff; font-size: 16px; font-weight: 700; }
+.cam-message { min-height: 1.4em; color: #f0b4b4; }
 .portal-tile { display: flex; align-items: center; justify-content: center; gap: 10px; aspect-ratio: 16 / 10; border: 0; border-radius: 18px; font-size: clamp(22px, 4vw, 38px); font-weight: 800; letter-spacing: .03em; box-shadow: 0 6px 20px #0003; }
 .portal-tile:active { transform: scale(.97); }
 .portal-tile.youtube { background: #fff; color: #0f0f0f; letter-spacing: -.01em; }

@@ -358,6 +358,7 @@
       <a class="portal-tile claude" href="/airoom/" data-portal-page><span class="claude-mark" aria-hidden="true">C</span><span>Claude</span></a>
       <a class="portal-tile health" href="/health/" data-portal-page><span>Pi Health</span></a>
       <button class="portal-tile textnow" type="button" data-live-service="textnow"><span>TextNow</span></button>
+      <button class="portal-tile kamilla" type="button" data-live-service="kamilla"><span>Kamilla Cam</span></button>
     </div>
     <div id="portal-status" class="portal-status" aria-live="polite"></div>
     <p class="portal-note">Netflix and Hulu play in a browser on the Pi and stream here live. Sign in once; the Pi remembers it.</p>
@@ -415,6 +416,15 @@
     </div>
     <div class="live-stage">
       <canvas id="live-screen" width="1280" height="720" aria-label="Live picture from the Pi"></canvas>
+      <form id="cam-signin" class="cam-signin" hidden>
+        <h3>Sign in to Nanit</h3>
+        <p class="muted">Once, so the Pi can show Kamilla's camera. The password is not kept; the Pi keeps only Nanit's sign-in token.</p>
+        <div id="cam-account"><input id="cam-email" class="filter-input" type="email" placeholder="Nanit email" aria-label="Nanit email" autocomplete="username" autocapitalize="off" spellcheck="false">
+        <input id="cam-password" class="filter-input" type="password" placeholder="Nanit password" aria-label="Nanit password" autocomplete="current-password"></div>
+        <input id="cam-code" class="filter-input" type="text" inputmode="numeric" placeholder="Code Nanit texted you" aria-label="Code Nanit texted you" autocomplete="one-time-code" hidden>
+        <button id="cam-submit" class="primary" type="submit">Sign in</button>
+        <p id="cam-message" class="cam-message" role="status"></p>
+      </form>
       <div id="live-drop" class="player-drop" role="alertdialog" aria-labelledby="live-drop-title" hidden>
         <strong id="live-drop-title">The live picture stopped</strong>
         <button id="live-retry" type="button">Reconnect</button>
